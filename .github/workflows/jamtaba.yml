@@ -67,11 +67,11 @@ jobs:
       - name: Build the plugin and the validator
         run: cmake --build build --target JamTaba validator -- -k 0 # show every compile error, not just the first
       - name: Validate
-        run: build/bin/Release/validator.exe build/VST3/Release/JamTaba.vst3
+        run: build/bin/validator.exe build/VST3/JamTaba.vst3 # on Windows the SDK puts no Release folder in these paths
       - uses: actions/upload-artifact@v4
         with:
           name: JamTaba-vst3-windows-x64
-          path: build/VST3/Release/JamTaba.vst3
+          path: build/VST3/JamTaba.vst3
 
   macos:
     runs-on: macos-14
