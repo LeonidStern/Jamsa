@@ -1,0 +1,31 @@
+name: server
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with AddressSanitizer and UBSan
+        run: make -C ninjam/server -j"$(nproc)" CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wno-reorder -pthread"
+      - name: Protocol tests
+        working-directory: ninjam/server/tests
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          NINJAMSRV: ../ninjamsrv
+        run: python3 -m unittest -v test_server
+      - name: Release build
+        run: |
+          make -C ninjam/server clean
+          make -C ninjam/server -j"$(nproc)"
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make -C ninjam/server -j"$(sysctl -n hw.ncpu)" MAC=1
