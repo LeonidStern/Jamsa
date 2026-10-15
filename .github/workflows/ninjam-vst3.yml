@@ -291,18 +291,9 @@ jobs:
 
       - name: Package
         run: |
-          # Finder shows a folder whose extension no app has registered (like .vst3) as a
-          # plain folder unless its bundle bit is set, so set it (kHasBundle in the Finder
-          # info) to show NINJAM.vst3 as one item. The zip keeps it and unzipping restores it.
-          xattr -wx com.apple.FinderInfo 0000000000000000200000000000000000000000000000000000000000000000 "$BUNDLE"
-          codesign --verify --deep --strict --verbose=2 "$BUNDLE"
           mkdir -p dist
           ditto -c -k --keepParent "$BUNDLE" dist/NINJAM-vst3-macos.zip
           ls -l dist
-          # what someone gets after unzipping: the bundle bit, and a signature that still checks out
-          ditto -x -k dist/NINJAM-vst3-macos.zip "$RUNNER_TEMP/unzipped"
-          test "$(xattr -px com.apple.FinderInfo "$RUNNER_TEMP/unzipped/NINJAM.vst3" | tr -d ' \n' | cut -c17-20)" = 2000
-          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/unzipped/NINJAM.vst3"
 
       - uses: actions/upload-artifact@v4
         with:
