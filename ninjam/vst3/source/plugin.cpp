@@ -34,7 +34,7 @@ static const int64 MAX_STATE_SIZE = 1 << 20;
 NinjamPlugin::NinjamPlugin()
 {
   // following the host: its tempo, and where its bars are while it plays (or loops)
-  processContextRequirements.needTempo().needProjectTimeMusic().needTransportState().needCycleMusic();
+  processContextRequirements.needTempo().needProjectTimeMusic().needTransportState().needCycleMusic().needTimeSignature();
 }
 
 NinjamPlugin::~NinjamPlugin()
@@ -120,6 +120,11 @@ tresult PLUGIN_API NinjamPlugin::process(ProcessData &data)
     p.cycleActive = (pc->state & ProcessContext::kCycleActive) && (pc->state & ProcessContext::kCycleValid);
     p.cycleStart = pc->cycleStartMusic;
     p.cycleEnd = pc->cycleEndMusic;
+    if (pc->state & ProcessContext::kTimeSigValid)
+    {
+      p.timeSigNum = pc->timeSigNumerator;
+      p.timeSigDen = pc->timeSigDenominator;
+    }
   }
   m_engine->process(in, numIn, out.channelBuffers32, out.numChannels, data.numSamples, &timing);
   out.silenceFlags = 0;

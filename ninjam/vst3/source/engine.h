@@ -28,7 +28,7 @@
   later, such as a looper. The metronome is the plug-in's own (click.h), on the
   beats of NJClient's intervals; NJClient's is muted.
 
-  Following the host (hostsync.h): while "Follow Ableton's tempo" is on,
+  Following the host (hostsync.h): while "Sync" is on,
   process() lines the intervals up with the host's bars, and the network
   thread votes the room to the host's tempo when it changes.
 
@@ -107,7 +107,10 @@ struct Snapshot
   // the built-in server
   // following the host (hostsync.h)
   bool followTempo = true;   // the toggle
-  std::string hostLabel;     // "Ableton", or the host's name
+  std::string hostLabel;     // "Live", or the host's name
+  std::string hostChip;      // the same, short: "Live", or "Host" for a long name
+  double nextIntervalPpq = -1; // where the next interval starts in the host (quarter notes), -1 when not in line
+  int timeSigNum = 0, timeSigDen = 0; // the host's time signature, 0 when it doesn't say
   double hostTempo = 0;      // 0 when the host doesn't say (or doesn't run the audio)
   BarSync::State barState = BarSync::Off;
   double barErrorMs = 0;     // where the host's interval is, minus ours
@@ -143,7 +146,7 @@ struct Settings
   bool monitor = true;
   bool transmit = true;
   int opusKbps = DEFAULT_OPUS_KBPS; // what we send in Opus rooms; FLAC is lossless and ignores it
-  bool followHostTempo = true; // Follow Ableton's tempo (and line up with its bars)
+  bool followHostTempo = true; // Sync: follow the host's tempo (and line up with its bars)
   int editorWidth = 0, editorHeight = 0; // the editor's size, 0 for the default
 
   struct Remote
@@ -184,6 +187,7 @@ public:
   void connect(const std::string &server, const std::string &userName);
   void disconnect();
   void sendChat(const std::string &text);
+  void vote(const std::string &what, int value); // "!vote bpm 120" or "!vote bpi 16", sent as chat
   void answerLicense(bool accept);
   void setHosting(bool on);
 
@@ -204,7 +208,8 @@ public:
   // Text commands, for tests and automation (see plugin.cpp); returns the reply:
   //   connect host:port [name], disconnect, name X, host on|off, chat text (sent as typed),
   //   license accept|decline, transmit on|off, monitor on|off, metronome on|off,
-  //   bitrate 64|96|128|160|256|510, follow on|off, status, users, chatlog, syncnote
+  //   bitrate 64|96|128|160|256|510, follow on|off, vote bpm|bpi N, status, users, chatlog,
+  //   syncnote, nextinterval
   std::string command(const std::string &line);
 
   static std::string remoteKey(const std::string &user, int channel); // user without @address
@@ -273,6 +278,8 @@ private:
   std::atomic<bool> m_follow { true }, m_barReset { false };
   // what the audio thread saw, for the network thread
   std::atomic<double> m_hostTempo { 0 }, m_barErrorMs { 0 };
+  std::atomic<double> m_nextIntervalPpq { -1 };
+  std::atomic<int> m_timeSig { 0 }; // numerator * 256 + denominator
   std::atomic<int> m_barState { BarSync::Off }, m_barFixes { 0 };
 
   // network thread only

@@ -217,7 +217,7 @@ std::string shortHostName(const std::string &hostName)
   const std::string name = hostName.substr(a, b - a);
   std::string lower = name;
   for (auto &c : lower) c = (char)tolower((unsigned char)c);
-  if (lower.find("ableton") != std::string::npos || lower == "live" || lower.compare(0, 5, "live ") == 0) return "Ableton";
+  if (lower.find("ableton") != std::string::npos || lower == "live" || lower.compare(0, 5, "live ") == 0) return "Live";
   if (name.empty()) return "The DAW";
   size_t n = std::min<size_t>(name.size(), 32);
   while (n < name.size() && n > 0 && ((unsigned char)name[n] & 0xc0) == 0x80) n--; // not inside a UTF-8 character
@@ -229,8 +229,40 @@ std::string hostTempoNote(const std::string &hostName, double hostTempo, int roo
   if (hostTempo <= 0 || roomBpm <= 0 || fabs(hostTempo - roomBpm) <= BarSync::SAME_TEMPO) return "";
   const std::string host = shortHostName(hostName), room = std::to_string(roomBpm);
   std::string s = host + " is at " + bpmText(hostTempo) + " BPM, the room at " + room + ": set " +
-                  (host == "Ableton" ? std::string("Ableton") : std::string("its tempo")) + " to " + room;
-  if (!following) s += ", or turn on Follow Ableton's tempo";
+                  (host == "Live" ? std::string("Live") : std::string("its tempo")) + " to " + room;
+  if (!following) s += ", or turn on Sync";
+  return s;
+}
+
+std::string hostChipName(const std::string &hostName)
+{
+  const std::string name = shortHostName(hostName);
+  size_t chars = 0;
+  for (unsigned char c : name) chars += (c & 0xc0) != 0x80;
+  return chars <= 10 && name != "The DAW" ? name : "Host";
+}
+
+void barAndBeat(double ppq, int num, int den, int *bar, int *beat, bool *onBeat)
+{
+  if (num <= 0 || den <= 0) num = den = 4;
+  const double beatQ = 4.0 / den, barQ = num * beatQ; // a beat and a bar, in quarter notes
+  const double eps = 1e-6;
+  const double bars = floor(ppq / barQ + eps);
+  double inBar = ppq - bars * barQ;
+  if (inBar < 0) inBar = 0;
+  const double beats = inBar / beatQ;
+  if (bar) *bar = (int)bars + 1;
+  if (beat) *beat = std::min(num, (int)floor(beats + eps) + 1);
+  if (onBeat) *onBeat = fabs(beats - floor(beats + 0.5)) < 1e-3;
+}
+
+std::string nextIntervalText(const std::string &chipName, double ppq, int num, int den)
+{
+  int bar = 0, beat = 0;
+  bool onBeat = false;
+  barAndBeat(ppq, num, den, &bar, &beat, &onBeat);
+  std::string s = "Next interval at " + chipName + " bar " + std::to_string(bar);
+  if (beat > 1 || !onBeat) s += ", beat " + std::to_string(beat);
   return s;
 }
 

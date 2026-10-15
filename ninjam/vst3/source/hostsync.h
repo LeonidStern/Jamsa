@@ -10,7 +10,7 @@
 
 /*
 
-  The host leads ("Follow Ableton's tempo"), from what it tells the plug-in in
+  The host leads ("Sync", on by default), from what it tells the plug-in in
   each block (VST3's ProcessContext). A plug-in can't set its host's tempo, so:
 
   - tempo: when the host's tempo changes and stays for a second at a value
@@ -57,6 +57,7 @@ struct HostPosition
   double tempo = 0;         // quarter notes per minute, 0 when the host doesn't say
   bool cycleActive = false; // the host loops from cycleStart to cycleEnd (quarter notes)
   double cycleStart = 0, cycleEnd = 0;
+  int timeSigNum = 0, timeSigDen = 0; // the time signature, 0 when the host doesn't say
 };
 
 namespace barmath {
@@ -150,12 +151,22 @@ private:
 // a tempo as the editor writes it: "120", "109.6", "120.25"
 std::string bpmText(double bpm);
 
-// What to call the host: "Ableton" for Live, else its name (or "The DAW")
+// What to call the host: "Live" for Ableton Live, else its name (or "The DAW")
 std::string shortHostName(const std::string &hostName);
 
+// The host's name where there is little room (the transport bar): shortHostName() if it is
+// short, else "Host"
+std::string hostChipName(const std::string &hostName);
+
 // The line the editor shows when the host's tempo isn't the room's, such as
-// "Ableton is at 120 BPM, the room at 95: set Ableton to 95", or "" when they agree.
+// "Live is at 120 BPM, the room at 95: set Live to 95", or "" when they agree.
 std::string hostTempoNote(const std::string &hostName, double hostTempo, int roomBpm, bool following);
+
+// Where the next interval starts in the host, at quarter note ppq of a time signature num/den
+// (4/4 when not known): "Next interval at Live bar 9", or "... bar 9, beat 3" when it doesn't
+// start on a bar. bar and beat count from 1.
+std::string nextIntervalText(const std::string &chipName, double ppq, int num, int den);
+void barAndBeat(double ppq, int num, int den, int *bar, int *beat, bool *onBeat);
 
 } // namespace ninjam_vst3
 

@@ -49,8 +49,8 @@
     PHASE swap END b_dropped=<0|1> b_hosting=<0|1> port=<port> a_state=<state> a_users=<n>
     DONE
 
-  The host leads (sync): this host passes a tempo and a transport (ProcessContext), as Ableton
-  does, and the plug-in follows it ("Follow Ableton's tempo", on by default). The host is at
+  The host leads (sync): this host passes a tempo, a transport and a time signature (4/4) in
+  the ProcessContext, as Live does, and the plug-in follows it ("Sync", on by default). The host is at
   100 BPM; the plug-in hosts a room (120 BPM) and votes it to 100 once it's in; the room votes 4
   beats. The host plays from the middle of bar 3: each interval must start on a host beat that
   is a multiple of 4 (the metronome's accent). The host's tempo is dragged to 110: one vote, and
@@ -65,6 +65,7 @@
     SYNC join room_bpm=<bpm> tempovotes=<n>
     SYNC phase <name> n=<accents> max_ms=<ms from a host beat that is a multiple of BPI> gap_err=<samples> fixes=<n> bars=<state>
                      accent_hz=<the accents' pitch> beat_hz=<the other beats'> beats=<other beats>
+    NOTE next ppq=<the host's position> text=<where the editor says the next interval starts>
     SYNC follow room_bpm=<bpm> tempovotes=<n>
     NOTE other room_bpm=<bpm> tempovotes=<n> text=<the note>
     SYNC loop fixes_before=<n>             (then SYNC phase loop ...: measured as if the host never looped)
@@ -303,8 +304,10 @@ public:
       // the host's tempo and transport, as a DAW passes them
       context.sampleRate = m_srate;
       context.continousTimeSamples = m_pos;
-      context.state = ProcessContext::kContTimeValid | ProcessContext::kProjectTimeMusicValid;
+      context.state = ProcessContext::kContTimeValid | ProcessContext::kProjectTimeMusicValid | ProcessContext::kTimeSigValid;
       context.projectTimeMusic = played.ppq;
+      context.timeSigNumerator = 4;
+      context.timeSigDenominator = 4;
       if (played.tempo > 0)
       {
         context.tempo = played.tempo;
@@ -716,7 +719,7 @@ static int host_sync(Host &host)
   // in the room (120 BPM), the plug-in votes it to the host's 100
   if (!host.runUntil(nullptr, 15.0, [&]() { return atof(host.status()["bpm"].c_str()) == 100.0; }))
     return fail(host, "the room did not follow the host's tempo when the plug-in joined");
-  host.command("chat !vote bpi 4");
+  if (host.command("vote bpi 4") != "ok") return fail(host, "vote bpi 4 failed");
   if (!host.runUntil(nullptr, 15.0, [&]() { return len_is(100); })) return fail(host, "the room did not get to 4 beats");
   auto s = host.status();
   printf("SYNC join room_bpm=%s tempovotes=%s\n", s["bpm"].c_str(), s["tempovotes"].c_str());
@@ -729,6 +732,10 @@ static int host_sync(Host &host)
   host.locate(9.37);
   t.playing = true;
   if (!record("100bpm", 4)) return fail(host, "the intervals did not line up with the host's bars at 100 BPM");
+  {
+    const double ppq = t.ppq;
+    printf("NOTE next ppq=%.3f text=%s\n", ppq, host.command("nextinterval").c_str());
+  }
 
   // the host's tempo is dragged to 110: one vote, and the bars line up again
   for (double bpm : { 104.0, 106.5, 108.0, 110.0 })
@@ -856,9 +863,9 @@ int main(int argc, char **argv)
   const std::string port = host.status()["port"];
   printf("PORT %s\n", port.c_str());
 
-  // short intervals: a single vote passes on this server
-  host.command("chat !vote bpm 240");
-  host.command("chat !vote bpi 4");
+  // short intervals: a single vote passes on this server (as the editor's BPM and BPI boxes send them)
+  host.command("vote bpm 240");
+  host.command("vote bpi 4");
 
   // the second client
   JNL::open_socketlib();

@@ -184,6 +184,10 @@ smtg_add_vst3plugin(NINJAM
         source/editor.h
         source/views.cpp
         source/views.h
+        source/uitext.cpp
+        source/uitext.h
+        source/clipboard.cpp
+        source/clipboard.h
         ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.cpp
         ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.h
 )
@@ -196,6 +200,8 @@ if(SMTG_LINUX)
     target_link_options(NINJAM PRIVATE "LINKER:--exclude-libs,ALL")
     # dlopen() keeps Pango loaded (see factory.cpp)
     target_link_libraries(NINJAM PRIVATE ${CMAKE_DL_LIBS})
+    # the Copy buttons own X11's clipboard themselves (see clipboard.cpp); VSTGUI needs xcb too
+    target_link_libraries(NINJAM PRIVATE xcb)
 endif()
 
 if(SMTG_MAC)

@@ -14,8 +14,8 @@
 #include <string.h>
 #include <algorithm>
 #include <chrono>
+#include <vector>
 
-#include "vstgui/lib/cclipboard.h"
 #include "vstgui/lib/cvstguitimer.h"
 
 #if SMTG_OS_LINUX
@@ -28,7 +28,9 @@
 #include <xcb/xcb.h>
 #endif
 
+#include "clipboard.h"
 #include "plugin.h"
+#include "uitext.h"
 
 using namespace VSTGUI;
 using namespace Steinberg;
@@ -45,21 +47,29 @@ enum Tags
   kTagTransmit,
   kTagInputVolume,
   kTagMonitor,
-  kTagMetroVolume,
-  kTagMetroMute,
+  kTagClickVolume,
+  kTagClick,
   kTagChat,
-  kTagSend,
   kTagHost,
-  kTagCopy,
+  kTagCopyLan,
+  kTagCopyWan,
   kTagAccept,
   kTagDecline,
   kTagBitrate,
-  kTagFollow,
+  kTagSync,
+  kTagBpm,
+  kTagBpi,
   kTagRemote = 1000, // + row * 8 + field
 };
 enum { kRemoteVolume, kRemotePan, kRemoteMute, kRemoteSolo, kRemoteFields = 8 };
 
-static const CCoord PAD = 12, GAP = 8, ROW_H = 30, SCROLLBAR_W = 10;
+// the layout, at the default size (logical pixels)
+static const CCoord PAD = 3, GAP = 3;            // around the window, between the rows and panes
+static const CCoord HEADER_H = 24, TRANSPORT_H = 26, HOSTBAR_H = 24;
+static const CCoord CHAT_W = 250;                // the chat pane; the mixer takes the rest
+static const CCoord ITEM_H = 18;                 // value boxes and buttons in the strips
+static const CCoord ROW_H = 22, ROW_GAP = 2;     // the mixer's rows
+static const CCoord COLS_H = 12, FOOTER_H = 12;  // the mixer's column titles, its footer line
 
 static double now_seconds()
 {
@@ -72,6 +82,21 @@ static void setLabel(CTextLabel *label, const std::string &text, bool tooltip = 
   if (!label || label->getText() == text.c_str()) return;
   label->setText(text.c_str());
   if (tooltip) label->setTooltipText(text.c_str()); // the whole text, when the label cuts it off
+}
+
+static void setTooltip(CView *v, const std::string &text)
+{
+  if (!v) return;
+  // the tooltip the view has now (a C string; CView's getAttribute<T> copies sizeof(T) bytes,
+  // so it is read as bytes)
+  std::string old;
+  uint32_t size = 0, got = 0;
+  if (v->getAttributeSize(kCViewTooltipAttribute, size) && size > 0)
+  {
+    std::vector<char> buf(size);
+    if (v->getAttribute(kCViewTooltipAttribute, size, buf.data(), got)) old.assign(buf.data(), strnlen(buf.data(), got));
+  }
+  if (old != text) v->setTooltipText(text.empty() ? nullptr : text.c_str());
 }
 
 static void setLabelColor(CTextLabel *label, const CColor &c)
@@ -93,14 +118,16 @@ static void setControlValue(CControl *c, float v)
   }
 }
 
-static void setButtonTitle(CTextButton *b, const char *title)
-{
-  if (b && b->getTitle() != title) b->setTitle(title);
-}
-
 static void setVisible(CView *v, bool on)
 {
   if (v && v->isVisible() != on) v->setVisible(on);
+}
+
+static void place(CView *v, const CRect &r)
+{
+  if (!v) return;
+  v->setViewSize(r);
+  v->setMouseableArea(r);
 }
 
 #if SMTG_OS_LINUX
@@ -141,6 +168,11 @@ static std::string codecFromFourcc(const std::string &f)
   return f;
 }
 
+double NinjamEditor::zoomFor(double width, double height)
+{
+  return std::max(1.0, std::min(width / DEFAULT_WIDTH, height / DEFAULT_HEIGHT));
+}
+
 NinjamEditor::NinjamEditor(NinjamPlugin *plugin)
   : VSTGUIEditor(static_cast<Steinberg::Vst::EditController *>(plugin)), m_plugin(plugin)
 {
@@ -150,16 +182,11 @@ NinjamEditor::NinjamEditor(NinjamPlugin *plugin)
     m_width = std::min<CCoord>(MAX_WIDTH, std::max<CCoord>(MIN_WIDTH, s.editorWidth));
     m_height = std::min<CCoord>(MAX_HEIGHT, std::max<CCoord>(MIN_HEIGHT, s.editorHeight));
   }
+  m_zoom = zoomFor(m_width, m_height);
   ViewRect r(0, 0, (int32)m_width, (int32)m_height);
   setRect(r);
   setIdleRate(33);
-
-  const UTF8String face = kNormalFont ? kNormalFont->getName() : UTF8String("Arial");
-  m_font = makeOwned<CFontDesc>(face, 13);
-  m_bold = makeOwned<CFontDesc>(face, 13, kBoldFace);
-  m_small = makeOwned<CFontDesc>(face, 11);
-  m_smallBold = makeOwned<CFontDesc>(face, 11, kBoldFace);
-  m_title = makeOwned<CFontDesc>(face, 20, kBoldFace);
+  m_fonts.make();
 }
 
 NinjamEditor::~NinjamEditor()
@@ -189,11 +216,12 @@ tresult PLUGIN_API NinjamEditor::isPlatformTypeSupported(FIDString type)
 bool PLUGIN_API NinjamEditor::open(void *parent, const PlatformType &platformType)
 {
   if (frame) return false;
-  frame = new CFrame(CRect(0, 0, m_width, m_height), this);
-  frame->setBackgroundColor(Colors::background());
+  m_zoom = zoomFor(m_width, m_height);
+  frame = new CFrame(CRect(0, 0, m_width / m_zoom, m_height / m_zoom), this);
+  frame->setBackgroundColor(Colors::window());
   frame->enableTooltips(true);
   buildViews();
-  if (m_scale != 1.0) frame->setZoom(m_scale);
+  if (m_scale * m_zoom != 1.0) frame->setZoom(m_scale * m_zoom);
 
   IPlatformFrameConfig *config = nullptr;
 #if SMTG_OS_LINUX
@@ -225,11 +253,11 @@ bool PLUGIN_API NinjamEditor::open(void *parent, const PlatformType &platformTyp
 #if SMTG_OS_LINUX
   g_openX11Frames ++;
 #endif
+  styleMenus(frame, m_fonts.menu);
   layout();
   syncSettings();
   m_usersRevision = m_settingsRevision = ~0u;
   m_chatRevision = ~0ull;
-  m_bitrateState = -1;
   update();
   return true;
 }
@@ -263,6 +291,7 @@ void PLUGIN_API NinjamEditor::close()
   m_accept = m_decline = nullptr;
   m_licenseOpen = false;
   m_licenseShown.clear();
+  m_copied = nullptr;
 }
 
 CMessageResult NinjamEditor::notify(CBaseObject *sender, const char *message)
@@ -307,11 +336,23 @@ tresult PLUGIN_API NinjamEditor::setContentScaleFactor(ScaleFactor factor)
   setRect(r);
   if (frame)
   {
-    frame->setZoom(m_scale);
+    frame->setZoom(m_scale * m_zoom);
     if (plugFrame) plugFrame->resizeView(this, &r);
   }
   return kResultTrue;
 #endif
+}
+
+// The frame's views are laid out in logical pixels (720 x 330 at the default size); the
+// frame's transform scales them to the window: the host's content scale times m_zoom.
+void NinjamEditor::applyZoom()
+{
+  if (!frame) return;
+  const double t = m_scale * m_zoom;
+  // setZoom() keeps the frame's logical size and changes its size in pixels; here the pixels
+  // are the window's, so the transform changes first and setZoom() keeps the size
+  frame->setTransform(CGraphicsTransform().scale(t, t));
+  frame->setZoom(t);
 }
 
 void NinjamEditor::setLogicalSize(CCoord width, CCoord height)
@@ -319,6 +360,12 @@ void NinjamEditor::setLogicalSize(CCoord width, CCoord height)
   m_width = std::max<CCoord>(1, width);
   m_height = std::max<CCoord>(1, height);
   engine().setEditorSize((int)lround(m_width), (int)lround(m_height));
+  const double zoom = zoomFor(m_width, m_height);
+  if (fabs(zoom - m_zoom) > 1e-6)
+  {
+    m_zoom = zoom;
+    applyZoom();
+  }
   if (m_root) layout();
 }
 
@@ -326,296 +373,389 @@ void NinjamEditor::setLogicalSize(CCoord width, CCoord height)
 // views
 // ---------------------------------------------------------------------------
 
+static CTextLabel *makeValueLabel(const CRect &size, CFontRef font)
+{
+  // text in a value box that can't be edited ("3 / 16")
+  CTextLabel *l = makeLabel(size, "", font, Colors::value(), kCenterText);
+  l->setBackColor(Colors::box());
+  l->setFrameColor(Colors::boxLine());
+  l->setStyle(CParamDisplay::kRoundRectStyle);
+  l->setRoundRectRadius(2);
+  return l;
+}
+
 void NinjamEditor::buildViews()
 {
   const CRect z(0, 0, 10, 10);
-  m_root = new CViewContainer(CRect(0, 0, m_width, m_height));
-  m_root->setBackgroundColor(Colors::background());
+  const Fonts &f = m_fonts;
+  m_root = new CViewContainer(CRect(0, 0, m_width / m_zoom, m_height / m_zoom));
+  m_root->setBackgroundColor(Colors::window());
   frame->addView(m_root);
 
-  m_titleLabel = makeLabel(z, "NINJAM", m_title, Colors::text());
-  m_root->addView(m_titleLabel);
-  m_nameLabel = makeLabel(z, "Name", m_font, Colors::dim(), kRightText);
-  m_root->addView(m_nameLabel);
-  m_nameEdit = makeEdit(z, this, kTagName, "", m_font, "Your name");
-  m_root->addView(m_nameEdit);
-  m_serverLabel = makeLabel(z, "Server", m_font, Colors::dim(), kRightText);
-  m_root->addView(m_serverLabel);
-  m_serverEdit = makeEdit(z, this, kTagServer, "", m_font, "host:port");
-  m_root->addView(m_serverEdit);
-  m_connect = makeButton(z, this, kTagConnect, "Connect", false, m_bold);
-  m_root->addView(m_connect);
+  // header: NINJAM  Name [..]  Server [..]  Connect          (o) Connected · Opus
+  m_header = new StripContainer(z, Colors::strip());
+  m_root->addView(m_header);
+  m_title = makeLabel(z, "NINJAM", f.bold, CColor(0xe8, 0xe8, 0xe8));
+  m_header->addView(m_title);
+  m_nameLabel = makeLabel(z, "Name", f.label, Colors::label());
+  m_header->addView(m_nameLabel);
+  m_nameEdit = makeEdit(z, this, kTagName, f.value, "Your name");
+  m_header->addView(m_nameEdit);
+  m_serverLabel = makeLabel(z, "Server", f.label, Colors::label());
+  m_header->addView(m_serverLabel);
+  m_serverEdit = makeEdit(z, this, kTagServer, f.value, "host:port");
+  m_header->addView(m_serverEdit);
+  m_connect = new FlatButton(z, this, kTagConnect, "Connect", FlatButton::Push, f.button);
+  m_header->addView(m_connect);
+  m_connLed = new Led(z);
+  m_header->addView(m_connLed);
+  m_connText = makeLabel(z, "", f.value, Colors::status(), kRightText);
+  m_header->addView(m_connText);
 
-  m_status = makeLabel(z, "Not connected", m_font, Colors::dim());
-  m_root->addView(m_status);
-  m_room = makeLabel(z, "", m_font, Colors::text(), kRightText);
-  m_root->addView(m_room);
-  m_interval = new IntervalView(z, m_small);
-  m_root->addView(m_interval);
-
-  // mixer: our channel, the metronome, the other players
-  m_mixer = new PanelView(z, Colors::panel(), Colors::panelLine(), 6);
-  m_root->addView(m_mixer);
-  m_localHeader = makeLabel(z, "YOUR CHANNEL", m_smallBold, Colors::dim());
-  m_mixer->addView(m_localHeader);
-  m_codecLabel = makeLabel(z, "", m_small, Colors::dim(), kRightText);
-  m_mixer->addView(m_codecLabel);
-  m_transmit = makeButton(z, this, kTagTransmit, "Transmit", true, m_font);
-  m_transmit->setTooltipText("Send your input to the other players");
-  m_mixer->addView(m_transmit);
-  m_localMeter = new MeterView(z);
-  m_mixer->addView(m_localMeter);
-  m_inputVolumeLabel = makeLabel(z, "Volume", m_small, Colors::dim(), kRightText);
-  m_mixer->addView(m_inputVolumeLabel);
-  m_inputVolume = makeSlider(z, this, kTagInputVolume, false);
-  m_inputVolume->setTooltipText("The volume of what you send (double-click for 0 dB)");
-  m_mixer->addView(m_inputVolume);
-  m_monitor = makeButton(z, this, kTagMonitor, "Monitor", true, m_font);
-  m_monitor->setTooltipText("Hear your input in the plug-in's output");
-  m_mixer->addView(m_monitor);
-  m_bitrateLabel = makeLabel(z, "Opus kbps", m_small, Colors::dim(), kRightText);
-  m_mixer->addView(m_bitrateLabel);
-  m_bitrate = new CSegmentButton(z, this, kTagBitrate);
-  m_bitrate->setSelectionMode(CSegmentButton::SelectionMode::kSingle);
-  for (int k : Settings::OPUS_KBPS)
+  // transport: BPM [120.00]  BPI [16]  | Sync (o) Live 120.00 | Click (knob) | beats  [3 / 16]
+  m_transport = new StripContainer(z, Colors::strip());
+  m_root->addView(m_transport);
+  m_bpmLabel = makeLabel(z, "BPM", f.label, Colors::label());
+  m_transport->addView(m_bpmLabel);
+  m_bpm = new DragNumberBox(z, this, kTagBpm, f.value);
+  m_bpm->dragMap = [](int start, double dy, bool fine) { return uitext::dragBpm(start, dy, fine); };
+  m_bpm->format = [](int v) { return uitext::bpmBoxText(v); };
+  m_bpm->setTooltipText("The room's tempo: drag up or down, or double-click and type, to vote for another");
+  m_transport->addView(m_bpm);
+  m_bpiLabel = makeLabel(z, "BPI", f.label, Colors::label());
+  m_transport->addView(m_bpiLabel);
+  m_bpi = new MenuBox(z, this, kTagBpi, f.value);
+  for (int b : uitext::BPI_CHOICES) m_bpi->addEntry(std::to_string(b).c_str());
+  m_bpi->setTooltipText("Beats per interval: pick one to vote for it");
+  m_transport->addView(m_bpi);
+  for (auto &sep : m_sep)
   {
-    CSegmentButton::Segment seg;
-    seg.name = std::to_string(k).c_str();
-    m_bitrate->addSegment(std::move(seg));
+    sep = new Strip(z, Colors::separator());
+    m_transport->addView(sep);
   }
-  m_bitrate->setFont(m_small);
-  m_bitrate->setRoundRadius(4);
-  m_bitrate->setFrameWidth(1);
-  m_bitrate->setFrameColor(Colors::panelLine());
-  m_bitrate->setTextColor(Colors::text());
-  m_bitrate->setTextColorHighlighted(CColor(255, 255, 255));
-  m_bitrate->setGradient(VSTGUI::owned(CGradient::create(0, 1, CColor(60, 67, 78), CColor(48, 54, 63))));
-  m_bitrate->setGradientHighlighted(VSTGUI::owned(CGradient::create(0, 1, CColor(52, 150, 106), CColor(40, 122, 86))));
-  m_bitrate->setTooltipText("The bitrate you send in rooms that play Opus. A change applies from the next interval. "
-                            "FLAC is lossless and doesn't use it.");
-  m_mixer->addView(m_bitrate);
-  m_bitrateNote = makeLabel(z, "", m_small, Colors::dim());
-  m_mixer->addView(m_bitrateNote);
+  m_sync = new FlatButton(z, this, kTagSync, "Sync", FlatButton::Toggle, f.button);
+  m_transport->addView(m_sync);
+  m_syncLed = new Led(z);
+  m_transport->addView(m_syncLed);
+  m_syncText = makeLabel(z, "", f.value, Colors::status());
+  m_transport->addView(m_syncText);
+  m_click = new FlatButton(z, this, kTagClick, "Click", FlatButton::Toggle, f.button);
+  m_click->setTooltipText("The metronome: the first beat of each interval higher");
+  m_transport->addView(m_click);
+  m_clickVolume = new ArcKnob(z, this, kTagClickVolume, false);
+  m_clickVolume->setDefaultValue(gainToSlider(0.5f));
+  m_clickVolume->setTooltipText("The click's volume (double-click for the default)");
+  m_transport->addView(m_clickVolume);
+  m_beats = new BeatCells(z);
+  m_transport->addView(m_beats);
+  m_beatBox = makeValueLabel(z, f.value);
+  m_transport->addView(m_beatBox);
 
-  m_metroHeader = makeLabel(z, "METRONOME AND TEMPO", m_smallBold, Colors::dim());
-  m_mixer->addView(m_metroHeader);
-  m_metroMute = makeButton(z, this, kTagMetroMute, "Mute", true, m_font);
-  m_mixer->addView(m_metroMute);
-  m_metroVolumeLabel = makeLabel(z, "Volume", m_small, Colors::dim(), kRightText);
-  m_mixer->addView(m_metroVolumeLabel);
-  m_metroVolume = makeSlider(z, this, kTagMetroVolume, false);
-  m_metroVolume->setDefaultValue(gainToSlider(0.5f));
-  m_mixer->addView(m_metroVolume);
-  m_follow = makeButton(z, this, kTagFollow, "Follow Ableton's tempo", true, m_font);
-  m_follow->setTooltipText("When you change Ableton's tempo, vote the room to it; and while Ableton plays, start the "
-                           "intervals on its bars (a multiple of BPI beats from bar 1)");
-  m_mixer->addView(m_follow);
-  m_followStatus = makeLabel(z, "", m_small, Colors::dim());
-  m_mixer->addView(m_followStatus);
-  m_syncNote = makeLabel(z, "", m_small, Colors::warn());
-  m_mixer->addView(m_syncNote);
-
-  m_playersHeader = makeLabel(z, "PLAYERS", m_smallBold, Colors::dim());
-  m_mixer->addView(m_playersHeader);
-  m_colName = makeLabel(z, "Name", m_small, Colors::dim());
-  m_mixer->addView(m_colName);
-  m_colVolume = makeLabel(z, "Volume", m_small, Colors::dim(), kCenterText);
+  // mixer: the column titles, your channel, the others, a line at the bottom
+  m_mixer = new StripContainer(z, Colors::pane());
+  m_root->addView(m_mixer);
+  m_colChannel = makeLabel(z, "CHANNEL", f.small, Colors::label());
+  m_mixer->addView(m_colChannel);
+  m_colVolume = makeLabel(z, "VOLUME", f.small, Colors::label());
   m_mixer->addView(m_colVolume);
-  m_colPan = makeLabel(z, "Pan", m_small, Colors::dim(), kCenterText);
+  m_colPan = makeLabel(z, "PAN", f.small, Colors::label(), kCenterText);
   m_mixer->addView(m_colPan);
-  m_colLevel = makeLabel(z, "M    S        Level", m_small, Colors::dim(), kRightText);
+  m_colLevel = makeLabel(z, "LEVEL", f.small, Colors::label());
   m_mixer->addView(m_colLevel);
-  m_players = new CScrollView(z, CRect(0, 0, 10, 10), CScrollView::kVerticalScrollbar | CScrollView::kDontDrawFrame | CScrollView::kAutoHideScrollbars);
-  m_players->setBackgroundColor(Colors::field());
-  m_players->setScrollbarWidth(SCROLLBAR_W);
+
+  m_myRow = new StripContainer(z, Colors::myRow(), 1);
+  m_mixer->addView(m_myRow);
+  m_tx = new FlatButton(z, this, kTagTransmit, "TX", FlatButton::Toggle, f.tiny);
+  m_tx->setOnColors(Colors::orange(), Colors::orangeLine());
+  m_tx->setTooltipText("Transmit: send your input to the room");
+  m_myRow->addView(m_tx);
+  m_in = new FlatButton(z, this, kTagMonitor, "IN", FlatButton::Toggle, f.tiny);
+  m_in->setTooltipText("Monitor: hear your input in the plug-in's output");
+  m_myRow->addView(m_in);
+  m_myName = makeLabel(z, "", f.value, Colors::value());
+  m_myRow->addView(m_myName);
+  m_inputVolume = new FaderBox(z, this, kTagInputVolume, f.small);
+  m_inputVolume->format = [](float v) { return uitext::dbText(sliderToGain(v)); };
+  m_inputVolume->setDefaultValue(gainToSlider(1.0f));
+  m_inputVolume->setTooltipText("The volume of what you send (double-click for 0 dB)");
+  m_myRow->addView(m_inputVolume);
+  m_bitrate = new MenuBox(z, this, kTagBitrate, f.small);
+  for (int k : Settings::OPUS_KBPS) m_bitrate->addEntry(uitext::kbpsText(k).c_str());
+  m_myRow->addView(m_bitrate);
+  m_myMeter = new SegmentMeter(z);
+  m_myRow->addView(m_myMeter);
+
+  m_players = new CScrollView(z, CRect(0, 0, 10, 10),
+                              CScrollView::kVerticalScrollbar | CScrollView::kDontDrawFrame | CScrollView::kAutoHideScrollbars |
+                              CScrollView::kOverlayScrollbars);
+  m_players->setBackgroundColor(kTransparentCColor);
+  m_players->setScrollbarWidth(5);
   if (CScrollbar *sb = m_players->getVerticalScrollbar())
   {
-    sb->setScrollerColor(Colors::panelLine());
-    sb->setBackgroundColor(Colors::field());
-    sb->setFrameColor(Colors::field());
+    sb->setScrollerColor(Colors::separator());
+    sb->setBackgroundColor(kTransparentCColor);
+    sb->setFrameColor(kTransparentCColor);
   }
   m_mixer->addView(m_players);
-  m_noPlayers = makeLabel(z, "", m_font, Colors::dim(), kCenterText);
+  m_noPlayers = makeLabel(z, "", f.label, Colors::label(), kCenterText);
   m_mixer->addView(m_noPlayers);
+  m_footer = makeLabel(z, "", f.label, Colors::label());
+  m_mixer->addView(m_footer);
 
   // chat
-  m_chatPanel = new PanelView(z, Colors::panel(), Colors::panelLine(), 6);
-  m_root->addView(m_chatPanel);
-  m_chatHeader = makeLabel(z, "CHAT", m_smallBold, Colors::dim());
-  m_chatPanel->addView(m_chatHeader);
-  m_chat = new TextLinesView(z, m_font, m_bold);
-  m_chatPanel->addView(m_chat);
-  m_chatEdit = makeEdit(z, this, kTagChat, "", m_font, "Chat, or !vote bpm 120, !codec flac, /me ...");
-  m_chatPanel->addView(m_chatEdit);
-  m_send = makeButton(z, this, kTagSend, "Send", false, m_font);
-  m_chatPanel->addView(m_send);
+  m_chatPane = new StripContainer(z, Colors::pane());
+  m_root->addView(m_chatPane);
+  m_chat = new TextLinesView(z, f.chat, f.chatBold);
+  m_chatPane->addView(m_chat);
+  m_chatEdit = makeEdit(z, this, kTagChat, f.chat, "Chat, !vote bpm 120, /me \xe2\x80\xa6");
+  m_chatPane->addView(m_chatEdit);
 
-  // the built-in server
-  m_hostBar = new PanelView(z, Colors::panel(), Colors::panelLine(), 6);
+  // host bar: Host  3 in room  LAN [..][Copy]  WAN [..][Copy]          (o) Port open
+  m_hostBar = new StripContainer(z, Colors::strip());
   m_root->addView(m_hostBar);
-  m_host = makeButton(z, this, kTagHost, "Host a server", true, m_bold);
-  m_host->setTooltipText("Start a NINJAM server in this plug-in and join it");
+  m_host = new FlatButton(z, this, kTagHost, "Host", FlatButton::Toggle, f.button);
+  m_host->setTooltipText("Host a NINJAM server in this plug-in, and join it");
   m_hostBar->addView(m_host);
-  m_hostText = makeLabel(z, "", m_font, Colors::dim());
-  m_hostBar->addView(m_hostText);
-  m_copy = makeButton(z, this, kTagCopy, "Copy address", false, m_font);
-  m_copy->setVisible(false);
-  m_hostBar->addView(m_copy);
+  m_roomCount = makeLabel(z, "", f.value, Colors::status());
+  m_hostBar->addView(m_roomCount);
+  m_hostHint = makeLabel(z, "", f.label, Colors::label());
+  m_hostBar->addView(m_hostHint);
+  m_lan = new AddressBox(z, this, kTagCopyLan, f, "LAN");
+  m_lan->setTooltipText("Where players in your local network join");
+  m_hostBar->addView(m_lan);
+  m_wan = new AddressBox(z, this, kTagCopyWan, f, "WAN");
+  m_wan->setTooltipText("Where players on the internet join, once your router forwards the port");
+  m_hostBar->addView(m_wan);
+  m_portLed = new Led(z);
+  m_hostBar->addView(m_portLed);
+  m_portText = makeLabel(z, "", f.value, Colors::status(), kRightText);
+  m_hostBar->addView(m_portText);
+}
+
+// the mixer's columns in a row of width w: CHANNEL, VOLUME (the rest), PAN, M, S, LEVEL
+NinjamEditor::Columns NinjamEditor::columns(CCoord w)
+{
+  Columns c;
+  const CCoord g = 5;
+  c.name0 = 4;
+  c.name1 = 100;
+  c.level1 = w - 4;
+  c.level0 = c.level1 - 54;
+  c.solo1 = c.level0 - g;
+  c.solo0 = c.solo1 - 18;
+  c.mute1 = c.solo0 - g;
+  c.mute0 = c.mute1 - 18;
+  c.pan1 = c.mute0 - g;
+  c.pan0 = c.pan1 - 26;
+  c.vol1 = c.pan0 - g;
+  c.vol0 = c.name1 + g;
+  if (c.vol1 - c.vol0 < 50)
+  {
+    // a very narrow mixer: the names give way
+    c.vol0 = c.vol1 - 50;
+    c.name1 = std::max<CCoord>(c.name0 + 20, c.vol0 - g);
+  }
+  return c;
 }
 
 void NinjamEditor::layout()
 {
   if (!m_root) return;
-  // below the minimum size the editor is cut off rather than squeezed
-  const CCoord w = std::max<CCoord>(m_width, MIN_WIDTH), h = std::max<CCoord>(m_height, MIN_HEIGHT);
-  m_root->setViewSize(CRect(0, 0, m_width, m_height));
-  m_root->setMouseableArea(CRect(0, 0, m_width, m_height));
+  const CCoord W = std::max<CCoord>(m_width / m_zoom, MIN_WIDTH), H = std::max<CCoord>(m_height / m_zoom, MIN_HEIGHT);
+  place(m_root, CRect(0, 0, m_width / m_zoom, m_height / m_zoom));
 
-  auto place = [](CView *v, const CRect &r) {
-    v->setViewSize(r);
-    v->setMouseableArea(r);
-  };
+  const CCoord transportY = PAD + HEADER_H + GAP, bodyY = transportY + TRANSPORT_H + GAP;
+  const CCoord hostY = H - PAD - HOSTBAR_H, bodyBottom = hostY - GAP;
+  place(m_header, CRect(PAD, PAD, W - PAD, PAD + HEADER_H));
+  place(m_transport, CRect(PAD, transportY, W - PAD, transportY + TRANSPORT_H));
+  place(m_mixer, CRect(PAD, bodyY, W - PAD - CHAT_W - GAP, bodyBottom));
+  place(m_chatPane, CRect(W - PAD - CHAT_W, bodyY, W - PAD, bodyBottom));
+  place(m_hostBar, CRect(PAD, hostY, W - PAD, hostY + HOSTBAR_H));
 
-  // top bar
-  CCoord y = PAD;
-  const CCoord rowH = 28;
-  place(m_titleLabel, CRect(PAD, y - 2, PAD + 100, y + rowH));
-  place(m_nameLabel, CRect(PAD + 100, y, PAD + 146, y + rowH));
-  place(m_nameEdit, CRect(PAD + 152, y, PAD + 292, y + rowH));
-  place(m_serverLabel, CRect(PAD + 298, y, PAD + 348, y + rowH));
-  const CCoord connectW = 112;
-  const CRect connect(w - PAD - connectW, y, w - PAD, y + rowH);
-  place(m_connect, connect);
-  place(m_serverEdit, CRect(PAD + 354, y, connect.left - GAP, y + rowH));
-
-  y += rowH + 8;
-  place(m_status, CRect(PAD, y, w - PAD - 330, y + 20));
-  place(m_room, CRect(w - PAD - 320, y, w - PAD, y + 20));
-  y += 26;
-  place(m_interval, CRect(PAD, y, w - PAD, y + 26));
-  y += 26 + 10;
-
-  // host bar at the bottom, mixer and chat between
-  const CCoord hostH = 38;
-  const CRect hostBar(PAD, h - PAD - hostH, w - PAD, h - PAD);
-  const CCoord mainBottom = hostBar.top - GAP;
-  const CCoord mixerW = std::max<CCoord>(450, floor((w - 2 * PAD - GAP) * 0.54));
-  place(m_mixer, CRect(PAD, y, PAD + mixerW, mainBottom));
-  place(m_chatPanel, CRect(PAD + mixerW + GAP, y, w - PAD, mainBottom));
-  place(m_hostBar, hostBar);
-
-  // mixer
+  layoutHeader(W - 2 * PAD);
+  layoutTransport(W - 2 * PAD);
+  layoutMixer(m_mixer->getViewSize());
   {
-    const CCoord mw = mixerW, mh = mainBottom - y, ip = 10;
-    place(m_localHeader, CRect(ip, 8, mw / 2, 24));
-    place(m_codecLabel, CRect(mw / 2, 8, mw - ip, 24));
-    CCoord ry = 28;
-    const CRect vol(mw - ip - 150, ry + 4, mw - ip, ry + 22);
-    const CRect volLabel(vol.left - 58, ry, vol.left - 6, ry + 26);
-    place(m_transmit, CRect(ip, ry, ip + 96, ry + 26));
-    place(m_monitor, CRect(ip + 96 + GAP, ry, ip + 2 * 96 + GAP, ry + 26));
-    place(m_inputVolumeLabel, volLabel);
-    place(m_inputVolume, vol);
-    ry += 32;
-    const CCoord segW = 6 * 42;
-    place(m_bitrateLabel, CRect(ip, ry, ip + 70, ry + 22));
-    place(m_bitrate, CRect(ip + 76, ry, ip + 76 + segW, ry + 22));
-    place(m_bitrateNote, CRect(ip + 76 + segW + GAP, ry, mw - ip, ry + 22));
-    ry += 30;
-    place(m_localMeter, CRect(ip, ry, mw - ip, ry + 12));
-
-    ry += 22;
-    place(m_metroHeader, CRect(ip, ry, mw - ip, ry + 16));
-    ry += 20;
-    place(m_metroMute, CRect(ip, ry, ip + 96, ry + 26));
-    place(m_metroVolumeLabel, CRect(volLabel.left, ry, volLabel.right, ry + 26));
-    place(m_metroVolume, CRect(vol.left, ry + 4, vol.right, ry + 22));
-    ry += 32;
-    place(m_follow, CRect(ip, ry, ip + 180, ry + 26));
-    place(m_followStatus, CRect(ip + 180 + GAP, ry, mw - ip, ry + 26));
-    ry += 28;
-    place(m_syncNote, CRect(ip, ry, mw - ip, ry + 16));
-
-    ry += 24;
-    place(m_playersHeader, CRect(ip, ry, mw - ip, ry + 16));
-    ry += 18;
-    const CRect players(ip, ry + 16, mw - ip, std::max(ry + 16 + ROW_H, mh - ip));
-    // column titles line up with the rows (see layoutRow)
-    const CCoord rw = players.getWidth() - SCROLLBAR_W;
-    const CCoord meterR = rw - 6, soloR = meterR - 64 - 8, muteR = soloR - 26 - 4, panR = muteR - 26 - 8, volR = panR - 70 - 8;
-    place(m_colName, CRect(players.left + 8, ry, players.left + volR - 120 - 8, ry + 16));
-    place(m_colVolume, CRect(players.left + volR - 120, ry, players.left + volR, ry + 16));
-    place(m_colPan, CRect(players.left + panR - 70, ry, players.left + panR, ry + 16));
-    place(m_colLevel, CRect(players.left + muteR - 30, ry, players.left + meterR, ry + 16));
-    place(m_players, players);
-    place(m_noPlayers, CRect(players.left + 10, players.top + 20, players.right - 10, players.top + 50));
-
-    CCoord rowY = 0;
-    for (Row &row : m_rows)
-    {
-      place(row.container, CRect(0, rowY, rw, rowY + ROW_H));
-      layoutRow(row, rw);
-      rowY += ROW_H;
-    }
-    m_players->setContainerSize(CRect(0, 0, rw, std::max(rowY, players.getHeight())), true);
+    const CCoord cw = CHAT_W, ch = bodyBottom - bodyY;
+    place(m_chat, CRect(PAD, PAD, cw - PAD, ch - PAD - ITEM_H - 2));
+    place(m_chatEdit, CRect(PAD, ch - PAD - ITEM_H, cw - PAD, ch - PAD));
   }
-
-  // chat
-  {
-    const CRect cp = m_chatPanel->getViewSize();
-    const CCoord cw = cp.getWidth(), ch = cp.getHeight(), ip = 10;
-    place(m_chatHeader, CRect(ip, 8, cw - ip, 24));
-    place(m_chatEdit, CRect(ip, ch - ip - 28, cw - ip - 72 - GAP, ch - ip));
-    place(m_send, CRect(cw - ip - 72, ch - ip - 28, cw - ip, ch - ip));
-    place(m_chat, CRect(ip, 28, cw - ip, ch - ip - 28 - GAP));
-  }
-
-  // host bar
-  {
-    const CCoord hw = hostBar.getWidth();
-    place(m_host, CRect(5, 5, 155, hostH - 5));
-    const CRect copy(hw - 5 - 116, 5, hw - 5, hostH - 5);
-    place(m_copy, copy);
-    place(m_hostText, CRect(165, 0, (m_copy->isVisible() ? copy.left : hw) - GAP, hostH));
-  }
-
+  layoutHostBar(W - 2 * PAD, hostY);
   layoutLicense();
   m_root->invalid();
 }
 
+void NinjamEditor::layoutHeader(CCoord w)
+{
+  const CCoord y0 = (HEADER_H - ITEM_H) / 2, y1 = y0 + ITEM_H;
+  CCoord x = 4;
+  auto label = [&](CTextLabel *l, CCoord padLeft) {
+    const CCoord tw = textWidth(l->getFont(), l->getText().getString());
+    place(l, CRect(x + padLeft, 0, x + padLeft + tw + 1, HEADER_H));
+    x += padLeft + tw + 1 + 4;
+  };
+  label(m_title, 4);
+  x += 4;
+  label(m_nameLabel, 4);
+  place(m_nameEdit, CRect(x, y0, x + 70, y1));
+  x += 70 + 4;
+  label(m_serverLabel, 4);
+  const CCoord connectW = std::max(textWidth(m_fonts.button, "Disconnect"), textWidth(m_fonts.button, "Connect")) + 12;
+  // the connection's state on the right: as much of it as there is room for
+  const CCoord stateW = std::min<CCoord>(200, textWidth(m_fonts.value, m_connText->getText().getString()) + 2);
+  const CCoord serverW = std::max<CCoord>(90, std::min<CCoord>(150, w - 4 - (x + 4 + connectW + 12 + 11 + std::max<CCoord>(60, stateW))));
+  place(m_serverEdit, CRect(x, y0, x + serverW, y1));
+  x += serverW + 4;
+  place(m_connect, CRect(x, y0, x + connectW, y1));
+  x += connectW + 12;
+  const CCoord textLeft = std::max(x + 11, w - 4 - stateW);
+  place(m_connText, CRect(textLeft, 0, w - 4, HEADER_H));
+  place(m_connLed, CRect(textLeft - 11, 0, textLeft - 2, HEADER_H));
+}
+
+void NinjamEditor::layoutTransport(CCoord w)
+{
+  const CCoord y0 = (TRANSPORT_H - ITEM_H) / 2, y1 = y0 + ITEM_H;
+  CCoord x = 4;
+  auto label = [&](CTextLabel *l) {
+    const CCoord tw = textWidth(l->getFont(), l->getText().getString());
+    place(l, CRect(x + 4, 0, x + 4 + tw + 1, TRANSPORT_H));
+    x += 4 + tw + 1 + 4;
+  };
+  auto sep = [&](Strip *s) {
+    place(s, CRect(x + 3, (TRANSPORT_H - 16) / 2, x + 4, (TRANSPORT_H - 16) / 2 + 16));
+    x += 7 + 4;
+  };
+  label(m_bpmLabel);
+  const CCoord bpmW = textWidth(m_fonts.value, "888.88") + 10;
+  place(m_bpm, CRect(x, y0, x + bpmW, y1));
+  x += bpmW + 4;
+  label(m_bpiLabel);
+  const CCoord bpiW = textWidth(m_fonts.value, "64") + 22;
+  place(m_bpi, CRect(x, y0, x + bpiW, y1));
+  x += bpiW + 4;
+  sep(m_sep[0]);
+  const CCoord syncW = m_sync->preferredWidth();
+  place(m_sync, CRect(x, y0, x + syncW, y1));
+  x += syncW + 4;
+  place(m_syncLed, CRect(x, 0, x + 7, TRANSPORT_H));
+  x += 7 + 4;
+  // room for the host's name and a tempo, so the row doesn't move when they change
+  const CCoord syncTextW = textWidth(m_fonts.value, "Host 888.88") + 2;
+  place(m_syncText, CRect(x, 0, x + syncTextW, TRANSPORT_H));
+  x += syncTextW + 4;
+  sep(m_sep[1]);
+  const CCoord clickW = m_click->preferredWidth();
+  place(m_click, CRect(x, y0, x + clickW, y1));
+  x += clickW + 4;
+  place(m_clickVolume, CRect(x, (TRANSPORT_H - 18) / 2, x + 18, (TRANSPORT_H - 18) / 2 + 18));
+  x += 18 + 4;
+  sep(m_sep[2]);
+  const CCoord beatBoxW = textWidth(m_fonts.value, "88 / 88") + 10;
+  place(m_beatBox, CRect(w - 4 - beatBoxW, y0, w - 4, y1));
+  place(m_beats, CRect(x, 0, std::max(x + 16, w - 4 - beatBoxW - 4), TRANSPORT_H));
+}
+
 void NinjamEditor::layoutRow(Row &row, CCoord rw)
 {
-  const CCoord meterR = rw - 6, soloR = meterR - 64 - 8, muteR = soloR - 26 - 4, panR = muteR - 26 - 8, volR = panR - 70 - 8;
-  auto place = [](CView *v, const CRect &r) {
-    v->setViewSize(r);
-    v->setMouseableArea(r);
-  };
-  place(row.name, CRect(8, 0, volR - 120 - 8, ROW_H));
-  place(row.volume, CRect(volR - 120, 7, volR, ROW_H - 7));
-  place(row.pan, CRect(panR - 70, 7, panR, ROW_H - 7));
-  place(row.mute, CRect(muteR - 26, 4, muteR, ROW_H - 4));
-  place(row.solo, CRect(soloR - 26, 4, soloR, ROW_H - 4));
-  place(row.meter, CRect(meterR - 64, 9, meterR, ROW_H - 9));
+  const Columns c = columns(rw);
+  place(row.name, CRect(c.name0, 0, c.name1, ROW_H));
+  place(row.volume, CRect(c.vol0, 4, c.vol1, ROW_H - 4));
+  const CCoord pc = floor((c.pan0 + c.pan1) / 2);
+  place(row.pan, CRect(pc - 9, 2, pc + 9, 20));
+  place(row.mute, CRect(c.mute0, 2, c.mute1, 20));
+  place(row.solo, CRect(c.solo0, 2, c.solo1, 20));
+  place(row.meter, CRect(c.level0, 0, c.level1, ROW_H));
+}
+
+void NinjamEditor::layoutMixer(const CRect &pane)
+{
+  const CCoord pw = pane.getWidth(), ph = pane.getHeight();
+  const CCoord rw = pw - 2 * PAD; // a row's width
+  const Columns c = columns(rw);
+  const CCoord x0 = PAD;
+  place(m_colChannel, CRect(x0 + c.name0, PAD, x0 + c.name1, PAD + COLS_H));
+  place(m_colVolume, CRect(x0 + c.vol0, PAD, x0 + c.vol1, PAD + COLS_H));
+  place(m_colPan, CRect(x0 + c.pan0 - 4, PAD, x0 + c.pan1 + 4, PAD + COLS_H));
+  place(m_colLevel, CRect(x0 + c.level0, PAD, x0 + c.level1, PAD + COLS_H));
+
+  // your channel: TX IN name | volume | (no pan) | bitrate | meter
+  CCoord y = PAD + COLS_H + 2;
+  place(m_myRow, CRect(x0, y, x0 + rw, y + ROW_H));
+  {
+    CCoord x = c.name0;
+    const CCoord txW = textWidth(m_fonts.tiny, "TX") + 6, inW = textWidth(m_fonts.tiny, "IN") + 6;
+    place(m_tx, CRect(x, 4, x + txW, ROW_H - 4));
+    x += txW + 2;
+    place(m_in, CRect(x, 4, x + inW, ROW_H - 4));
+    x += inW + 4;
+    place(m_myName, CRect(x, 0, std::max(x + 10, c.name1), ROW_H));
+    place(m_inputVolume, CRect(c.vol0, 4, c.vol1, ROW_H - 4));
+    place(m_bitrate, CRect(c.mute0, 2, c.solo1, ROW_H - 2));
+    place(m_myMeter, CRect(c.level0, 0, c.level1, ROW_H));
+  }
+  y += ROW_H + ROW_GAP;
+
+  // the others, then the footer
+  const CCoord footerTop = ph - PAD - FOOTER_H;
+  const CRect players(x0, y, x0 + rw, std::max(y + ROW_H, footerTop - 2));
+  place(m_players, players);
+  place(m_noPlayers, CRect(players.left + 6, players.top + 4, players.right - 6, players.top + 4 + ROW_H));
+  place(m_footer, CRect(x0 + 4, footerTop, x0 + rw - 4, footerTop + FOOTER_H));
+
+  CCoord rowY = 0;
+  for (Row &row : m_rows)
+  {
+    place(row.container, CRect(0, rowY, rw, rowY + ROW_H));
+    layoutRow(row, rw);
+    rowY += ROW_H + ROW_GAP;
+  }
+  m_players->setContainerSize(CRect(0, 0, rw, std::max(rowY, players.getHeight())), true);
+}
+
+void NinjamEditor::layoutHostBar(CCoord w, CCoord)
+{
+  const CCoord y0 = (HOSTBAR_H - ITEM_H) / 2, y1 = y0 + ITEM_H;
+  CCoord x = 4;
+  const CCoord hostW = m_host->preferredWidth();
+  place(m_host, CRect(x, y0, x + hostW, y1));
+  x += hostW + 6;
+
+  // the port's state on the right
+  const CCoord portW = std::min<CCoord>(220, textWidth(m_fonts.value, m_portText->getText().getString()) + 2);
+  const CCoord portLeft = w - 4 - portW;
+  place(m_portText, CRect(portLeft, 0, w - 4, HOSTBAR_H));
+  place(m_portLed, CRect(portLeft - 11, 0, portLeft - 2, HOSTBAR_H));
+
+  if (m_hosting)
+  {
+    const CCoord countW = textWidth(m_fonts.value, m_roomCount->getText().getString()) + 2;
+    place(m_roomCount, CRect(x, 0, x + countW, HOSTBAR_H));
+    x += countW + 8;
+    const CCoord room = portLeft - 15 - x; // for both addresses
+    const CCoord lanW = std::min(m_lan->preferredWidth(), std::max<CCoord>(80, room / 2 - 2));
+    place(m_lan, CRect(x, y0, x + lanW, y1));
+    x += lanW + 4;
+    const CCoord wanW = std::min(m_wan->preferredWidth(), std::max<CCoord>(80, portLeft - 15 - x));
+    place(m_wan, CRect(x, y0, x + wanW, y1));
+  }
+  else place(m_hostHint, CRect(x, 0, w - 4, HOSTBAR_H));
 }
 
 void NinjamEditor::layoutLicense()
 {
   if (!m_license) return;
-  const CCoord w = m_width, h = m_height;
-  m_license->setViewSize(CRect(0, 0, w, h));
-  m_license->setMouseableArea(CRect(0, 0, w, h));
-  const CCoord bw = std::min<CCoord>(w - 60, 700), bh = std::min<CCoord>(h - 60, 480);
+  const CCoord w = m_width / m_zoom, h = m_height / m_zoom;
+  place(m_license, CRect(0, 0, w, h));
+  const CCoord bw = std::min<CCoord>(w - 20, 560), bh = std::min<CCoord>(h - 20, 300);
   const CRect box(floor((w - bw) / 2), floor((h - bh) / 2), floor((w - bw) / 2) + bw, floor((h - bh) / 2) + bh);
-  m_licenseBox->setViewSize(box);
-  m_licenseBox->setMouseableArea(box);
-  m_licenseTitle->setViewSize(CRect(16, 12, bw - 16, 36));
-  m_licenseText->setViewSize(CRect(16, 42, bw - 16, bh - 16 - 30 - 12));
-  const CRect decline(bw - 16 - 110, bh - 16 - 30, bw - 16, bh - 16);
-  m_decline->setViewSize(decline);
-  m_decline->setMouseableArea(decline);
-  const CRect accept(decline.left - 10 - 140, decline.top, decline.left - 10, decline.bottom);
-  m_accept->setViewSize(accept);
-  m_accept->setMouseableArea(accept);
+  place(m_licenseBox, box);
+  place(m_licenseTitle, CRect(8, 4, bw - 8, 22));
+  place(m_licenseText, CRect(8, 24, bw - 8, bh - 8 - ITEM_H - 6));
+  const CCoord declineW = m_decline->preferredWidth() + 8, acceptW = m_accept->preferredWidth() + 8;
+  const CRect decline(bw - 8 - declineW, bh - 8 - ITEM_H, bw - 8, bh - 8);
+  place(m_decline, decline);
+  place(m_accept, CRect(decline.left - 6 - acceptW, decline.top, decline.left - 6, decline.bottom));
   m_license->invalid();
 }
 
@@ -632,42 +772,26 @@ void NinjamEditor::update()
   if (s.settingsRevision != m_settingsRevision) syncSettings();
   m_settingsRevision = s.settingsRevision;
 
-  // connection
-  setLabel(m_status, s.status, true);
-  setLabelColor(m_status, s.state == ConnState::Connected ? Colors::accent()
-                          : s.state == ConnState::Connecting ? Colors::warn()
-                          : s.state == ConnState::Failed ? Colors::error() : Colors::dim());
-  const bool online = s.state == ConnState::Connected || s.state == ConnState::Connecting;
-  setButtonTitle(m_connect, online ? "Disconnect" : "Connect");
+  updateHeader(s);
+  updateTransport(s);
 
-  std::string room;
-  if (s.state == ConnState::Connected && s.bpi > 0)
+  // your channel
+  const bool connected = s.state == ConnState::Connected;
   {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "%.0f BPM  \xc2\xb7  %d BPI  \xc2\xb7  room codec %s", s.bpm, s.bpi, s.roomCodec.c_str());
-    room = buf;
-  }
-  setLabel(m_room, room);
-  m_interval->setPosition(s.intervalPos, s.intervalLength, s.state == ConnState::Connected ? s.intervalBeats : 0);
-  // NINJAM's intervals advance with the audio; without it nobody hears us and we hear nobody
-  m_interval->setMessage(s.state == ConnState::Connected && !s.audioRunning
-                         ? "The host is not running the plug-in's audio: turn the plug-in on, or start the audio engine" : "");
-
-  if (s.state != ConnState::Connected) setLabel(m_codecLabel, "");
-  else if (!s.canSend) setLabel(m_codecLabel, "you can't send here (no Opus)", true);
-  else setLabel(m_codecLabel, "you send " + codecFromFourcc(s.uploadCodec));
-  setLabelColor(m_codecLabel, s.state == ConnState::Connected && !s.canSend ? Colors::warn() : Colors::dim());
-  m_localMeter->setLevels(s.localPeak[0], s.localPeak[1]);
-  updateFollow(s);
-
-  // FLAC is lossless: the bitrate is for Opus rooms
-  const int bitrateState = s.state == ConnState::Connected && s.roomCodec == "FLAC" ? 1 : 0;
-  if (bitrateState != m_bitrateState)
-  {
-    m_bitrateState = bitrateState;
-    m_bitrate->setMouseEnabled(bitrateState == 0);
-    m_bitrate->setAlphaValue(bitrateState == 0 ? 1.0f : 0.35f);
-    setLabel(m_bitrateNote, bitrateState ? "lossless (FLAC)" : "");
+    std::string name = connected ? s.userName : engine().getSettings().userName;
+    if (name.empty()) name = "You";
+    setLabel(m_myName, name, true);
+    m_myMeter->setPeak(std::max(s.localPeak[0], s.localPeak[1]));
+    // FLAC is lossless: the bitrate is for Opus rooms
+    const bool flac = connected && s.roomCodec == "FLAC";
+    m_bitrate->setEnabled(!flac);
+    m_bitrate->setShown(flac ? "FLAC" : uitext::kbpsText(s.opusKbps));
+    setTooltip(m_bitrate, flac ? "The room plays FLAC, which is lossless: the bitrate is for rooms that play Opus"
+                               : "The bitrate you send in rooms that play Opus; a change applies from the next interval");
+    std::string tx = "Transmit: send your input to the room";
+    if (connected && !s.canSend) tx += " (this room plays " + s.roomCodec + ": the plug-in can't send here)";
+    else if (connected && !s.uploadCodec.empty()) tx += " (you send " + codecFromFourcc(s.uploadCodec) + ")";
+    setTooltip(m_tx, tx);
   }
 
   if (s.usersRevision != m_usersRevision)
@@ -676,17 +800,23 @@ void NinjamEditor::update()
     m_usersRevision = s.usersRevision;
   }
   updateRows(s);
-
   int channels = 0;
   for (auto &u : s.users) channels += (int)u.channels.size();
-  setLabel(m_playersHeader, s.users.empty() ? std::string("PLAYERS") : "PLAYERS (" + std::to_string(s.users.size()) + ")");
-  setLabel(m_noPlayers, s.state != ConnState::Connected ? "Connect to a server to hear the other players."
-                        : channels ? "" : "Nobody else is here yet.");
+  setLabel(m_noPlayers, !connected ? "Connect to a server, or host one, to hear the other players"
+                        : channels ? "" : "Nobody else is here yet");
   setVisible(m_noPlayers, channels == 0);
+  updateFooter(s);
 
   updateChat();
   updateHostBar(s);
   updateLicense(s);
+
+  // "Copied" for a moment
+  if (m_copied && now_seconds() > m_copiedUntil)
+  {
+    m_copied->setCopyTitle("Copy");
+    m_copied = nullptr;
+  }
 
   if (m_refocusChat)
   {
@@ -695,50 +825,151 @@ void NinjamEditor::update()
   }
 }
 
-void NinjamEditor::updateFollow(const Snapshot &s)
+void NinjamEditor::updateHeader(const Snapshot &s)
 {
-  const std::string &host = s.hostLabel;
+  const bool online = s.state == ConnState::Connected || s.state == ConnState::Connecting;
+  m_connect->setTitle(online ? "Disconnect" : "Connect");
   std::string text;
-  CColor color = Colors::dim();
-  if (!s.followTempo) text = "Off";
-  else if (s.state != ConnState::Connected) text = "Starts when you're in a room";
-  else
-    switch (s.barState)
+  CColor led = Colors::buttonOff();
+  bool lit = false;
+  switch (s.state)
+  {
+    case ConnState::Connected:
+      text = "Connected" + (s.roomCodec.empty() ? std::string() : " \xc2\xb7 " + s.roomCodec);
+      led = Colors::green();
+      lit = true;
+      break;
+    case ConnState::Connecting:
+      text = "Connecting\xe2\x80\xa6";
+      led = Colors::yellow();
+      lit = true;
+      break;
+    case ConnState::Failed:
+      text = s.status;
+      led = Colors::red();
+      lit = true;
+      break;
+    default: text = "Not connected"; break;
+  }
+  if (m_connText->getText() != text.c_str())
+  {
+    setLabel(m_connText, text);
+    layoutHeader(m_header->getViewSize().getWidth());
+  }
+  setTooltip(m_connText, s.status);
+  m_connLed->setColor(led, lit);
+
+  // hosting: the server box shows where the plug-in is connected (its own server) and can't
+  // be edited; the server you join otherwise comes back when hosting stops
+  const bool ownServer = s.hosting && online && !s.server.empty();
+  if (!m_serverEdit->isEditing())
+  {
+    if (ownServer != m_showingOwnServer)
     {
-      case BarSync::NoPosition: text = host + " doesn't say where its bars are"; break;
-      case BarSync::Stopped: text = "Lines up with " + host + "'s bars when it plays"; break;
-      case BarSync::OtherTempo:
-        text = "Bars line up when " + host + "'s tempo is the room's";
-        color = Colors::warn();
-        break;
-      case BarSync::Lining: text = "Lining up with " + host + "'s bars at the next interval"; break;
-      case BarSync::Aligned:
-        text = "Intervals start on " + host + "'s bars";
-        color = Colors::accent();
-        break;
-      default: text = s.audioRunning ? "" : "Waits for the audio"; break;
+      m_showingOwnServer = ownServer;
+      m_serverEdit->setMouseEnabled(!ownServer);
+      if (!ownServer) m_serverEdit->setText(engine().getSettings().server.c_str());
     }
-  setLabel(m_followStatus, text, true);
-  setLabelColor(m_followStatus, color);
-  setLabel(m_syncNote, s.syncNote, true);
+    if (ownServer && m_serverEdit->getText() != s.server.c_str()) m_serverEdit->setText(s.server.c_str());
+  }
+}
+
+void NinjamEditor::updateTransport(const Snapshot &s)
+{
+  const bool connected = s.state == ConnState::Connected;
+  // the room's BPM and BPI: changing them votes, so only in a room
+  m_bpm->setEnabled(connected);
+  m_bpi->setEnabled(connected);
+  m_bpm->setShown(connected ? (int)lround(s.bpm) : 120, uitext::bpmBoxText(connected ? s.bpm : 0));
+  m_bpi->setShown(connected && s.bpi > 0 ? std::to_string(s.bpi) : "\xe2\x80\x94");
+  {
+    int index = -1;
+    for (int i = 0; i < uitext::NUM_BPI_CHOICES; i ++)
+      if (uitext::BPI_CHOICES[i] == s.bpi) index = i;
+    if (index >= 0 && m_bpi->getCurrentIndex() != index)
+    {
+      m_syncing = true;
+      m_bpi->setValue((float)index); // (setCurrent() leaves the value, which the menu checks, as it was)
+      m_syncing = false;
+    }
+  }
+
+  // Sync: the host's tempo, green when it is the room's, amber when not
+  const std::string chip = s.hostChip.empty() ? "Host" : s.hostChip;
+  setLabel(m_syncText, chip + " " + uitext::bpmBoxText(s.hostTempo));
+  const bool known = s.hostTempo > 0 && connected && s.bpm > 0;
+  const bool differ = known && fabs(s.hostTempo - s.bpm) > BarSync::SAME_TEMPO;
+  m_syncLed->setColor(!known ? Colors::buttonOff() : differ ? Colors::yellow() : Colors::green(), known);
+  setTooltip(m_syncText, !s.syncNote.empty() ? s.syncNote
+                         : s.hostTempo > 0 ? s.hostLabel + "'s tempo" : s.hostLabel + " doesn't say its tempo (or isn't running the audio)");
+  setTooltip(m_sync, "Sync with " + s.hostLabel + ": when you change its tempo, vote the room to it; and while it plays, "
+                     "start the intervals on its bars (a multiple of BPI beats from bar 1)");
+
+  // the beat of the interval that plays; without the host's audio nothing plays (and NJClient's
+  // BPI is still the one it started with), so the room's BPI and no beat
+  const bool playing = connected && s.audioRunning && s.intervalBeats > 0 && s.intervalLength > 0;
+  const int beats = playing ? s.intervalBeats : connected ? s.bpi : 0;
+  m_beats->setPosition(playing ? s.intervalPos : 0, playing ? s.intervalLength : 0, beats);
+  setLabel(m_beatBox, uitext::beatText(playing ? s.intervalPos : 0, playing ? s.intervalLength : 0, beats));
+}
+
+// the mixer's bottom line: the most important of what the editor has to say
+void NinjamEditor::updateFooter(const Snapshot &s)
+{
+  const bool connected = s.state == ConnState::Connected;
+  const std::string host = s.hostLabel.empty() ? "The host" : s.hostLabel;
+  std::string text;
+  bool warn = false;
+  if (connected && !s.audioRunning)
+  {
+    // NINJAM's intervals advance with the audio; without it nobody hears us and we hear nobody
+    text = "No audio from " + host + ": turn the plug-in on, or start the audio engine";
+    warn = true;
+  }
+  else if (connected && !s.canSend)
+  {
+    text = "The room plays " + s.roomCodec + ": the plug-in can't send here, and plays it as silence";
+    warn = true;
+  }
+  else if (!s.syncNote.empty())
+  {
+    text = s.syncNote;
+    warn = true;
+  }
+  else if (s.nextIntervalPpq >= 0) text = nextIntervalText(s.hostChip, s.nextIntervalPpq, s.timeSigNum, s.timeSigDen);
+  else if (connected)
+  {
+    if (!s.followTempo) text = "Sync is off: the intervals keep their own time";
+    else
+      switch (s.barState)
+      {
+        case BarSync::NoPosition: text = host + " doesn't say where its bars are"; break;
+        case BarSync::Stopped: text = "The intervals line up with " + host + "'s bars when it plays"; break;
+        case BarSync::OtherTempo: text = "The intervals line up with " + host + "'s bars when its tempo is the room's"; break;
+        default: break;
+      }
+  }
+  setLabel(m_footer, text, true);
+  setLabelColor(m_footer, warn ? Colors::yellow() : Colors::label());
 }
 
 void NinjamEditor::syncSettings()
 {
   const Settings st = engine().getSettings();
   if (!m_nameEdit->isEditing() && m_nameEdit->getText() != st.userName.c_str()) m_nameEdit->setText(st.userName.c_str());
-  if (!m_serverEdit->isEditing() && m_serverEdit->getText() != st.server.c_str()) m_serverEdit->setText(st.server.c_str());
-  setControlValue(m_transmit, st.transmit ? 1.0f : 0.0f);
-  setControlValue(m_monitor, st.monitor ? 1.0f : 0.0f);
-  setControlValue(m_metroMute, st.metronomeMute ? 1.0f : 0.0f);
-  setControlValue(m_follow, st.followHostTempo ? 1.0f : 0.0f);
+  if (!m_serverEdit->isEditing() && !m_showingOwnServer && m_serverEdit->getText() != st.server.c_str())
+    m_serverEdit->setText(st.server.c_str());
+  setControlValue(m_tx, st.transmit ? 1.0f : 0.0f);
+  setControlValue(m_in, st.monitor ? 1.0f : 0.0f);
+  setControlValue(m_click, st.metronomeMute ? 0.0f : 1.0f);
+  setControlValue(m_sync, st.followHostTempo ? 1.0f : 0.0f);
   setControlValue(m_inputVolume, gainToSlider(st.inputVolume));
-  setControlValue(m_metroVolume, gainToSlider(st.metronomeVolume));
+  setControlValue(m_clickVolume, gainToSlider(st.metronomeVolume));
   for (int i = 0; i < Settings::NUM_OPUS_KBPS; i ++)
-    if (Settings::OPUS_KBPS[i] == st.opusKbps && m_bitrate->getSelectedSegment() != (uint32_t)i)
+    if (Settings::OPUS_KBPS[i] == st.opusKbps && m_bitrate->getCurrentIndex() != i)
     {
       m_syncing = true;
-      m_bitrate->setSelectedSegment((uint32_t)i);
+      m_bitrate->setValue((float)i);
       m_syncing = false;
     }
 }
@@ -755,25 +986,28 @@ void NinjamEditor::rebuildRows(const Snapshot &s)
       row.user = u.name;
       row.channel = c.index;
       const CRect z(0, 0, 10, 10);
-      row.container = new CViewContainer(z);
-      row.container->setBackgroundColor(index & 1 ? CColor(25, 28, 32) : Colors::field());
+      row.container = new StripContainer(z, Colors::row(), 1);
       std::string label = u.displayName;
-      if (!c.name.empty()) label += "  \xc2\xb7  " + c.name;
-      row.name = makeLabel(z, label.c_str(), m_font, Colors::text());
+      if (!c.name.empty()) label += " \xc2\xb7 " + c.name;
+      row.name = makeLabel(z, label, m_fonts.value, Colors::value());
       row.name->setTooltipText(u.name.c_str());
       row.container->addView(row.name);
       const int32_t tag = kTagRemote + index * kRemoteFields;
-      row.volume = makeSlider(z, this, tag + kRemoteVolume, false);
+      row.volume = new FaderBox(z, this, tag + kRemoteVolume, m_fonts.small);
+      row.volume->format = [](float v) { return uitext::dbText(sliderToGain(v)); };
+      row.volume->setDefaultValue(gainToSlider(1.0f));
       row.container->addView(row.volume);
-      row.pan = makeSlider(z, this, tag + kRemotePan, true);
+      row.pan = new ArcKnob(z, this, tag + kRemotePan, true);
+      row.pan->setTooltipText("Pan (double-click for the middle)");
       row.container->addView(row.pan);
-      row.mute = makeButton(z, this, tag + kRemoteMute, "M", true, m_smallBold);
+      row.mute = new FlatButton(z, this, tag + kRemoteMute, "M", FlatButton::Toggle, m_fonts.label);
       row.mute->setTooltipText("Mute");
       row.container->addView(row.mute);
-      row.solo = makeButton(z, this, tag + kRemoteSolo, "S", true, m_smallBold);
+      row.solo = new FlatButton(z, this, tag + kRemoteSolo, "S", FlatButton::Toggle, m_fonts.label);
+      row.solo->setOnColors(Colors::blue(), Colors::blueLine());
       row.solo->setTooltipText("Solo");
       row.container->addView(row.solo);
-      row.meter = new MeterView(z);
+      row.meter = new SegmentMeter(z);
       row.container->addView(row.meter);
       m_players->addView(row.container);
       m_rows.push_back(row);
@@ -795,7 +1029,7 @@ void NinjamEditor::updateRows(const Snapshot &s)
       setControlValue(row.pan, (c.pan + 1.0f) * 0.5f);
       setControlValue(row.mute, c.mute ? 1.0f : 0.0f);
       setControlValue(row.solo, c.solo ? 1.0f : 0.0f);
-      row.meter->setLevels(c.peak[0], c.peak[1]);
+      row.meter->setPeak(std::max(c.peak[0], c.peak[1]));
     }
 }
 
@@ -816,12 +1050,12 @@ void NinjamEditor::updateChat()
     switch (l.kind)
     {
       case ChatLine::Message: v.who = l.who; v.whoColor = Colors::blue(); break;
-      case ChatLine::Action: v.who = "* " + l.who; v.whoColor = Colors::warn(); v.textColor = Colors::warn(); break;
-      case ChatLine::Private: v.who = l.who.compare(0, 3, "-> ") == 0 ? l.who : l.who + " (private)"; v.whoColor = Colors::server(); break;
-      case ChatLine::Topic: v.textColor = Colors::topic(); break;
-      case ChatLine::Server: v.textColor = Colors::server(); break;
-      case ChatLine::Error: v.textColor = Colors::error(); break;
-      default: v.textColor = Colors::dim(); break;
+      case ChatLine::Action: v.who = "* " + l.who; v.whoColor = Colors::blue(); v.textColor = Colors::status(); break;
+      case ChatLine::Private: v.who = l.who.compare(0, 3, "-> ") == 0 ? l.who : l.who + " (private)"; v.whoColor = Colors::purple(); break;
+      case ChatLine::Topic: v.textColor = Colors::blue(); break;
+      case ChatLine::Server: v.textColor = Colors::purple(); break; // the server, votes
+      case ChatLine::Error: v.textColor = Colors::red(); break;
+      default: v.textColor = Colors::label(); break; // joins, leaves, the plug-in's own notes
     }
     out.push_back(v);
   }
@@ -837,58 +1071,73 @@ void NinjamEditor::updateHostBar(const Snapshot &s)
   }
   if (!m_hostPending) setControlValue(m_host, s.hosting ? 1.0f : 0.0f);
 
-  std::string text, address;
-  CColor color = Colors::dim();
+  bool relayout = s.hosting != m_hosting;
+  m_hosting = s.hosting;
+  setVisible(m_roomCount, s.hosting);
+  setVisible(m_lan, s.hosting);
+  setVisible(m_wan, s.hosting);
+  setVisible(m_hostHint, !s.hosting);
+
+  std::string port, tip;
+  CColor portColor = Colors::status(), led = Colors::buttonOff();
+  bool lit = false;
   if (s.hosting)
   {
-    text = "Port " + std::to_string(s.hostPort) + "  \xc2\xb7  " + std::to_string(s.hostUsers) + (s.hostUsers == 1 ? " player" : " players") + "  \xc2\xb7  ";
-    if (!s.hostPublicAddress.empty())
+    const std::string count = std::to_string(s.hostUsers) + " in room";
+    if (m_roomCount->getText() != count.c_str())
     {
-      address = s.hostPublicAddress;
-      text += "Others join at " + address;
-      color = Colors::accent();
+      setLabel(m_roomCount, count);
+      relayout = true;
+    }
+    const std::string lan = s.hostLocalAddress, wan = s.hostPublicAddress;
+    m_lan->setAddress(lan, "not known");
+    m_wan->setAddress(wan, s.hostPortmapPending ? "waiting for the router" : "not known");
+    if (lan != m_lanShown || wan != m_wanShown)
+    {
+      m_lanShown = lan;
+      m_wanShown = wan;
+      relayout = true;
+    }
+    if (!wan.empty())
+    {
+      port = "Port open";
+      portColor = led = Colors::green();
+      lit = true;
+      tip = "Your router forwards port " + std::to_string(s.hostPort) + ": players on the internet join at " + wan;
     }
     else if (s.hostPortmapPending)
     {
-      address = s.hostLocalAddress;
-      text += "Asking your router to open the port...";
-      if (!address.empty()) text += "  Local network: " + address;
-      color = Colors::warn();
+      port = "Asking the router\xe2\x80\xa6";
+      tip = "Asking your router to forward port " + std::to_string(s.hostPort);
     }
     else
     {
-      address = s.hostLocalAddress;
-      text += "Local network only" + (address.empty() ? std::string() : ", at " + address);
-      std::string why = s.hostNote; // the port mapper's last word; its first sentence fits here
-      const size_t dot = why.find(". ");
-      if (dot != std::string::npos) why.resize(dot);
-      while (!why.empty() && why.back() == '.') why.pop_back();
-      if (!why.empty()) text += ": " + why;
-      color = Colors::warn();
+      port = "Port not forwarded";
+      portColor = led = Colors::yellow();
+      lit = true;
+      tip = s.hostNote.empty() ? "Your router didn't forward the port: only your local network can join" : s.hostNote;
     }
-  }
-  else if (s.hostBusy)
-  {
-    text = m_host->getValue() > 0.5f ? "Starting the server..." : "Stopping the server...";
-  }
-  else if (s.hostedElsewherePort)
-  {
-    text = "Another NINJAM plug-in in this program hosts a server: connect to localhost:" + std::to_string(s.hostedElsewherePort) + ".";
   }
   else
   {
-    text = "Anyone can join your server without an account; one vote changes BPM or BPI, !codec switches the codec.";
+    std::string hint;
+    if (s.hostBusy) hint = m_host->getValue() > 0.5f ? "Starting the server\xe2\x80\xa6" : "Stopping the server\xe2\x80\xa6";
+    else if (s.hostedElsewherePort)
+      hint = "Another NINJAM plug-in here hosts a server: join localhost:" + std::to_string(s.hostedElsewherePort);
+    else hint = "Host a server in this plug-in: anyone can join without an account, and one vote changes BPM or BPI";
+    setLabel(m_hostHint, hint, true);
   }
-  setLabel(m_hostText, text, true);
-  setLabelColor(m_hostText, color);
-
-  m_hostAddress = address;
-  const bool showCopy = !address.empty();
-  if (m_copy->isVisible() != showCopy)
+  if (m_portText->getText() != port.c_str())
   {
-    m_copy->setVisible(showCopy);
-    layout();
+    setLabel(m_portText, port);
+    relayout = true;
   }
+  setLabelColor(m_portText, portColor);
+  setTooltip(m_portText, tip);
+  setTooltip(m_portLed, tip);
+  m_portLed->setColor(led, lit);
+  setVisible(m_portLed, s.hosting);
+  if (relayout) layoutHostBar(m_hostBar->getViewSize().getWidth(), 0);
 }
 
 void NinjamEditor::updateLicense(const Snapshot &s)
@@ -898,16 +1147,17 @@ void NinjamEditor::updateLicense(const Snapshot &s)
     const CRect z(0, 0, 10, 10);
     m_license = new CViewContainer(z);
     m_license->setBackgroundColor(CColor(0, 0, 0, 150));
-    m_licenseBox = new PanelView(z, Colors::panel(), Colors::accent(), 8);
+    m_licenseBox = new StripContainer(z, Colors::strip());
     m_license->addView(m_licenseBox);
-    m_licenseTitle = makeLabel(z, "This server asks you to accept its license", m_bold, Colors::text());
+    m_licenseTitle = makeLabel(z, "This server asks you to accept its license", m_fonts.bold, Colors::value());
     m_licenseBox->addView(m_licenseTitle);
-    m_licenseText = new TextLinesView(z, m_font, m_bold);
+    m_licenseText = new TextLinesView(z, m_fonts.chat, m_fonts.chatBold);
     m_licenseText->setStartAtTop(true);
+    m_licenseText->setBackground(Colors::pane());
     m_licenseBox->addView(m_licenseText);
-    m_accept = makeButton(z, this, kTagAccept, "Accept and join", false, m_bold);
+    m_accept = new FlatButton(z, this, kTagAccept, "Accept and join", FlatButton::Push, m_fonts.button);
     m_licenseBox->addView(m_accept);
-    m_decline = makeButton(z, this, kTagDecline, "Decline", false, m_font);
+    m_decline = new FlatButton(z, this, kTagDecline, "Decline", FlatButton::Push, m_fonts.button);
     m_licenseBox->addView(m_decline);
     layoutLicense();
     if (auto id = frame->beginModalViewSession(m_license))
@@ -970,9 +1220,15 @@ void NinjamEditor::sendChatLine()
   m_refocusChat = true;
 }
 
-void NinjamEditor::copyHostAddress()
+void NinjamEditor::copyAddress(AddressBox *box)
 {
-  if (!m_hostAddress.empty()) CClipboard::setString(m_hostAddress.c_str());
+  if (!box || box->address().empty()) return;
+  const bool ok = clipboard::setText(box->address());
+  box->setCopyTitle(ok ? "Copied" : "Failed");
+  setTooltip(box, ok ? "Copied " + box->address() : "There is no clipboard here: the address is " + box->address());
+  if (m_copied && m_copied != box) m_copied->setCopyTitle("Copy");
+  m_copied = box;
+  m_copiedUntil = now_seconds() + 1.5;
 }
 
 void NinjamEditor::valueChanged(CControl *control)
@@ -998,30 +1254,52 @@ void NinjamEditor::valueChanged(CControl *control)
       if (v > 0.5f) connectOrDisconnect();
       return;
     case kTagTransmit: engine().setTransmit(v > 0.5f); return;
-    case kTagFollow: engine().setFollowHostTempo(v > 0.5f); return;
+    case kTagSync: engine().setFollowHostTempo(v > 0.5f); return;
     case kTagMonitor: engine().setMonitor(v > 0.5f); return;
     case kTagBitrate:
-      if (m_bitrate->getSelectedSegment() < (uint32_t)Settings::NUM_OPUS_KBPS)
-        engine().setOpusKbps(Settings::OPUS_KBPS[m_bitrate->getSelectedSegment()]);
+    {
+      const int i = m_bitrate->getCurrentIndex();
+      if (i >= 0 && i < Settings::NUM_OPUS_KBPS) engine().setOpusKbps(Settings::OPUS_KBPS[i]);
       return;
+    }
     case kTagInputVolume: engine().setInputVolume(sliderToGain(v)); return;
-    case kTagMetroVolume:
-    case kTagMetroMute:
-      engine().setMetronome(sliderToGain(m_metroVolume->getValue()), m_metroMute->getValue() > 0.5f);
+    case kTagClickVolume:
+    case kTagClick:
+      engine().setMetronome(sliderToGain(m_clickVolume->getValue()), m_click->getValue() < 0.5f);
       return;
+    case kTagBpm:
+    {
+      // a vote, dragged to or typed (with Return)
+      int bpm = 0;
+      if (m_bpm->committedByDrag()) bpm = m_bpm->draggedValue();
+      else if (!m_bpm->bWasReturnPressed || !uitext::parseBpm(m_bpm->getText().getString(), &bpm)) return;
+      Snapshot s;
+      engine().getSnapshot(s);
+      if (s.state == ConnState::Connected && bpm != (int)lround(s.bpm)) engine().vote("bpm", bpm);
+      return;
+    }
+    case kTagBpi:
+    {
+      const int i = m_bpi->getCurrentIndex();
+      Snapshot s;
+      engine().getSnapshot(s);
+      if (i >= 0 && i < uitext::NUM_BPI_CHOICES && s.state == ConnState::Connected && uitext::BPI_CHOICES[i] != s.bpi)
+        engine().vote("bpi", uitext::BPI_CHOICES[i]);
+      return;
+    }
     case kTagChat:
       if (m_chatEdit->bWasReturnPressed) sendChatLine();
-      return;
-    case kTagSend:
-      if (v > 0.5f) sendChatLine();
       return;
     case kTagHost:
       m_hostPending = true;
       m_hostPendingSince = now_seconds();
       engine().setHosting(v > 0.5f);
       return;
-    case kTagCopy:
-      if (v > 0.5f) copyHostAddress();
+    case kTagCopyLan:
+      if (v > 0.5f) copyAddress(m_lan);
+      return;
+    case kTagCopyWan:
+      if (v > 0.5f) copyAddress(m_wan);
       return;
     case kTagAccept:
       if (v > 0.5f) engine().answerLicense(true);

@@ -13,7 +13,11 @@
   Tests for the parts of the plug-in that need no network or host: the saved
   state, reading the built-in server's port mapping messages, following the
   host (lining the intervals up with its bars, voting for its tempo, the
-  editor's note on its tempo), and the metronome's click.
+  editor's note on its tempo), the metronome's click, and what the editor's
+  controls show and take.
+
+  "plugin_unit_test clipboard" checks the Copy buttons' clipboard instead (on
+  Linux, with an X server: ctest runs it with xvfb-run).
 
 */
 
@@ -30,6 +34,13 @@
 #include "engine.h"
 #include "hostserver.h"
 #include "hostsync.h"
+#include "uitext.h"
+
+#if defined(__linux__)
+#include <stdlib.h>
+#include <xcb/xcb.h>
+#include "clipboard.h"
+#endif
 
 using namespace ninjam_vst3;
 
@@ -83,6 +94,10 @@ static void test_state()
   Settings e;
   CHECK(e.deserialize(Settings().serialize()));
   CHECK(e.monitor && e.transmit && e.inputVolume == 1.0f && e.editorWidth == 0);
+  // the size of the editor before its 720 x 330 layout opens at the new default
+  Settings older;
+  CHECK(older.deserialize("NINJAM-VST3-STATE 1\neditor_size=960x640\n"));
+  CHECK(older.editorWidth == 0 && older.editorHeight == 0);
   CHECK_EQ(e.opusKbps, 128);
 
   // the Opus bitrate is one of the choices: the nearest one, or the default for junk
@@ -101,7 +116,7 @@ static void test_state()
   CHECK(old.deserialize("NINJAM-VST3-STATE 1\nuser=x\n"));
   CHECK_EQ(old.opusKbps, 128);
 
-  // Follow Ableton's tempo: on by default, and in states saved before it was a setting
+  // Sync (following the host): on by default, and in states saved before it was a setting
   CHECK(Settings().followHostTempo);
   CHECK(old.followHostTempo);
   Settings off;
@@ -490,8 +505,8 @@ static void test_tempo_follower()
 
 static void test_host_note()
 {
-  CHECK_EQ(shortHostName("Ableton Live 12 Suite"), "Ableton");
-  CHECK_EQ(shortHostName(" Live "), "Ableton");
+  CHECK_EQ(shortHostName("Ableton Live 12 Suite"), "Live");
+  CHECK_EQ(shortHostName(" Live "), "Live");
   CHECK_EQ(shortHostName("Bitwig Studio"), "Bitwig Studio");
   CHECK_EQ(shortHostName(""), "The DAW");
   CHECK_EQ(shortHostName("A very long host name that goes on and on"), "A very long host name that goes ");
@@ -501,13 +516,33 @@ static void test_host_note()
   CHECK_EQ(bpmText(120), "120");
   CHECK_EQ(bpmText(109.6), "109.6");
   CHECK_EQ(bpmText(120.25), "120.25");
-  CHECK_EQ(hostTempoNote("Ableton Live 12 Suite", 120, 95, true), "Ableton is at 120 BPM, the room at 95: set Ableton to 95");
+  CHECK_EQ(hostTempoNote("Ableton Live 12 Suite", 120, 95, true), "Live is at 120 BPM, the room at 95: set Live to 95");
   CHECK_EQ(hostTempoNote("Ableton Live 12 Suite", 120, 95, false),
-           "Ableton is at 120 BPM, the room at 95: set Ableton to 95, or turn on Follow Ableton's tempo");
+           "Live is at 120 BPM, the room at 95: set Live to 95, or turn on Sync");
   CHECK_EQ(hostTempoNote("Bitwig Studio", 95.3, 95, true), "Bitwig Studio is at 95.3 BPM, the room at 95: set its tempo to 95");
   CHECK_EQ(hostTempoNote("Ableton Live 12", 95.004, 95, true), "");
   CHECK_EQ(hostTempoNote("Ableton Live 12", 0, 95, true), "");
   CHECK_EQ(hostTempoNote("Ableton Live 12", 120, 0, true), "");
+
+  // the transport bar's name for the host
+  CHECK_EQ(hostChipName("Ableton Live 12 Suite"), "Live");
+  CHECK_EQ(hostChipName("REAPER"), "REAPER");
+  CHECK_EQ(hostChipName("Bitwig Studio"), "Host");
+  CHECK_EQ(hostChipName(""), "Host");
+  CHECK_EQ(hostChipName("\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9"), "\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9");
+
+  // where the next interval starts, in the host's bars
+  CHECK_EQ(nextIntervalText("Live", 32, 4, 4), "Next interval at Live bar 9");
+  CHECK_EQ(nextIntervalText("Live", 31.9999999, 0, 0), "Next interval at Live bar 9"); // 4/4 when the host doesn't say
+  CHECK_EQ(nextIntervalText("Live", 34, 4, 4), "Next interval at Live bar 9, beat 3");
+  CHECK_EQ(nextIntervalText("Host", 0, 3, 4), "Next interval at Host bar 1");
+  CHECK_EQ(nextIntervalText("Live", 9, 6, 8), "Next interval at Live bar 4"); // 6/8: a bar is 3 quarter notes
+  CHECK_EQ(nextIntervalText("Live", 10, 6, 8), "Next interval at Live bar 4, beat 3");
+  CHECK_EQ(nextIntervalText("Live", 33.25, 4, 4), "Next interval at Live bar 9, beat 2");
+  int bar = 0, beat = 0;
+  bool onBeat = true;
+  barAndBeat(33.25, 4, 4, &bar, &beat, &onBeat);
+  CHECK(bar == 9 && beat == 2 && !onBeat);
 }
 
 static void test_names()
@@ -673,8 +708,164 @@ static void test_click()
   CHECK(heard[1].quietMs > 30 && heard[1].quietMs < 40); // -60 dB in 30 to 40 ms
 }
 
-int main()
+static void test_uitext()
 {
+  using namespace uitext;
+
+  // dragging the BPM box: 2 pixels a BPM, 8 with Shift; whole steps only, toward the start
+  CHECK_EQ(dragBpm(120, 0, false), 120);
+  CHECK_EQ(dragBpm(120, 1.9, false), 120);
+  CHECK_EQ(dragBpm(120, 2, false), 121);
+  CHECK_EQ(dragBpm(120, -2, false), 119);
+  CHECK_EQ(dragBpm(120, -3.9, false), 119);
+  CHECK_EQ(dragBpm(120, 20, false), 130);
+  CHECK_EQ(dragBpm(120, 20, true), 122);
+  CHECK_EQ(dragBpm(120, -7.9, true), 120);
+  CHECK_EQ(dragBpm(120, 1000, false), BPM_MAX);
+  CHECK_EQ(dragBpm(120, -1000, false), BPM_MIN);
+  CHECK_EQ(dragBpm(300, 0, false), BPM_MAX); // a room faster than the box goes: the box's range
+
+  // typing in it
+  int bpm = 0;
+  CHECK(parseBpm("125", &bpm) && bpm == 125);
+  CHECK(parseBpm(" 125.4 ", &bpm) && bpm == 125);
+  CHECK(parseBpm("125.5", &bpm) && bpm == 126);
+  CHECK(parseBpm("95,5", &bpm) && bpm == 96);
+  CHECK(parseBpm("100 bpm", &bpm) && bpm == 100);
+  CHECK(parseBpm("100BPM", &bpm) && bpm == 100);
+  CHECK(parseBpm(".9", &bpm) && bpm == BPM_MIN);
+  CHECK(parseBpm("20", &bpm) && bpm == BPM_MIN);
+  CHECK(parseBpm("999", &bpm) && bpm == BPM_MAX);
+  CHECK(parseBpm("99999999999999", &bpm) && bpm == BPM_MAX);
+  bpm = 77;
+  CHECK(!parseBpm("", &bpm));
+  CHECK(!parseBpm("   ", &bpm));
+  CHECK(!parseBpm("fast", &bpm));
+  CHECK(!parseBpm("120 beats", &bpm));
+  CHECK(!parseBpm("-120", &bpm));
+  CHECK(!parseBpm(".", &bpm));
+  CHECK(!parseBpm("1e3", &bpm));
+  CHECK_EQ(bpm, 77);
+
+  CHECK_EQ(bpmBoxText(120), std::string("120.00"));
+  CHECK_EQ(bpmBoxText(95.456), std::string("95.46"));
+  CHECK_EQ(bpmBoxText(239.999), std::string("240.00"));
+  CHECK_EQ(bpmBoxText(0), std::string("\xe2\x80\x94"));
+  CHECK_EQ(bpmBoxText(-5), std::string("\xe2\x80\x94"));
+
+  CHECK_EQ(dbText(1.0f), std::string("0.0 dB"));
+  CHECK_EQ(dbText(0.9999f), std::string("0.0 dB"));
+  CHECK_EQ(dbText(2.0f), std::string("+6.0 dB"));
+  CHECK_EQ(dbText(0.25f), std::string("-12.0 dB"));
+  CHECK_EQ(dbText(0.5f), std::string("-6.0 dB"));
+  CHECK_EQ(dbText(0.989f), std::string("-0.1 dB"));
+  CHECK_EQ(dbText(0.0f), std::string("-inf dB"));
+  CHECK_EQ(dbText(-1.0f), std::string("-inf dB"));
+
+  // the meter: nothing for silence, all seven at 0 dB, the yellow two only near the top
+  CHECK_EQ(litSegments(0.0f), 0);
+  CHECK_EQ(litSegments(0.001f), 0);          // -60 dB
+  CHECK_EQ(litSegments(0.004f), 1);          // -48 dB
+  CHECK_EQ(litSegments(0.1f), 3);            // -20 dB
+  CHECK_EQ(litSegments(0.5f), 5);            // -6 dB: all the green ones
+  CHECK_EQ(litSegments(0.6f), 6);            // -4.4 dB
+  CHECK_EQ(litSegments(0.95f), 7);           // -0.4 dB
+  CHECK_EQ(litSegments(1.0f), METER_SEGMENTS);
+  CHECK_EQ(litSegments(4.0f), METER_SEGMENTS);
+  for (int i = 1; i < 1000; i++) CHECK(litSegments(i / 1000.0f) >= litSegments((i - 1) / 1000.0f));
+
+  CHECK_EQ(beatText(0, 48000, 16), std::string("1 / 16"));
+  CHECK_EQ(beatText(47999, 48000, 16), std::string("16 / 16"));
+  CHECK_EQ(beatText(48000, 48000, 16), std::string("16 / 16"));
+  CHECK_EQ(beatText(6000, 48000, 16), std::string("3 / 16"));
+  CHECK_EQ(beatText(5999, 48000, 16), std::string("2 / 16"));
+  CHECK_EQ(beatText(0, 0, 16), std::string("\xe2\x80\x93 / 16"));
+  CHECK_EQ(beatText(0, 48000, 0), std::string("\xe2\x80\x93 / \xe2\x80\x93"));
+
+  CHECK_EQ(kbpsText(128), std::string("128k"));
+
+  // the BPI list holds the room's usual choices, in order
+  CHECK_EQ((int)(sizeof(BPI_CHOICES) / sizeof(BPI_CHOICES[0])), NUM_BPI_CHOICES);
+  for (int i = 1; i < NUM_BPI_CHOICES; i++) CHECK(BPI_CHOICES[i] > BPI_CHOICES[i - 1]);
+}
+
+#if defined(__linux__)
+// another program copies something: it takes the CLIPBOARD selection (and answers nobody)
+static bool take_clipboard_elsewhere(xcb_connection_t **keep)
+{
+  xcb_connection_t *c = xcb_connect(nullptr, nullptr);
+  if (!c || xcb_connection_has_error(c)) return false;
+  const xcb_screen_t *screen = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
+  const xcb_window_t w = xcb_generate_id(c);
+  xcb_create_window(c, XCB_COPY_FROM_PARENT, w, screen->root, 0, 0, 1, 1, 0, XCB_WINDOW_CLASS_INPUT_ONLY, XCB_COPY_FROM_PARENT, 0, nullptr);
+  xcb_intern_atom_reply_t *a = xcb_intern_atom_reply(c, xcb_intern_atom(c, 0, 9, "CLIPBOARD"), nullptr);
+  if (!a) return false;
+  xcb_set_selection_owner(c, w, a->atom, XCB_CURRENT_TIME);
+  xcb_get_selection_owner_reply_t *r = xcb_get_selection_owner_reply(c, xcb_get_selection_owner(c, a->atom), nullptr);
+  const bool ok = r && r->owner == w;
+  free(r);
+  free(a);
+  *keep = c;
+  return ok;
+}
+
+static void test_clipboard()
+{
+  if (!getenv("DISPLAY") || !*getenv("DISPLAY"))
+  {
+    printf("no X server (DISPLAY); skipped the clipboard checks\n");
+    return;
+  }
+  std::string got;
+  const std::string lan = "192.168.1.20:2049";
+  CHECK(clipboard::setText(lan));
+  CHECK(clipboard::readX11(&got, 2.0) && got == lan);
+  CHECK(clipboard::readX11(&got, 2.0) && got == lan); // pasted again
+
+  // copied again: the new text
+  const std::string wan = "J\xc3\xb6rg's room \xc2\xb7 203.0.113.7:2049";
+  CHECK(clipboard::setText(wan));
+  CHECK(clipboard::readX11(&got, 2.0) && got == wan);
+
+  // another program copies something: that's what is pasted now, and copying again takes it back
+  xcb_connection_t *other = nullptr;
+  CHECK(take_clipboard_elsewhere(&other));
+  got = "?";
+  CHECK(!clipboard::readX11(&got, 0.5)); // the other program doesn't answer
+  CHECK(clipboard::setText(lan));
+  CHECK(clipboard::readX11(&got, 2.0) && got == lan);
+  if (other) xcb_disconnect(other);
+
+  // a long text, and one too long to hand over in one piece
+  const std::string big(50000, 'x');
+  CHECK(clipboard::setText(big));
+  CHECK(clipboard::readX11(&got, 2.0) && got == big);
+  CHECK(!clipboard::setText(std::string(70000, 'y')));
+  CHECK(clipboard::readX11(&got, 2.0) && got == big); // the last one stays
+
+  // the module is unloaded: it lets go; a copy after that works again
+  clipboard::stopX11();
+  CHECK(!clipboard::readX11(&got, 0.5));
+  CHECK(clipboard::setText(wan));
+  CHECK(clipboard::readX11(&got, 2.0) && got == wan);
+  clipboard::stopX11();
+  printf("clipboard: copied and pasted\n");
+}
+#endif
+
+int main(int argc, char **argv)
+{
+  if (argc > 1 && !strcmp(argv[1], "clipboard"))
+  {
+#if defined(__linux__)
+    test_clipboard();
+#else
+    printf("the clipboard checks are for Linux\n");
+#endif
+    printf("%d checks, %d failed\n", g_checks, g_failures);
+    return g_failures ? 1 : 0;
+  }
+
   test_state();
   test_portmap_messages();
   test_names();
@@ -683,6 +874,7 @@ int main()
   test_tempo_follower();
   test_host_note();
   test_click();
+  test_uitext();
 
   // the same in a locale that writes 95,5
   const char *loc = nullptr;
@@ -692,6 +884,7 @@ int main()
   {
     printf("again with the locale %s\n", loc);
     test_state();
+    test_uitext();
     setlocale(LC_ALL, "C");
   }
   else printf("no comma locale here; skipped the locale checks\n");

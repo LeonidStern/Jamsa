@@ -133,7 +133,7 @@ std::string Settings::serialize() const
   s += std::string("transmit=") + (transmit ? "1" : "0") + "\n";
   s += "opus_kbps=" + std::to_string(opusKbps) + "\n";
   s += std::string("follow_host_tempo=") + (followHostTempo ? "1" : "0") + "\n";
-  if (editorWidth > 0 && editorHeight > 0) s += "editor_size=" + std::to_string(editorWidth) + "x" + std::to_string(editorHeight) + "\n";
+  if (editorWidth > 0 && editorHeight > 0) s += "editor_window=" + std::to_string(editorWidth) + "x" + std::to_string(editorHeight) + "\n";
   for (auto &r : remote)
     s += "remote=" + escape(r.first) + "\t" + num(r.second.volume) + "\t" + num(r.second.pan) + "\t" + (r.second.mute ? "1" : "0") + "\n";
   return s;
@@ -168,7 +168,8 @@ bool Settings::deserialize(const std::string &data)
       const long k = strtol(value.c_str(), &end, 10);
       if (end && !*end && !value.empty()) s.opusKbps = nearestOpusKbps((int)std::min(std::max(k, 0L), 100000L));
     }
-    else if (key == "editor_size")
+    // "editor_size" was the size of the editor before its 720 x 330 layout: not used
+    else if (key == "editor_window")
     {
       int w = 0, h = 0;
       if (sscanf(value.c_str(), "%dx%d", &w, &h) == 2 && w > 0 && h > 0 && w < 10000 && h < 10000)
@@ -324,6 +325,20 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
     const int end = m_barSync.process(timing->position, frames, srate, iv);
     if (end > 0) m_client->SetIntervalEnd(end);
   }
+  // where the next interval starts in the host, while they are (or get) in line
+  double nextPpq = -1;
+  if (timing && (m_barSync.state() == BarSync::Aligned || m_barSync.state() == BarSync::Lining) && srate > 0)
+  {
+    const HostPosition &p = timing->position;
+    int pos = 0, length = 0;
+    m_client->GetPosition(&pos, &length);
+    nextPpq = p.ppq + (length - pos) / (double)srate * p.tempo / 60.0;
+    if (p.cycleActive && p.cycleEnd > p.cycleStart && p.ppq < p.cycleEnd && nextPpq >= p.cycleEnd)
+      nextPpq = p.cycleStart + fmod(nextPpq - p.cycleStart, p.cycleEnd - p.cycleStart);
+  }
+  m_nextIntervalPpq.store(nextPpq, std::memory_order_relaxed);
+  if (timing) m_timeSig.store(timing->position.timeSigNum > 0 && timing->position.timeSigDen > 0
+                              ? timing->position.timeSigNum * 256 + timing->position.timeSigDen : 0, std::memory_order_relaxed);
   m_barState.store(m_barSync.state(), std::memory_order_relaxed);
   m_barErrorMs.store(m_barSync.errorMs(), std::memory_order_relaxed);
   m_barFixes.store(m_barSync.corrections(), std::memory_order_relaxed);
@@ -434,6 +449,11 @@ void Engine::disconnect()
 {
   if (m_licenseWaiting) m_licenseAnswer = -1; // the network thread is waiting for an answer
   post([this]() { doDisconnect(nullptr); });
+}
+
+void Engine::vote(const std::string &what, int value)
+{
+  sendChat("!vote " + what + " " + std::to_string(value));
 }
 
 void Engine::sendChat(const std::string &text)
@@ -973,8 +993,17 @@ void Engine::publish()
     hostName = m_hostName;
   }
   snap.hostLabel = shortHostName(hostName);
+  snap.hostChip = hostChipName(hostName);
+  {
+    const int ts = m_timeSig.load(std::memory_order_relaxed);
+    snap.timeSigNum = ts / 256;
+    snap.timeSigDen = ts % 256;
+  }
   snap.hostTempo = snap.audioRunning ? m_hostTempo.load(std::memory_order_relaxed) : 0.0;
   snap.barState = snap.followTempo && m_state == ConnState::Connected ? (BarSync::State)m_barState.load(std::memory_order_relaxed) : BarSync::Off;
+  // where the next interval starts in the host's bars, while they line up
+  snap.nextIntervalPpq = snap.barState == BarSync::Aligned || snap.barState == BarSync::Lining
+                         ? m_nextIntervalPpq.load(std::memory_order_relaxed) : -1;
   snap.barErrorMs = m_barErrorMs.load(std::memory_order_relaxed);
   snap.barFixes = m_barFixes.load(std::memory_order_relaxed);
   snap.tempoVotes = m_tempoFollower.votes();
@@ -1123,6 +1152,22 @@ std::string Engine::command(const std::string &lineIn)
     return "ok";
   }
   if (verb == "follow") { setFollowHostTempo(arg == "on" || arg == "1"); return "ok"; }
+  if (verb == "vote")
+  {
+    // what the editor's BPM and BPI boxes do
+    const size_t s2 = arg.find(' ');
+    const std::string what = arg.substr(0, s2);
+    const int value = s2 == std::string::npos ? 0 : atoi(arg.c_str() + s2 + 1);
+    if ((what != "bpm" && what != "bpi") || value <= 0) return "error: vote bpm N, or vote bpi N";
+    vote(what, value);
+    return "ok";
+  }
+  if (verb == "nextinterval")
+  {
+    Snapshot s;
+    getSnapshot(s);
+    return s.nextIntervalPpq < 0 ? std::string() : nextIntervalText(s.hostChip, s.nextIntervalPpq, s.timeSigNum, s.timeSigDen);
+  }
   if (verb == "syncnote")
   {
     Snapshot s;

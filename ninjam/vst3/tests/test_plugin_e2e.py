@@ -285,6 +285,12 @@ class PluginEndToEndTest(unittest.TestCase):
 
         # joining: one vote takes the room (120) to the host's 100
         self.assertEqual(lines["SYNC join"], {"room_bpm": "100.0", "tempovotes": "1"}, log)
+        # the editor's line on where the next interval starts: on a bar (BPI 4 in 4/4), the next
+        # multiple of 4 beats after where the host is (or the one before, if one just started)
+        m = re.match(r"Next interval at Host bar (\d+)$", notes["next"] or "")
+        self.assertIsNotNone(m, log)
+        after = int(float(lines["NOTE next"]["ppq"]) // 4) + 2
+        self.assertIn(int(m.group(1)), (after - 1, after), log)
         # the host's tempo dragged to 110: one more vote
         self.assertEqual(lines["SYNC follow"], {"room_bpm": "110.0", "tempovotes": "2"}, log)
         # each interval starts on a host beat that is a multiple of BPI, every interval as long as usual
@@ -323,7 +329,7 @@ class PluginEndToEndTest(unittest.TestCase):
         # following off: the host at 120 votes nothing, and the note says how to follow
         self.assertEqual(lines["NOTE off"], {"room_bpm": "90.0", "tempovotes": "2", "bars": "off"}, log)
         self.assertEqual(notes["off"], host + " is at 120 BPM, the room at 90: set its tempo to 90, "
-                         "or turn on Follow Ableton's tempo", log)
+                         "or turn on Sync", log)
         # on again: one vote for 120, and the tempos agree
         self.assertEqual(lines["SYNC refollow"], {"room_bpm": "120.0", "tempovotes": "3"}, log)
         self.assertEqual(notes["same"], "", log)

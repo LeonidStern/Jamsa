@@ -1,7 +1,9 @@
 # Tests for the plug-in (configure with -DNINJAM_VST3_TESTS=ON), run with ctest:
 #
 #   plugin_unit_test   saved state, port mapping messages, following the host's tempo and bars,
-#                      the metronome's click
+#                      the metronome's click, the editor's texts and BPM dragging
+#   plugin_clipboard   (Linux, with xvfb-run) the Copy buttons' text, read back the way a
+#                      program that pastes reads it
 #   plugin_e2e         test_plugin_e2e.py: plugin_e2e_host loads NINJAM.vst3, which hosts a
 #                      server; a second client joins; audio both ways in Opus and FLAC.
 #                      Also two instances in one process, playing together, and a host whose
@@ -13,10 +15,20 @@ add_executable(plugin_unit_test
     ../source/engine.cpp
     ../source/hostserver.cpp
     ../source/hostsync.cpp
+    ../source/uitext.cpp
 )
 target_compile_features(plugin_unit_test PRIVATE cxx_std_17)
 target_link_libraries(plugin_unit_test PRIVATE ninjam_client ninjamsrv_embedded)
 add_test(NAME plugin_unit_test COMMAND plugin_unit_test)
+if(SMTG_LINUX)
+    target_sources(plugin_unit_test PRIVATE ../source/clipboard.cpp)
+    target_link_libraries(plugin_unit_test PRIVATE xcb)
+    # an X server of its own, so it runs on a machine without a display too
+    find_program(XVFB_RUN xvfb-run)
+    if(XVFB_RUN)
+        add_test(NAME plugin_clipboard COMMAND ${XVFB_RUN} -a $<TARGET_FILE:plugin_unit_test> clipboard)
+    endif()
+endif()
 
 if(NOT WIN32)
     # POSIX only (it reads its stdin with select)
