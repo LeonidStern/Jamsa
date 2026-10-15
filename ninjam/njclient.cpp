@@ -719,6 +719,7 @@ void NJClient::_reinit()
   m_active_bpm=120;
   m_active_bpi=32;
   m_interval_length=1000;
+  m_interval_length_usual=0;
   m_interval_pos=-1;
   m_metronome_pos=0.0;
   m_metronome_state=0;
@@ -820,6 +821,13 @@ void NJClient::GetPosition(int *pos, int *length)  // positions in samples
   if (pos && (*pos=m_interval_pos)<0) *pos=0;
 }
 
+void NJClient::SetIntervalEnd(int samples)
+{
+  if (m_interval_pos < 0 || samples < 1) return;
+  if (m_interval_length_usual <= 0) m_interval_length_usual=m_interval_length;
+  m_interval_length=m_interval_pos+samples;
+}
+
 unsigned int NJClient::GetSessionPosition()// returns milliseconds
 {
   unsigned int a=m_session_pos_ms;
@@ -870,6 +878,11 @@ void NJClient::AudioProc(float **inbuf, int innch, float **outbuf, int outnch, i
     int x=m_interval_length-m_interval_pos;
     if (!x || m_interval_pos < 0)
     {
+      if (m_interval_length_usual > 0) // SetIntervalEnd() changed the one that ends here
+      {
+        m_interval_length=m_interval_length_usual;
+        m_interval_length_usual=0;
+      }
       m_misc_cs.Enter();
       if (m_beatinfo_updated)
       {

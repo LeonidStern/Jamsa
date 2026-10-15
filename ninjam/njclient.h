@@ -150,6 +150,16 @@ public:
   float GetActualBPM() { return (float) m_active_bpm; }
   int GetBPI() { return m_active_bpi; }
   void GetPosition(int *pos, int *length);  // positions in samples
+  // true while AudioProc() plays intervals: connected, the server set the tempo, and the first one started
+  bool IsIntervalRunning() const { return m_audio_enable && m_interval_pos >= 0; }
+  // the length of an interval at the tempo playing now (GetPosition() gives the one playing now,
+  // which SetIntervalEnd() may have changed)
+  int GetUsualIntervalLength() const { return m_interval_length_usual > 0 ? m_interval_length_usual : m_interval_length; }
+  // Call it where AudioProc() runs, between calls: the interval playing now ends `samples` from
+  // now (at least 1), so it is shorter or longer than usual, and the next one starts then with
+  // the usual length. Each client's interval phase is its own, so a client can line it up with
+  // something else this way, such as a host's bars, without a jump inside an interval.
+  void SetIntervalEnd(int samples);
   int GetLoopCount() { return m_loopcnt; }
   unsigned int GetSessionPosition(); // returns milliseconds
 
@@ -265,6 +275,7 @@ protected:
   int m_loopcnt;
   int m_active_bpm, m_active_bpi;
   int m_interval_length;
+  int m_interval_length_usual; // while SetIntervalEnd() changed the interval playing now, else 0
   int m_interval_pos, m_metronome_state, m_metronome_tmp,m_metronome_interval;
   double m_metronome_pos;
 
