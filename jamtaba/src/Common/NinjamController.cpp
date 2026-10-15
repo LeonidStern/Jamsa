@@ -18,6 +18,8 @@
 #include "audio/SamplesBufferRecorder.h"
 #include "audio/vorbis/VorbisEncoder.h"
 #include "audio/vorbis/Vorbis.h"
+#include "audio/opus/OpusEncoder.h"
+#include "audio/flac/FlacEncoder.h"
 #include "gui/NinjamRoomWindow.h"
 #include "log/Logging.h"
 #include "MetronomeUtils.h"
@@ -59,12 +61,12 @@ public:
     }
 
     void addSamplesToEncode(const audio::SamplesBuffer &samplesToEncode, quint8 channelIndex,
-                            bool isFirstPart, bool isLastPart)
+                            bool isFirstPart, bool isLastPart, ninjam::AudioCodec codec)
     {
         // qCDebug(jtNinjamCore) << "Adding samples to encode";
         QMutexLocker locker(&mutex);
         chunksToEncode.push_back(EncodingChunk(samplesToEncode, channelIndex, isFirstPart,
-                                               isLastPart));
+                                               isLastPart, codec));
         // this method is called by Qt main thread (the producer thread).
         hasAvailableChunksToEncode.wakeAll();// wakeup the encoding thread (consumer thread)
     }
@@ -97,7 +99,7 @@ protected:
             }
 
             EncodingChunk chunk = !chunksToEncode.empty() ? chunksToEncode.front() : EncodingChunk(
-                audio::SamplesBuffer::ZERO_BUFFER, 0, false, false);
+                audio::SamplesBuffer::ZERO_BUFFER, 0, false, false, ninjam::AudioCodec::Vorbis);
 
             chunksToEncode.erase(chunksToEncode.begin()); // remove first element
 
@@ -105,13 +107,16 @@ protected:
 
             if (!chunk.buffer.isEmpty())
             {
+                if (chunk.firstPart) // the codec changes only in the interval start
+                    controller->setEncoderCodec(chunk.channelIndex, chunk.codec);
+
                 QByteArray encodedBytes(controller->encode(chunk.buffer, chunk.channelIndex));
                 if (chunk.lastPart)
                     encodedBytes.append(controller->encodeLastPartOfInterval(chunk.channelIndex));
 
                 if (!encodedBytes.isEmpty())
                     emit controller->encodedAudioAvailableToSend(encodedBytes, chunk.channelIndex,
-                                                                 chunk.firstPart, chunk.lastPart);
+                                                                 chunk.firstPart, chunk.lastPart, chunk.codec);
             }
         }
         qCDebug(jtNinjamCore) << "Encoding thread stopped!";
@@ -123,11 +128,12 @@ private:
     {
     public:
         EncodingChunk(const audio::SamplesBuffer &buffer, quint8 channelIndex, bool firstPart,
-                      bool lastPart) :
+                      bool lastPart, ninjam::AudioCodec codec) :
             buffer(buffer),
             channelIndex(channelIndex),
             firstPart(firstPart),
-            lastPart(lastPart)
+            lastPart(lastPart),
+            codec(codec)
         {
         }
 
@@ -135,6 +141,7 @@ private:
         quint8 channelIndex;
         bool firstPart;
         bool lastPart;
+        ninjam::AudioCodec codec;
     };
 
     std::vector<EncodingChunk> chunksToEncode;
@@ -240,11 +247,17 @@ NinjamController::NinjamController(controller::MainController *mainController) :
     lastBeat(0),
     currentBpi(0),
     currentBpm(0),
+    roomCodec(ninjam::AudioCodec::Vorbis),
+    intervalCodec(ninjam::AudioCodec::Vorbis),
+    roomCodecAnnounced(false),
     encodingThread(nullptr),
     preparedForTransmit(false),
     waitingIntervals(0) // waiting for start transmit
 {
     running = false;
+
+    // intervalBeatChanged is emitted in the audio thread, the Opus and FLAC intervals are decoded ahead in every beat
+    connect(this, &NinjamController::intervalBeatChanged, this, &NinjamController::decodeAhead, Qt::QueuedConnection);
 }
 
 User NinjamController::getUserByName(const QString &userName) const
@@ -374,7 +387,7 @@ void NinjamController::process(const audio::SamplesBuffer &in, audio::SamplesBuf
 
                             // encoding is running in another thread to avoid slow down the audio thread
                             encodingThread->addSamplesToEncode(inputMixBuffer, groupIndex,
-                                                               isFirstPart, isLastPart);
+                                                               isFirstPart, isLastPart, intervalCodec);
                         }
                     }
                 }
@@ -505,6 +518,8 @@ void NinjamController::stop(bool emitDisconnectedSignal)
                &NinjamController::updateNinjamRemoteChannel);
     disconnect(ninjamService, &Service::audioIntervalDownloading, this,
                &NinjamController::handleIntervalDownloading);
+    disconnect(ninjamService, &Service::codecMaskChanged, this,
+               &NinjamController::setCodecMask);
 
     disconnect(ninjamService, &Service::publicChatMessageReceived, this,
                &NinjamController::publicChatMessageReceived);
@@ -544,6 +559,12 @@ void NinjamController::start(const ServerInfo &server)
 
     preparedForTransmit = false; // the xmit start after the first interval is received
     emit preparingTransmission();
+
+    // the server sends the codec mask just after the authentication, maybe before this controller is started
+    auto service = mainController->getNinjamService();
+    roomCodecAnnounced = service->hasCodecMask();
+    roomCodec = ninjam::codecFromMask(service->getCodecMask()); // Vorbis when the server sent no mask
+    intervalCodec = roomCodec.load();
 
     // schedule the encoders creation (one encoder for each channel)
     int channels = mainController->getInputTrackGroupsCount();
@@ -592,6 +613,8 @@ void NinjamController::start(const ServerInfo &server)
                 &NinjamController::updateNinjamRemoteChannel);
         connect(ninjamService, &Service::audioIntervalDownloading, this,
                 &NinjamController::handleIntervalDownloading);
+        connect(ninjamService, &Service::codecMaskChanged, this,
+                &NinjamController::setCodecMask);
         connect(ninjamService, &Service::userExited, this,
                 &NinjamController::handleNinjamUserExiting);
         connect(ninjamService, &Service::userEntered, this,
@@ -615,6 +638,9 @@ void NinjamController::start(const ServerInfo &server)
         this->running = true;
 
         emit started();
+
+        if (roomCodecAnnounced)
+            emit roomCodecChanged(roomCodec);
     }
     qCDebug(jtNinjamCore) << "ninjam controller started!";
 }
@@ -733,6 +759,19 @@ void NinjamController::voteBpm(int bpm)
     mainController->getNinjamService()->voteToChangeBPM(bpm);
 }
 
+void NinjamController::changeRoomCodec(ninjam::AudioCodec codec)
+{
+    mainController->getNinjamService()->changeRoomCodec(codec);
+}
+
+void NinjamController::setCodecMask(quint32 codecMask)
+{
+    roomCodecAnnounced = true;
+    roomCodec = ninjam::codecFromMask(codecMask); // used in the next interval
+
+    emit roomCodecChanged(roomCodec);
+}
+
 void NinjamController::setMetronomeBeatsPerAccent(int beatsPerAccent, int currentBpi)
 {
     metronomeTrackNode->setBeatsPerAccent(beatsPerAccent, currentBpi);
@@ -778,6 +817,9 @@ void NinjamController::handleNewInterval()
             waitingIntervals++;
         }
     }
+
+    // the codec of the intervals starting now, it can change only in the interval start
+    intervalCodec = roomCodec.load();
 
     if (hasScheduledChanges())
         processScheduledChanges();
@@ -869,13 +911,13 @@ void NinjamController::scheduleBpmChangeEvent(quint16 newBpm)
 }
 
 void NinjamController::handleIntervalCompleted(const User &user, quint8 channelIndex,
-                                               const QByteArray &encodedData)
+                                               const QByteArray &encodedData, ninjam::AudioCodec codec)
 {
     if (mainController->isMultiTrackRecordingActivated())
     {
         auto geoLocation = mainController->getGeoLocation(user.getIp());
         QString userName = user.getName() + " from " + geoLocation.countryName;
-        mainController->saveEncodedAudio(userName, channelIndex, encodedData);
+        mainController->saveEncodedAudio(userName, channelIndex, encodedData, codec);
     }
 
     auto channel = user.getChannel(channelIndex);
@@ -886,7 +928,7 @@ void NinjamController::handleIntervalCompleted(const User &user, quint8 channelI
         NinjamTrackNode *trackNode = trackNodes[channelKey];
         if (trackNode)
         {
-            trackNode->addVorbisEncodedInterval(encodedData);
+            trackNode->addEncodedInterval(encodedData, codec);
             emit channelAudioFullyDownloaded(trackNode->getID());
         }
     }
@@ -894,6 +936,15 @@ void NinjamController::handleIntervalCompleted(const User &user, quint8 channelI
     {
         qWarning() << "The channel " << channelIndex << " of user " << user.getName()
                    << " not founded in map!";
+    }
+}
+
+void NinjamController::decodeAhead()
+{
+    QMutexLocker locker(&mutex);
+    for (auto trackNode : trackNodes.values()) {
+        if (trackNode)
+            trackNode->decodeAhead();
     }
 }
 
@@ -928,6 +979,34 @@ QByteArray NinjamController::encodeLastPartOfInterval(uint channelIndex)
     return QByteArray();
 }
 
+AudioEncoder *NinjamController::createEncoder(ninjam::AudioCodec codec, int channels, bool voiceChatActivated) const
+{
+    int sampleRate = mainController->getSampleRate();
+    float encodingQuality = voiceChatActivated ? vorbis::EncoderQualityLow : mainController->getEncodingQuality();
+
+    switch (codec) {
+    case ninjam::AudioCodec::Opus:
+        return new opus::Encoder(channels, sampleRate, opus::bitrateForVorbisQuality(encodingQuality));
+    case ninjam::AudioCodec::Flac:
+        return new flac::Encoder(channels, sampleRate); // lossless, the quality setting is not used
+    case ninjam::AudioCodec::Vorbis:
+        break;
+    }
+
+    return new vorbis::Encoder(channels, sampleRate, encodingQuality);
+}
+
+void NinjamController::setEncoderCodec(quint8 channelIndex, ninjam::AudioCodec codec)
+{
+    QMutexLocker locker(&encodersMutex);
+    if (!encoders.contains(channelIndex) || encoders[channelIndex]->getCodec() == codec)
+        return;
+
+    auto oldEncoder = encoders[channelIndex];
+    encoders[channelIndex] = createEncoder(codec, oldEncoder->getChannels(), mainController->isVoiceChatActivated(channelIndex));
+    delete oldEncoder;
+}
+
 void NinjamController::recreateEncoderForChannel(int channelIndex, bool voiceChannelActivated)
 {
     QMutexLocker locker(&encodersMutex);
@@ -947,10 +1026,8 @@ void NinjamController::recreateEncoderForChannel(int channelIndex, bool voiceCha
         if (currentEncoderIsInvalid && encoders.contains(channelIndex))
             delete encoders[channelIndex];
 
-        int sampleRate = mainController->getSampleRate();
-        float encodingQuality = voiceChannelActivated ? vorbis::EncoderQualityLow : mainController->getEncodingQuality();
-
-        encoders[channelIndex] = new vorbis::Encoder(maxChannelsForEncoding, sampleRate, encodingQuality);
+        // the new encoder uses the codec of the interval being encoded, the codec changes only in the interval start
+        encoders[channelIndex] = createEncoder(intervalCodec, maxChannelsForEncoding, voiceChannelActivated);
     }
 }
 
@@ -984,7 +1061,7 @@ void NinjamController::setSampleRate(int newSampleRate)
     recreateEncoders();
 }
 
-void NinjamController::handleIntervalDownloading(const User &user, quint8 channelIndex, const QByteArray &encodedAudio, bool isFirstPart, bool isLastPart)
+void NinjamController::handleIntervalDownloading(const User &user, quint8 channelIndex, const QByteArray &encodedAudio, bool isFirstPart, bool isLastPart, ninjam::AudioCodec codec)
 {
     auto channel = user.getChannel(channelIndex);
     QString channelKey = getUniqueKeyForChannel(channel, user.getFullName());
@@ -1000,6 +1077,6 @@ void NinjamController::handleIntervalDownloading(const User &user, quint8 channe
 
         emit channelAudioChunkDownloaded(track->getID());
 
-        track->addVorbisEncodedChunk(encodedAudio, isFirstPart, isLastPart);
+        track->addEncodedChunk(encodedAudio, isFirstPart, isLastPart, codec);
     }
 }

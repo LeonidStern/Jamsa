@@ -18,7 +18,7 @@ const QStringList Service::botNames = buildBotNamesList();
 // ---------------------------------------------------------------------
 
 /**
-    This is a nested class used to bind the downloaded audio data (encoded in ogg vorbis) with a GUID (global unique ID),
+    This is a nested class used to bind the downloaded audio data (encoded in Vorbis, Opus or FLAC) with a GUID (global unique ID),
     an user name and a channel index (users can use more than one channel). When a dowload is finished (the ninjam audio interval is
     fully downloaded) we need emit a signal, and in this moment we need the user name and the channel index.
 */
@@ -27,11 +27,12 @@ class Service::Download
 {
 
 public:
-    Download(const QString &userFullName, quint8 channelIndex, const QByteArray &GUID, bool audio = true) :
+    Download(const QString &userFullName, quint8 channelIndex, const QByteArray &GUID, bool audio, ninjam::AudioCodec codec) :
         channelIndex(channelIndex),
         userFullName(userFullName),
         GUID(GUID),
-        containsAudio(audio)
+        containsAudio(audio),
+        codec(codec)
     {
 
     }
@@ -49,6 +50,11 @@ public:
     inline bool isAudio() const
     {
         return containsAudio;
+    }
+
+    inline ninjam::AudioCodec getCodec() const
+    {
+        return codec;
     }
 
     inline void appendEncodedData(const QByteArray &data)
@@ -81,7 +87,8 @@ private:
     QString userFullName;
     QByteArray GUID; // Global Unique ID
     QByteArray vorbisData;
-    bool containsAudio; // Ogg Vorbis audio? Other intervals (e.g. JamTaba video) are ignored
+    bool containsAudio; // Vorbis, Opus or FLAC audio? Other intervals (e.g. JamTaba video) are ignored
+    ninjam::AudioCodec codec;
 };
 
 // ++++++++++++++++++++++++++++++++++++++++
@@ -132,12 +139,12 @@ void Service::sendIntervalPart(const QByteArray &GUID, const QByteArray &encoded
     sendMessageToServer(msg);
 }
 
-void Service::sendIntervalBegin(const QByteArray &GUID, quint8 channelIndex, bool isAudioInterval)
+void Service::sendIntervalBegin(const QByteArray &GUID, quint8 channelIndex, ninjam::AudioCodec codec)
 {
     if (!initialized)
         return;
 
-    auto msg = UploadIntervalBegin(GUID, channelIndex, isAudioInterval);
+    auto msg = UploadIntervalBegin(GUID, channelIndex, ninjam::codecFourCC(codec));
     sendMessageToServer(msg);
 }
 
@@ -162,6 +169,8 @@ void Service::clear()
 {
     initialized = false;
     currentServer.reset();
+    codecMask = 0;
+    codecMaskReceived = false;
 }
 
 void Service::handleSocketError(QAbstractSocket::SocketError e)
@@ -228,6 +237,12 @@ void Service::voteToChangeBPI(quint16 newBPI)
 void Service::voteToChangeBPM(quint16 newBPM)
 {
     QString text = "!vote bpm " + QString::number(newBPM);
+    sendMessageToServer(ClientToServerChatMessage::buildPublicMessage(text));
+}
+
+void Service::changeRoomCodec(ninjam::AudioCodec codec)
+{
+    QString text = "!codec " + ninjam::codecName(codec);
     sendMessageToServer(ClientToServerChatMessage::buildPublicMessage(text));
 }
 
@@ -303,7 +318,7 @@ void Service::process(const DownloadIntervalBegin &msg)
         quint8 channelIndex = msg.getChannelIndex();
         QString userFullName = msg.getUserName();
         QByteArray GUID = msg.getGUID();
-        downloads.insert(GUID, Download(userFullName, channelIndex, GUID, msg.isAudio()));
+        downloads.insert(GUID, Download(userFullName, channelIndex, GUID, msg.isAudio(), msg.getCodec()));
     }
 }
 
@@ -312,7 +327,7 @@ void Service::process(const DownloadIntervalWrite &msg)
     if (downloads.contains(msg.getGUID())) {
         Download &download = downloads[msg.getGUID()];
 
-        if (!download.isAudio()) { // not an Ogg Vorbis interval (e.g. JamTaba video), ignored
+        if (!download.isAudio()) { // not a Vorbis, Opus or FLAC interval (e.g. JamTaba video), ignored
             if (msg.downloadIsComplete())
                 downloads.remove(msg.getGUID());
             return;
@@ -330,16 +345,30 @@ void Service::process(const DownloadIntervalWrite &msg)
 
         if (user.getChannel(download.getChannelIndex()).isActive()) {
             if (msg.downloadIsComplete()) {
-                emit audioIntervalDownloading(user, download.getChannelIndex(), msg.getEncodedData(), isFirstPart, true); // the last chunk
-                emit audioIntervalCompleted(user, download.getChannelIndex(), download.getEncodedData()); // full interval
+                emit audioIntervalDownloading(user, download.getChannelIndex(), msg.getEncodedData(), isFirstPart, true, download.getCodec()); // the last chunk
+                emit audioIntervalCompleted(user, download.getChannelIndex(), download.getEncodedData(), download.getCodec()); // full interval
                 downloads.remove(msg.getGUID());
             }
             else
-                emit audioIntervalDownloading(user, download.getChannelIndex(), msg.getEncodedData(), isFirstPart, false);
+                emit audioIntervalDownloading(user, download.getChannelIndex(), msg.getEncodedData(), isFirstPart, false, download.getCodec());
         }
     } else {
         qCritical() << "GUID is not in map!";
     }
+}
+
+void Service::process(const ServerCodecMaskMessage &msg)
+{
+    if (!msg.isValid())
+        return;
+
+    bool changed = !codecMaskReceived || msg.getCodecMask() != codecMask;
+
+    codecMask = msg.getCodecMask();
+    codecMaskReceived = true;
+
+    if (changed)
+        emit codecMaskChanged(codecMask);
 }
 
 void Service::process(const ServerKeepAliveMessage &)

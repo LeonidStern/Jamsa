@@ -10,6 +10,8 @@
 #include <QDataStream>
 #include <QString>
 
+#include <cstring>
+
 using ninjam::client::ClientMessage;
 using ninjam::client::ClientAuthUserMessage;
 using ninjam::client::UploadIntervalWrite;
@@ -54,7 +56,7 @@ ClientMessage::~ClientMessage()
 ClientAuthUserMessage::ClientAuthUserMessage(const QString &userName, const QByteArray &challenge, quint32 protocolVersion, const QString &password)
     : ClientMessage(MessageType::ClientAuthUser, 0),
       userName(userName),
-      clientCapabilites(1),
+      clientCapabilites(ninjam::ClientCapabilityLicenceAgreement | ninjam::ClientCapabilityOpus | ninjam::ClientCapabilityFlac), // JamTaba plays Vorbis, Opus and FLAC
       protocolVersion(protocolVersion),
       challenge(challenge)
 {
@@ -450,25 +452,15 @@ void ClientToServerChatMessage::printDebug(QDebug &dbg) const
 
 //+++++++++++++++++++++++++
 
-UploadIntervalBegin::UploadIntervalBegin(const QByteArray &GUID, quint8 channelIndex, bool isAudioInterval) :
+UploadIntervalBegin::UploadIntervalBegin(const QByteArray &GUID, quint8 channelIndex, const QByteArray &fourCC) :
     ClientMessage(MessageType::UploadIntervalBegin, 16 + 4 + 4 + 1),
     GUID(GUID),
     estimatedSize(0),
     channelIndex(channelIndex)
 {
-    if (isAudioInterval) {
-        this->fourCC[0] = 'O';
-        this->fourCC[1] = 'G';
-        this->fourCC[2] = 'G';
-        this->fourCC[3] = 'v';
-    }
-    else {
-        // JamTaba Video prefix
-        this->fourCC[0] = 'J';
-        this->fourCC[1] = 'T';
-        this->fourCC[2] = 'B';
-        this->fourCC[3] = 'v';
-    }
+    Q_ASSERT(fourCC.size() == 4); // 'OGGv', 'OPUS', 'FLAC' or 'JTBv' (JamTaba video)
+
+    std::memcpy(this->fourCC, fourCC.constData(), sizeof(this->fourCC));
 }
 
 UploadIntervalBegin UploadIntervalBegin::from(QIODevice *device, quint32 payload)
@@ -491,8 +483,7 @@ UploadIntervalBegin UploadIntervalBegin::from(QIODevice *device, quint32 payload
     // reading and discarding another bytes, old jamtaba versions are wrongly sending user name in this message
     ninjam::extractString(stream, payload - 16 - 4 - 4 - 1);
 
-    bool isAudioInterval = fourCC[0] == 'O' && fourCC[1] == 'G' && fourCC[2] == 'G' && fourCC[3] == 'v';
-    return UploadIntervalBegin(GUID, channelIndex, isAudioInterval);
+    return UploadIntervalBegin(GUID, channelIndex, fourCC);
 }
 
 void UploadIntervalBegin::serializeTo(QIODevice *device) const

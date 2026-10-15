@@ -4,6 +4,7 @@
 #include <QByteArray>
 
 #include "audio/core/SamplesBuffer.h"
+#include "ninjam/Ninjam.h"
 
 /**
  * @brief The 'interface' for audio encoders
@@ -16,6 +17,7 @@ class AudioEncoder
         virtual QByteArray finishIntervalEncoding() = 0;
         virtual int getChannels() const = 0;
         virtual int getSampleRate() const = 0;
+        virtual ninjam::AudioCodec getCodec() const = 0;
 };
 
 #endif

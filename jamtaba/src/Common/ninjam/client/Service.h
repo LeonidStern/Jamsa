@@ -31,6 +31,7 @@ namespace client
     class UserInfoChangeNotifyMessage;
     class DownloadIntervalBegin;
     class DownloadIntervalWrite;
+    class ServerCodecMaskMessage;
     class User;
     class UserChannel;
     struct ChannelMetadata;
@@ -55,7 +56,7 @@ namespace client
 
         // audio interval upload
         void sendIntervalPart(const QByteArray &GUID, const QByteArray &encodedAudioBuffer, bool isLastPart);
-        void sendIntervalBegin(const QByteArray &GUID, quint8 channelIndex, bool isAudioInterval);
+        void sendIntervalBegin(const QByteArray &GUID, quint8 channelIndex, ninjam::AudioCodec codec);
 
         void sendNewChannelsListToServer(const QList<ChannelMetadata> &channelsMetadata);
         void sendRemovedChannelIndex(int removedChannelIndex);
@@ -70,6 +71,11 @@ namespace client
 
         void voteToChangeBPM(quint16 newBPM);
         void voteToChangeBPI(quint16 newBPI);
+        void changeRoomCodec(ninjam::AudioCodec codec); // the '!codec' chat command
+
+        // The codec mask is received only from servers that know about Opus and FLAC
+        inline bool hasCodecMask() const { return codecMaskReceived; }
+        inline quint32 getCodecMask() const { return codecMask; }
 
         inline ServerInfo *getCurrentServer() const { return currentServer.data(); }
 
@@ -87,8 +93,9 @@ namespace client
         void serverBpiChanged(quint16 currentBpi, quint16 lastBpi);
         void serverBpmChanged(quint16 currentBpm);
         void serverInitialBpmBpiAvailable(quint16 bpm, quint16 bpi);
-        void audioIntervalCompleted(const User &user, quint8 channelIndex, const QByteArray &encodedAudioData);
-        void audioIntervalDownloading(const User &user, quint8 channelIndex, const QByteArray &encodedAudioData, bool isFirstPart, bool isLastPart);
+        void audioIntervalCompleted(const User &user, quint8 channelIndex, const QByteArray &encodedAudioData, ninjam::AudioCodec codec);
+        void audioIntervalDownloading(const User &user, quint8 channelIndex, const QByteArray &encodedAudioData, bool isFirstPart, bool isLastPart, ninjam::AudioCodec codec);
+        void codecMaskChanged(quint32 codecMask);
         void disconnectedFromServer(const ServerInfo &server);
         void connectedInServer(const ServerInfo &server);
         void publicChatMessageReceived(const User &sender, const QString &message);
@@ -110,6 +117,7 @@ namespace client
         virtual void process(const ServerKeepAliveMessage &msg);
         virtual void process(const DownloadIntervalBegin &msg);
         virtual void process(const DownloadIntervalWrite &msg);
+        virtual void process(const ServerCodecMaskMessage &msg);
 
     private slots:
         void handleAllReceivedMessages();
@@ -137,6 +145,9 @@ namespace client
         QString userName;
         QString password;
         QList<ChannelMetadata> channels; // channels names and voice chat flag
+
+        quint32 codecMask = 0;
+        bool codecMaskReceived = false;
 
         NetworkUsageMeasurer totalUploadMeasurer;
         NetworkUsageMeasurer totalDownloadMeasurer;

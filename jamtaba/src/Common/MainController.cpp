@@ -264,9 +264,9 @@ void MainController::updateBpm(int newBpm)
     }
 }
 
-void MainController::enqueueAudioDataToUpload(const QByteArray &encodedData, quint8 channelIndex, bool isFirstPart)
+void MainController::enqueueAudioDataToUpload(const QByteArray &encodedData, quint8 channelIndex, bool isFirstPart, bool isLastPart, ninjam::AudioCodec codec)
 {
-    Q_ASSERT(encodedData.left(4) == "OggS");
+    Q_UNUSED(isLastPart) // the last part is sent when the next interval starts
 
     if (isFirstPart) {
         if (audioIntervalsToUpload.contains(channelIndex)) {
@@ -279,7 +279,7 @@ void MainController::enqueueAudioDataToUpload(const QByteArray &encodedData, qui
         UploadIntervalData newInterval; // generate a new GUID
         audioIntervalsToUpload.insert(channelIndex, newInterval);
 
-        ninjamService->sendIntervalBegin(newInterval.getGUID(), channelIndex, true); // starting a new audio interval
+        ninjamService->sendIntervalBegin(newInterval.getGUID(), channelIndex, codec); // starting a new audio interval
     }
 
     if (audioIntervalsToUpload.contains(channelIndex)) {
@@ -298,7 +298,7 @@ void MainController::enqueueAudioDataToUpload(const QByteArray &encodedData, qui
 
     if (settings.isSaveMultiTrackActivated() && isPlayingInNinjamRoom()) {
         for (auto jamRecorder : getActiveRecorders())
-            jamRecorder->appendLocalUserAudio(encodedData, channelIndex, isFirstPart);
+            jamRecorder->appendLocalUserAudio(encodedData, channelIndex, isFirstPart, codec);
     }
 }
 
@@ -360,11 +360,11 @@ void MainController::mixGroupedInputs(int groupIndex, audio::SamplesBuffer &out)
 }
 
 // this is called when a new ninjam interval is received and the 'record multi track' option is enabled
-void MainController::saveEncodedAudio(const QString &userName, quint8 channelIndex, const QByteArray &encodedAudio)
+void MainController::saveEncodedAudio(const QString &userName, quint8 channelIndex, const QByteArray &encodedAudio, ninjam::AudioCodec codec)
 {
     if (settings.isSaveMultiTrackActivated()) { // just in case
         for (auto jamRecorder : getActiveRecorders())
-            jamRecorder->addRemoteUserAudio(userName, encodedAudio, channelIndex);
+            jamRecorder->addRemoteUserAudio(userName, encodedAudio, channelIndex, codec);
     }
 }
 

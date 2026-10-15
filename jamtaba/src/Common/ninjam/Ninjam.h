@@ -29,6 +29,7 @@ enum class MessageType : quint8
     UserInfoChangeNorify = 0x03,        // received when user add/remove channels or rename a channel
     DownloadIntervalBegin = 0x04, // received when server is notifiyng about the start of a new audio interval stream
     DownloadIntervalWrite = 0x05, // received for every audio interval chunk. We receive a lot of these messages while jamming.
+    ServerCodecMask = 0x06,       // received when the room's audio codec changes (only by clients that can decode Opus or FLAC)
     UploadIntervalBegin = 0x83,//
     UploadIntervalWrite = 0x84, //
     ClientSetUserMask = 0x81,
@@ -46,7 +47,7 @@ public:
 
     inline bool isValid() const
     {
-        return messageType != MessageType::Invalid;
+        return valid;
     }
 
     inline MessageType getMessageType() const
@@ -65,7 +66,29 @@ private:
 
     MessageType messageType = MessageType::Invalid;
     quint32 payload = 0;
+    bool valid = false;
 };
+
+// ++++++++++++++++++++++++++++++++++++++++++
+
+// The audio codecs of the intervals. Servers that know about Opus and FLAC tell the
+// clients which one the room uses (MessageType::ServerCodecMask), the others use Vorbis.
+enum class AudioCodec : quint8
+{
+    Vorbis, // 'OGGv', Ogg Vorbis
+    Opus,   // 'OPUS', Ogg Opus, one Ogg stream per interval
+    Flac    // 'FLAC', native FLAC, one stream per interval
+};
+
+// client capabilities bits (sent when authenticating), also used in the server codec mask
+const quint32 ClientCapabilityLicenceAgreement = 0x01;
+const quint32 ClientCapabilityOpus = 0x100;
+const quint32 ClientCapabilityFlac = 0x200;
+
+QByteArray codecFourCC(AudioCodec codec);
+bool codecFromFourCC(const QByteArray &fourCC, AudioCodec &codec); // false for other intervals (e.g. JamTaba video)
+AudioCodec codecFromMask(quint32 codecMask); // the codec to upload when the server sends this mask
+QString codecName(AudioCodec codec); // the name used in the !codec chat command
 
 void serializeString(const QString &string, QDataStream &stream);
 void serializeByteArray(const QByteArray &array, QDataStream &stream);

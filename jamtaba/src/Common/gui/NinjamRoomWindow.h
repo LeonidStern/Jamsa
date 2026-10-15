@@ -142,6 +142,7 @@ private slots:
     // ninjam panel controls
     void setNewBpi(const QString &);
     void setNewBpm(const QString &);
+    void setNewCodec(ninjam::AudioCodec codec);
     void handleAccentBeatsComboChange(int);
     void handleMidiSyncChange(bool);
     void handleCustomAccentBeatsChange(const QList<int> &);

@@ -7,6 +7,18 @@ using recorder::Jam;
 using recorder::JamTrack;
 using recorder::JamAudioFile;
 
+QString ReaperProjectGenerator::getSourceType(const QString &audioFilePath)
+{
+    QString extension = QFileInfo(audioFilePath).suffix().toLower();
+    if (extension == "opus")
+        return "OPUS";
+
+    if (extension == "flac")
+        return "FLAC";
+
+    return "VORBIS";
+}
+
 void ReaperProjectGenerator::write(const Jam &jam)
 {
     QString stringBuffer("");
@@ -40,9 +52,9 @@ void ReaperProjectGenerator::write(const Jam &jam)
             stringBuffer.append("      IGUID "+ QUuid::createUuid().toString()).append("\n");
             stringBuffer.append("      NAME \"" + QFileInfo(audioFile.getPath()).baseName() + "\"").append("\n");
             stringBuffer.append("      GUID "+ trackGUID).append("\n");
-            stringBuffer.append("      <SOURCE VORBIS").append("\n");
+            stringBuffer.append("      <SOURCE " + getSourceType(filePath)).append("\n");
             stringBuffer.append("        FILE \"" + filePath + "\"").append("\n");
-            stringBuffer.append("      >").append("\n");//close SOURCE VORBIS
+            stringBuffer.append("      >").append("\n");//close SOURCE
             stringBuffer.append("    >").append("\n");//close item
             part++;
         }

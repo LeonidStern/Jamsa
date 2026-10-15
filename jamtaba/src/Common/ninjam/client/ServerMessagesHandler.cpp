@@ -26,9 +26,13 @@ void ServerMessagesHandler::initialize(QIODevice *device)
 void ServerMessagesHandler::handleAllMessages()
 {
     Q_ASSERT(device);
-    while (device->bytesAvailable() >= 5) { // consume all messages. Every ninjam message contains a 5 bytes header.
-        if (!currentHeader.isValid())
+    forever { // consume all messages
+        if (!currentHeader.isValid()) {
+            if (device->bytesAvailable() < 5) // every ninjam message contains a 5 bytes header
+                break;
+
             currentHeader = MessageHeader::from(device);
+        }
 
         bool successfullyProcessed = executeMessageHandler(currentHeader);
         if (successfullyProcessed)
@@ -59,8 +63,21 @@ bool ServerMessagesHandler::executeMessageHandler(const MessageHeader &header)
         return handleMessage<DownloadIntervalBegin>(header.getPayload());
     case MessageType::DownloadIntervalWrite:
         return handleMessage<DownloadIntervalWrite>(header.getPayload());
+    case MessageType::ServerCodecMask:
+        return handleMessage<ServerCodecMaskMessage>(header.getPayload());
     default:
-        qCritical() << "Can't handle the message code " << static_cast<quint8>(header.getMessageType());
+        break;
     }
-    return false;
+
+    qCDebug(jtNinjamProtocol) << "Skipping the unknown message code" << static_cast<quint8>(header.getMessageType());
+    return skipMessage(header.getPayload());
+}
+
+bool ServerMessagesHandler::skipMessage(quint32 payload)
+{
+    if (device->bytesAvailable() < payload)
+        return false; // wait for the whole message
+
+    device->skip(payload);
+    return true;
 }

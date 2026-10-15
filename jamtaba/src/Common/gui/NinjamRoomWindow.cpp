@@ -303,6 +303,7 @@ NinjamPanel *NinjamRoomWindow::createNinjamPanel()
 
     connect(panel, &NinjamPanel::bpiComboActivated, this, &NinjamRoomWindow::setNewBpi);
     connect(panel, &NinjamPanel::bpmComboActivated, this, &NinjamRoomWindow::setNewBpm);
+    connect(panel, &NinjamPanel::codecComboActivated, this, &NinjamRoomWindow::setNewCodec);
     connect(panel, &NinjamPanel::accentsComboChanged, this, &NinjamRoomWindow::handleAccentBeatsComboChange);
     connect(panel, &NinjamPanel::accentsBeatsChanged, this, &NinjamRoomWindow::handleCustomAccentBeatsChange);
     connect(panel, &NinjamPanel::midiSyncChanged, this, &NinjamRoomWindow::handleMidiSyncChange);
@@ -728,6 +729,23 @@ void NinjamRoomWindow::setNewBpm(const QString &newText)
     mainController->getNinjamController()->voteBpm(newBpm);
 }
 
+// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+void NinjamRoomWindow::setNewCodec(ninjam::AudioCodec codec)
+{
+    auto ninjamController = mainController->getNinjamController();
+    if (codec == ninjamController->getRoomCodec())
+        return;
+
+    ninjamController->changeRoomCodec(codec); // the '!codec' chat command
+
+    // the server sends the new codec mask, or a chat message when the codec can't be changed
+    QTimer::singleShot(3000, this, [this]() {
+        auto ninjamController = mainController->getNinjamController();
+        if (ninjamController && ninjamController->isRoomCodecAnnounced())
+            ninjamPanel->setRoomCodec(ninjamController->getRoomCodec());
+    });
+}
+
 void NinjamRoomWindow::setupSignals(controller::NinjamController* ninjamController)
 {
     if(!ninjamController)
@@ -747,6 +765,8 @@ void NinjamRoomWindow::setupSignals(controller::NinjamController* ninjamControll
 
     connect(ninjamController, &NinjamController::currentBpiChanged, this, &NinjamRoomWindow::handleBpiChanges);
     connect(ninjamController, &NinjamController::currentBpmChanged, this, &NinjamRoomWindow::handleBpmChanges);
+
+    connect(ninjamController, &NinjamController::roomCodecChanged, ninjamPanel, &NinjamPanel::setRoomCodec);
 
     connect(ui->licenceButton, &QPushButton::clicked, this, &NinjamRoomWindow::showServerLicence);
 

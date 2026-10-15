@@ -271,7 +271,7 @@ If the GUID field is zero then the download should be stopped.
 
 If the FourCC field is zero then the download is complete.
 
-If the FourCC field contains "OGGv" then this is a valid Ogg Vorbis encoded download.
+If the FourCC field contains "OGGv", "OPUS" or "FLAC" then this is an audio download (Ogg Vorbis, Ogg Opus or FLAC).
 */
 
 class DownloadIntervalBegin : public ServerMessage
@@ -306,11 +306,12 @@ public:
         return GUID;
     }
 
-    bool isAudio() const; // Ogg Vorbis interval ('OGGv'). Other intervals (e.g. JamTaba video) are ignored.
+    bool isAudio() const; // Vorbis, Opus or FLAC interval. Other intervals (e.g. JamTaba video) are ignored.
+    ninjam::AudioCodec getCodec() const;
 
     inline bool shouldBeStopped() const
     {
-        return GUID.at(0) == '0' && GUID.at(GUID.size()-1) == '0';
+        return GUID.count('\0') == GUID.size(); // a zero GUID is an interval with no audio (silence)
     }
 
     inline bool isComplete() const
@@ -369,6 +370,37 @@ private:
     QByteArray GUID;
     quint8 flags;
     QByteArray encodedData;
+};
+
+/*
+  Offset Type     Field
+  0x0    uint32_t Codecs
+
+  The codecs the clients can upload (0x100 Opus, 0x200 FLAC; zero is Vorbis). The server
+  sends it only to clients that can decode Opus or FLAC, every time the room's codec changes.
+  Longer messages are accepted (future extensions).
+*/
+class ServerCodecMaskMessage : public ServerMessage
+{
+public:
+    explicit ServerCodecMaskMessage(quint32 codecMask, bool valid = true);
+    static ServerCodecMaskMessage from(QIODevice *device, quint32 payload);
+
+    void printDebug(QDebug &dbg) const override;
+
+    inline quint32 getCodecMask() const
+    {
+        return codecMask;
+    }
+
+    inline bool isValid() const
+    {
+        return valid;
+    }
+
+private:
+    quint32 codecMask;
+    bool valid; // false when the payload is shorter than 4 bytes
 };
 
 // ++++++++++++++++++++

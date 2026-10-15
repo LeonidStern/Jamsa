@@ -7,6 +7,9 @@
 #include <QMap>
 
 #include "audio/Encoder.h"
+#include "ninjam/Ninjam.h"
+
+#include <atomic>
 
 class NinjamTrackNode;
 
@@ -55,6 +58,11 @@ public:
     void voteBpi(int newBpi);
     void voteBpm(int newBpm);
 
+    // the codec the room uses, announced by servers that know about Opus and FLAC (Vorbis in other servers)
+    ninjam::AudioCodec getRoomCodec() const;
+    bool isRoomCodecAnnounced() const;
+    void changeRoomCodec(ninjam::AudioCodec codec);
+
     void setBpm(int newBpm);
     void setBpmBpi(int initialBpm, int initalBpi);
 
@@ -70,6 +78,7 @@ public:
     QByteArray encode(const SamplesBuffer &buffer, uint channelIndex);
     QByteArray encodeLastPartOfInterval(uint channelIndex);
 
+    void setEncoderCodec(quint8 channelIndex, ninjam::AudioCodec codec); // called in interval start, in the encoding thread
     void scheduleEncoderChangeForChannel(int channelIndex, bool voiceChatActivated);
     void removeEncoder(int groupChannelIndex);
 
@@ -112,7 +121,9 @@ signals:
     void topicMessageReceived(const QString &message);
 
     void encodedAudioAvailableToSend(const QByteArray &encodedAudio, quint8 channelIndex,
-                                     bool isFirstPart, bool isLastPart);
+                                     bool isFirstPart, bool isLastPart, ninjam::AudioCodec codec);
+
+    void roomCodecChanged(ninjam::AudioCodec codec);
 
     void preparingTransmission();     // waiting for start transmission
     void preparedToTransmit();     // this signal is emmited one time, when Jamtaba is ready to transmit (after wait some complete itervals)
@@ -157,6 +168,11 @@ private:
 
     QMap<int, AudioEncoder *> encoders;
     AudioEncoder *getEncoder(quint8 channelIndex);
+    AudioEncoder *createEncoder(ninjam::AudioCodec codec, int channels, bool voiceChatActivated) const;
+
+    std::atomic<ninjam::AudioCodec> roomCodec; // the codec in the last mask sent by the server
+    std::atomic<ninjam::AudioCodec> intervalCodec; // the codec of the intervals being uploaded, chosen in interval start
+    bool roomCodecAnnounced;
 
     void handleNewInterval();
     void recreateEncoderForChannel(int channelIndex, bool voiceChannelActivated);
@@ -184,8 +200,10 @@ private slots:
     void scheduleBpmChangeEvent(quint16 newBpm);
     void scheduleBpiChangeEvent(quint16 newBpi, quint16 oldBpi);
     void handleIntervalCompleted(const User &user, quint8 channelIndex,
-                                 const QByteArray &encodedAudioData);
-    void handleIntervalDownloading(const User &user, quint8 channelIndex, const QByteArray &encodedAudio, bool isFirstPart, bool isLastPart);
+                                 const QByteArray &encodedAudioData, ninjam::AudioCodec codec);
+    void handleIntervalDownloading(const User &user, quint8 channelIndex, const QByteArray &encodedAudio, bool isFirstPart, bool isLastPart, ninjam::AudioCodec codec);
+    void setCodecMask(quint32 codecMask);
+    void decodeAhead();
     void addNinjamRemoteChannel(const User &user, const UserChannel &channel);
     void removeNinjamRemoteChannel(const User &user, const UserChannel &channel);
     void updateNinjamRemoteChannel(const User &user, const UserChannel &channel);
@@ -218,6 +236,16 @@ inline int NinjamController::getCurrentBpi() const
 inline int NinjamController::getCurrentBpm() const
 {
     return currentBpm;
+}
+
+inline ninjam::AudioCodec NinjamController::getRoomCodec() const
+{
+    return roomCodec;
+}
+
+inline bool NinjamController::isRoomCodecAnnounced() const
+{
+    return roomCodecAnnounced;
 }
 
 inline bool NinjamController::isRunning() const

@@ -23,6 +23,7 @@ using ninjam::client::UserInfoChangeNotifyMessage;
 using ninjam::client::DownloadIntervalBegin;
 using ninjam::client::DownloadIntervalBegin;
 using ninjam::client::DownloadIntervalWrite;
+using ninjam::client::ServerCodecMaskMessage;
 using ninjam::client::UploadIntervalBegin;
 using ninjam::client::UploadIntervalWrite;
 using ninjam::client::ChatCommandType;
@@ -559,10 +560,15 @@ DownloadIntervalBegin DownloadIntervalBegin::from(QIODevice *device, quint32 pay
 
 bool DownloadIntervalBegin::isAudio() const
 {
-   return  fourCC[0] == 'O' &&
-           fourCC[1] == 'G' &&
-           fourCC[2] == 'G' &&
-           fourCC[3] == 'v';
+    ninjam::AudioCodec codec;
+    return ninjam::codecFromFourCC(getFourCC(), codec);
+}
+
+ninjam::AudioCodec DownloadIntervalBegin::getCodec() const
+{
+    auto codec = ninjam::AudioCodec::Vorbis;
+    ninjam::codecFromFourCC(getFourCC(), codec);
+    return codec;
 }
 
 void DownloadIntervalBegin::printDebug(QDebug &dbg) const
@@ -641,4 +647,31 @@ DownloadIntervalWrite DownloadIntervalWrite::from(QIODevice *device, quint32 pay
     return DownloadIntervalWrite(GUID, flags, encodedData);
 }
 
+// -------------------------------------------------------------------
 
+ServerCodecMaskMessage::ServerCodecMaskMessage(quint32 codecMask, bool valid) :
+    ServerMessage(MessageType::ServerCodecMask),
+    codecMask(codecMask),
+    valid(valid)
+{
+
+}
+
+ServerCodecMaskMessage ServerCodecMaskMessage::from(QIODevice *device, quint32 payload)
+{
+    if (payload < 4)
+        return ServerCodecMaskMessage(0, false); // malformed, ignored
+
+    QDataStream stream(device);
+    stream.setByteOrder(QDataStream::LittleEndian);
+
+    quint32 codecMask;
+    stream >> codecMask; // the rest of a longer message is skipped by ServerMessagesHandler
+
+    return ServerCodecMaskMessage(codecMask);
+}
+
+void ServerCodecMaskMessage::printDebug(QDebug &dbg) const
+{
+    dbg << "RECEIVE ServerCodecMask{ codecMask=" << Qt::hex << codecMask << Qt::dec << " valid=" << valid << "}" << Qt::endl;
+}

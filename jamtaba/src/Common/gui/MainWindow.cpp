@@ -1379,7 +1379,10 @@ void MainWindow::addNinjamServerChatMessage(const User &msgAuthor, const QString
     auto mainChatPanel = ui.chatTabWidget->getNinjamServerChat();
     Q_ASSERT(mainChatPanel);
 
-    mainChatPanel->addMessage(localUserName, remoteUserName, message, showTranslationButton, showBlockButton);
+    // the server's own messages (votes, the room's audio) come with an empty user name
+    auto authorName = remoteUserName.isEmpty() ? QStringLiteral("server@server") : remoteUserName;
+
+    mainChatPanel->addMessage(localUserName, authorName, message, showTranslationButton, showBlockButton);
 
     static bool localUserWasVotingInLastMessage = false;
 

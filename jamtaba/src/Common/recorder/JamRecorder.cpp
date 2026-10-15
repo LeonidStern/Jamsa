@@ -135,10 +135,16 @@ void JamRecorder::writeEncodedFile(const QByteArray& encodedData, const QString 
     audioFile.write(encodedData.data(), encodedData.size());
 }
 
-QString JamRecorder::buildAudioFileName(const QString &userName, quint8 channelIndex, int currentInterval)
+QString JamRecorder::buildAudioFileName(const QString &userName, quint8 channelIndex, int currentInterval, ninjam::AudioCodec codec)
 {
+    QString extension = ".ogg";
+    if (codec == ninjam::AudioCodec::Opus)
+        extension = ".opus";
+    else if (codec == ninjam::AudioCodec::Flac)
+        extension = ".flac";
+
     QString channelName = "Channel " + QString::number(channelIndex + 1);
-    return userName + " (" + channelName + ") part " + buildPaddedFileNumber(currentInterval) + ".ogg";
+    return userName + " (" + channelName + ") part " + buildPaddedFileNumber(currentInterval) + extension;
 }
 
 QString JamRecorder::buildPaddedFileNumber(int fileNumber)
@@ -164,7 +170,7 @@ JamRecorder::~JamRecorder()
     qCDebug(jtJamRecorder) << "Deleting JamRecorder!";
 }
 
-void JamRecorder::appendLocalUserAudio(const QByteArray &encodedAudio, quint8 channelIndex, bool isFirstPartOfInterval)
+void JamRecorder::appendLocalUserAudio(const QByteArray &encodedAudio, quint8 channelIndex, bool isFirstPartOfInterval, ninjam::AudioCodec codec)
 {
     if (!running) {
         qCritical() << "Illegal state! Recorder is not running!";
@@ -179,7 +185,7 @@ void JamRecorder::appendLocalUserAudio(const QByteArray &encodedAudio, quint8 ch
 
     bool needSave = isFirstPartOfInterval && !interval.isEmpty();
     if (needSave) {
-        QString audioFileName = buildAudioFileName(localUserName, channelIndex, interval.getIntervalIndex());
+        QString audioFileName = buildAudioFileName(localUserName, channelIndex, interval.getIntervalIndex(), interval.getCodec());
         QString audioFilePath = jamMetadataWritter->getAudioAbsolutePath(audioFileName);
         QByteArray encodedData(interval.getEncodedData());
         QtConcurrent::run(&JamRecorder::writeEncodedFile, this, encodedData, audioFilePath);
@@ -187,10 +193,13 @@ void JamRecorder::appendLocalUserAudio(const QByteArray &encodedAudio, quint8 ch
         interval.clear();
     }
 
+    if (isFirstPartOfInterval)
+        interval.setCodec(codec);
+
     interval.appendEncodedData(encodedAudio);
 }
 
-void JamRecorder::addRemoteUserAudio(const QString &userName, const QByteArray &encodedAudio, quint8 channelIndex)
+void JamRecorder::addRemoteUserAudio(const QString &userName, const QByteArray &encodedAudio, quint8 channelIndex, ninjam::AudioCodec codec)
 {
     if (!running) {
         qCritical() << "Illegal state! Recorder is not running!";
@@ -198,7 +207,7 @@ void JamRecorder::addRemoteUserAudio(const QString &userName, const QByteArray &
     }
 
     int intervalIndex = globalIntervalIndex;
-    QString audioFileName = buildAudioFileName(userName, channelIndex, intervalIndex);
+    QString audioFileName = buildAudioFileName(userName, channelIndex, intervalIndex, codec);
     QString audioFilePath = jamMetadataWritter->getAudioAbsolutePath(audioFileName);
     QtConcurrent::run(&JamRecorder::writeEncodedFile, this, encodedAudio, audioFilePath);
     jam->addAudioFile(userName, channelIndex, audioFilePath, intervalIndex);

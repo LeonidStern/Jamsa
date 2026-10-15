@@ -5,6 +5,7 @@
 #include <QStringList>
 
 #include "intervalProgress/IntervalProgressWindow.h"
+#include "ninjam/Ninjam.h"
 
 QT_BEGIN_NAMESPACE
 class QComboBox;
@@ -41,6 +42,8 @@ public:
     void setBpiComboPendingStatus(bool enabled);
     void setBpmComboPendingStatus(bool enabled);
 
+    void setRoomCodec(ninjam::AudioCodec codec); // also enables the codec combo, the server can change the codec
+
     int getAccentBeatsComboValue() const;
 
     void setAccentBeatsText(QString accentBeats);
@@ -73,6 +76,7 @@ public:
 signals:
     void bpiComboActivated(const QString &);
     void bpmComboActivated(const QString &);
+    void codecComboActivated(ninjam::AudioCodec codec);
     void accentsComboChanged(int index);
     void accentsBeatsChanged(const QList<int> &);
     void hostSyncStateChanged(bool syncWithHost);
@@ -88,6 +92,7 @@ protected:
 
 private:
     void buildShapeModel();
+    void buildCodecModel();
     void buildAccentsdModel(int bpi);
     QStringList getBpiDividers(int bpi);
     static bool compareBpis(const QString &s1, const QString &s2);
@@ -109,6 +114,7 @@ private slots:
 
     void handleBpiComboActication(const QString &);
     void handleBpmComboActication(const QString &);
+    void handleCodecComboActivation(int index);
 };
 
 #endif // NINJAMPANEL_H

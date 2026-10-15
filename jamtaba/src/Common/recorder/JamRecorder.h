@@ -4,6 +4,8 @@
 #include <QDir>
 #include <QMap>
 
+#include "ninjam/Ninjam.h"
+
 #include <memory>
 
 namespace recorder {
@@ -178,7 +180,8 @@ class LocalNinjamInterval
 {
 public:
     explicit LocalNinjamInterval(int intervalIndex) :
-        intervalIndex(intervalIndex)
+        intervalIndex(intervalIndex),
+        codec(ninjam::AudioCodec::Vorbis)
     {
     }
 
@@ -212,9 +215,20 @@ public:
         return encodedData.isEmpty();
     }
 
+    inline ninjam::AudioCodec getCodec() const
+    {
+        return codec;
+    }
+
+    inline void setCodec(ninjam::AudioCodec codec)
+    {
+        this->codec = codec;
+    }
+
 private:
     QByteArray encodedData;
     int intervalIndex;
+    ninjam::AudioCodec codec;
 };
 
 class JamRecorder
@@ -223,9 +237,9 @@ public:
     explicit JamRecorder(JamMetadataWriter *jamMetadataWritter);
     ~JamRecorder();
     void appendLocalUserAudio(const QByteArray &encodedAudio, quint8 channelIndex,
-                              bool isFirstPartOfInterval);
+                              bool isFirstPartOfInterval, ninjam::AudioCodec codec);
 
-    void addRemoteUserAudio(const QString &userName, const QByteArray &encodedAudio, quint8 channelIndex);
+    void addRemoteUserAudio(const QString &userName, const QByteArray &encodedAudio, quint8 channelIndex, ninjam::AudioCodec codec);
     void startRecording(const QString &localUser, const QDir &recordBasePath, int bpm, int bpi, int sampleRate);
 
     // these methods start a new recording
@@ -253,7 +267,7 @@ private:
     Qt::DateFormat dirNameDateFormat;
 
     /**
-        Audio Intervals: Using channel index as key and store encoded bytes. When a full interval is stored the encoded bytes are store in a ogg file.
+        Audio Intervals: Using channel index as key and store encoded bytes. When a full interval is stored the encoded bytes are store in a file (.ogg, .opus or .flac).
      */
     QMap<quint8, LocalNinjamInterval> localUserIntervals; // storing encoded data for audio intervals
 
@@ -261,7 +275,7 @@ private:
 
     void writeEncodedFile(const QByteArray &encodedData, const QString &path);
 
-    static QString buildAudioFileName(const QString &userName, quint8 channelIndex, int currentInterval);
+    static QString buildAudioFileName(const QString &userName, quint8 channelIndex, int currentInterval, ninjam::AudioCodec codec);
     static QString buildPaddedFileNumber(int fileNumber);
 
     void writeProjectFile();

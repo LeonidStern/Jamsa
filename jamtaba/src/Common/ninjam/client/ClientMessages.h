@@ -180,7 +180,7 @@ Offset Type        Field
 class UploadIntervalBegin : public ClientMessage
 {
 public:
-    UploadIntervalBegin(const QByteArray &GUID, quint8 channelIndex, bool isAudioInterval);
+    UploadIntervalBegin(const QByteArray &GUID, quint8 channelIndex, const QByteArray &fourCC);
 
     static UploadIntervalBegin from(QIODevice *device, quint32 payload);
 

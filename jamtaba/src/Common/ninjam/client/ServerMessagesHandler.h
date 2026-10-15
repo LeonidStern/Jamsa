@@ -29,6 +29,7 @@ namespace client
         MessageHeader currentHeader; // the last messageHeader readed from socket
 
         bool executeMessageHandler(const MessageHeader &header);
+        bool skipMessage(quint32 payload);
 
         template<class MessageClazz> // MessageClazz will be 'translated' to some class derived from ServerMessage
         bool handleMessage(quint32 payload)
@@ -38,7 +39,14 @@ namespace client
 
             bool allMessageDataIsAvailable = device->bytesAvailable() >= payload;
             if (allMessageDataIsAvailable) {
+                auto bytesAvailable = device->bytesAvailable();
                 auto msg = MessageClazz::from(device, payload);
+
+                // skip what the message class didn't read (e.g. fields added in newer servers)
+                auto bytesRead = bytesAvailable - device->bytesAvailable();
+                if (bytesRead < payload)
+                    device->skip(payload - bytesRead);
+
                 service->process(msg); // calling overload versions of 'process'
                 return true; // the message was handled
             }

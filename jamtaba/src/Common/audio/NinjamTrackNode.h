@@ -3,8 +3,10 @@
 
 #include "core/AudioNode.h"
 #include <QByteArray>
+#include <QSharedPointer>
 #include "SamplesBufferResampler.h"
 #include "readerwriterqueue.h"
+#include "ninjam/Ninjam.h"
 
 namespace audio {
 class SamplesBuffer;
@@ -29,8 +31,9 @@ public:
 
     explicit NinjamTrackNode(int ID);
     virtual ~NinjamTrackNode();
-    void addVorbisEncodedInterval(const QByteArray &fullIntervalBytes);
-    void addVorbisEncodedChunk(const QByteArray &chunkBytes, bool isFirstPart, bool isLastPart);
+    void addEncodedInterval(const QByteArray &fullIntervalBytes, ninjam::AudioCodec codec);
+    void addEncodedChunk(const QByteArray &chunkBytes, bool isFirstPart, bool isLastPart, ninjam::AudioCodec codec);
+    void decodeAhead(); // decode the next seconds of Opus and FLAC intervals in a worker thread
     void processReplacing(const audio::SamplesBuffer &in, audio::SamplesBuffer &out, int sampleRate,
                           std::vector<midi::MidiMessage> &midiBuffer) override;
 
@@ -93,9 +96,12 @@ private:
 
     class IntervalDecoder;
 
-    QList<IntervalDecoder*> decoders;
-    IntervalDecoder* currentDecoder;
+    // shared with the worker threads decoding ahead, a decoder can be discarded while it's decoding
+    QList<QSharedPointer<IntervalDecoder>> decoders;
+    QSharedPointer<IntervalDecoder> currentDecoder;
     QMutex decodersMutex;
+
+    static void startDecodingAhead(const QSharedPointer<IntervalDecoder> &decoder);
 
     ChannelMode mode = Intervalic;
 

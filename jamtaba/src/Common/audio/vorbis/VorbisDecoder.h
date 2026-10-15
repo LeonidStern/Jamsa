@@ -3,38 +3,39 @@
 
 #include <vorbis/vorbisfile.h>
 #include "audio/core/SamplesBuffer.h"
+#include "audio/Decoder.h"
 #include <QByteArray>
 
 namespace vorbis {
 
-class Decoder
+class Decoder : public AudioDecoder
 {
 
 public:
 
     Decoder();
     ~Decoder();
-    const audio::SamplesBuffer &decode(int maxSamplesToDecode);
+    const audio::SamplesBuffer &decode(int maxSamplesToDecode) override;
 
     bool isStereo() const;
 
     bool isMono() const;
 
-    int getChannels() const;
+    int getChannels() const override;
 
-    int getSampleRate() const;
+    int getSampleRate() const override;
 
     bool isInitialized() const;
 
-    void setInputData(const QByteArray &vorbisData);
+    void setInputData(const QByteArray &vorbisData) override;
 
-    void addInputData(const QByteArray &vorbisData);
+    void addInputData(const QByteArray &vorbisData) override;
 
     bool initialize();
 
-    bool isFinished() const { return finished; }
+    bool isFinished() const override { return finished; }
 
-    bool isValid() const { return valid; }
+    bool isValid() const override { return valid; }
 
 private:
 

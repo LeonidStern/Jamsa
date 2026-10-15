@@ -39,13 +39,13 @@ long NetworkUsageMeasurer::getTransferRate() const
 
 MessageHeader::MessageHeader(quint8 type, quint32 payload) :
     messageType(static_cast<MessageType>(type)),
-    payload(payload)
+    payload(payload),
+    valid(true)
 {
 
 }
 
-MessageHeader::MessageHeader() :
-    MessageHeader(static_cast<quint8>(MessageType::Invalid), 0) // invalid header
+MessageHeader::MessageHeader() // invalid header
 {
 
 }
@@ -101,6 +101,59 @@ QString extractString(QDataStream &stream, quint32 size)
         bytes.truncate(end);
 
     return QString::fromUtf8(bytes);
+}
+
+// ---------------------------------------------------------------
+
+QByteArray codecFourCC(AudioCodec codec)
+{
+    switch (codec) {
+    case AudioCodec::Opus:
+        return QByteArrayLiteral("OPUS");
+    case AudioCodec::Flac:
+        return QByteArrayLiteral("FLAC");
+    case AudioCodec::Vorbis:
+        break;
+    }
+
+    return QByteArrayLiteral("OGGv");
+}
+
+bool codecFromFourCC(const QByteArray &fourCC, AudioCodec &codec)
+{
+    for (auto c : {AudioCodec::Vorbis, AudioCodec::Opus, AudioCodec::Flac}) {
+        if (fourCC == codecFourCC(c)) {
+            codec = c;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+AudioCodec codecFromMask(quint32 codecMask)
+{
+    if (codecMask & ClientCapabilityFlac)
+        return AudioCodec::Flac;
+
+    if (codecMask & ClientCapabilityOpus)
+        return AudioCodec::Opus;
+
+    return AudioCodec::Vorbis;
+}
+
+QString codecName(AudioCodec codec)
+{
+    switch (codec) {
+    case AudioCodec::Opus:
+        return QStringLiteral("opus");
+    case AudioCodec::Flac:
+        return QStringLiteral("flac");
+    case AudioCodec::Vorbis:
+        break;
+    }
+
+    return QStringLiteral("vorbis");
 }
 
 } // namespace

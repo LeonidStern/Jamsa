@@ -28,6 +28,7 @@ public:
 
 private:
     static QString buildTrackName(const QString &userName, quint8 channelIndex);
+    static QString getSourceType(const QString &audioFilePath); // VORBIS, OPUS or FLAC
     QString rppPath;
 
 };

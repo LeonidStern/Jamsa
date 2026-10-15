@@ -4,6 +4,7 @@
 #include <QScopedPointer>
 
 #include "UploadIntervalData.h"
+#include "ninjam/Ninjam.h"
 #include "loginserver/LoginService.h"
 #include "persistence/Settings.h"
 #include "persistence/UsersDataCache.h"
@@ -237,7 +238,7 @@ public:
     QString getMetronomeAccentBeatFile() const;
 
     void saveEncodedAudio(const QString &userName, quint8 channelIndex,
-                          const QByteArray &encodedAudio);
+                          const QByteArray &encodedAudio, ninjam::AudioCodec codec);
 
     AbstractMp3Streamer *getRoomStreamer() const;
 
@@ -410,7 +411,7 @@ protected slots:
     virtual void disconnectFromNinjamServer(const ServerInfo &server);
     virtual void quitFromNinjamServer(const QString &error);
 
-    void enqueueAudioDataToUpload(const QByteArray &encodedData, quint8 channelIndex, bool isFirstPart);
+    void enqueueAudioDataToUpload(const QByteArray &encodedData, quint8 channelIndex, bool isFirstPart, bool isLastPart, ninjam::AudioCodec codec);
 
     virtual void updateBpi(int newBpi);
     virtual void updateBpm(int newBpm);

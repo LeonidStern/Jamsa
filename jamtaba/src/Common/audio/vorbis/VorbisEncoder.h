@@ -24,6 +24,7 @@ public:
 
     int getChannels() const override;
     int getSampleRate() const override;
+    ninjam::AudioCodec getCodec() const override { return ninjam::AudioCodec::Vorbis; }
 
 private:
 

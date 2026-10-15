@@ -105,6 +105,7 @@ void NinjamPanel::translate()
 
     buildAccentsdModel(ui->intervalPanel->getBeatsPerInterval());
     buildShapeModel();
+    buildCodecModel();
 
     // restore the selected indexes
     ui->comboShape->setCurrentIndex(currentShape);
@@ -146,6 +147,9 @@ void NinjamPanel::setupSignals()
     connect(ui->comboBpi, SIGNAL(textActivated(QString)), this, SLOT(handleBpiComboActication(QString)));
     connect(ui->comboBpm, SIGNAL(textActivated(QString)), this, SLOT(handleBpmComboActication(QString)));
 
+    // 'activated' is emitted only when the user picks a codec, not when the server changes it (setRoomCodec)
+    connect(ui->comboCodec, SIGNAL(activated(int)), this, SLOT(handleCodecComboActivation(int)));
+
     connect(ui->checkboxSync, SIGNAL(clicked(bool)), this, SIGNAL(midiSyncChanged(bool)));
 }
 
@@ -159,6 +163,23 @@ void NinjamPanel::handleBpmComboActication(const QString &newBpm)
 {
     ui->comboBpm->clearFocus();
     emit bpmComboActivated(newBpm);
+}
+
+void NinjamPanel::handleCodecComboActivation(int index)
+{
+    ui->comboCodec->clearFocus();
+    emit codecComboActivated(static_cast<ninjam::AudioCodec>(ui->comboCodec->itemData(index).toInt()));
+}
+
+void NinjamPanel::setRoomCodec(ninjam::AudioCodec codec)
+{
+    QSignalBlocker blocker(ui->comboCodec);
+
+    int index = ui->comboCodec->findData(static_cast<int>(codec));
+    if (index >= 0)
+        ui->comboCodec->setCurrentIndex(index);
+
+    ui->comboCodec->setEnabled(true);
 }
 
 void NinjamPanel::setLowContrastPaintInIntervalPanel(bool useLowContrastColors)
@@ -375,6 +396,23 @@ void NinjamPanel::buildShapeModel()
     ui->comboShape->addItem(tr("Line"), IntervalProgressDisplay::PaintShape::LINEAR);
     ui->comboShape->addItem(tr("Pie"), IntervalProgressDisplay::PaintShape::PIE);
     ui->comboShape->blockSignals(false);
+}
+
+void NinjamPanel::buildCodecModel()
+{
+    QSignalBlocker blocker(ui->comboCodec);
+
+    int currentIndex = qMax(ui->comboCodec->currentIndex(), 0); // Vorbis is used until the server tells the room's codec
+
+    ui->comboCodec->clear();
+    ui->comboCodec->addItem(tr("Vorbis"), static_cast<int>(ninjam::AudioCodec::Vorbis));
+    ui->comboCodec->setItemData(0, tr("Every NINJAM app can play it"), Qt::ToolTipRole);
+    ui->comboCodec->addItem(tr("Opus"), static_cast<int>(ninjam::AudioCodec::Opus));
+    ui->comboCodec->setItemData(1, tr("Better sound with less data"), Qt::ToolTipRole);
+    ui->comboCodec->addItem(tr("FLAC"), static_cast<int>(ninjam::AudioCodec::Flac));
+    ui->comboCodec->setItemData(2, tr("No quality loss, needs a fast connection"), Qt::ToolTipRole);
+
+    ui->comboCodec->setCurrentIndex(currentIndex);
 }
 
 void NinjamPanel::buildAccentsdModel(int bpi)
