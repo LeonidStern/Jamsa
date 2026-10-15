@@ -93,7 +93,14 @@ QString extractString(QDataStream &stream)
 
 QString extractString(QDataStream &stream, quint32 size)
 {
-    return QString::fromUtf8(stream.device()->read(size));
+    QByteArray bytes = stream.device()->read(size);
+
+    // Qt 6 keeps the NUL terminator in the QString (Qt 5 stopped at it)
+    int end = bytes.indexOf('\0');
+    if (end >= 0)
+        bytes.truncate(end);
+
+    return QString::fromUtf8(bytes);
 }
 
 } // namespace
