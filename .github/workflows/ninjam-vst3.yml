@@ -35,8 +35,9 @@ jobs:
         run: |
           sudo apt-get update
           # VSTGUI on Linux; Xvfb (and ALSA, which pluginval links) for the editor tests;
-          # the system codecs and Vorbis for the old clients of the end-to-end test
-          sudo apt-get install -y ninja-build \
+          # the system codecs and Vorbis for the old clients of the end-to-end test; gtkmm only
+          # because the VST3 SDK always configures VSTGUI's standalone library (not linked in)
+          sudo apt-get install -y ninja-build libgtkmm-3.0-dev \
             libx11-dev libx11-xcb-dev libxcb1-dev libxcb-util-dev libxcb-cursor-dev libxcb-keysyms1-dev \
             libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev libglib2.0-dev libcairo2-dev \
             libpango1.0-dev libfontconfig-dev libfreetype-dev libwayland-dev wayland-protocols \
