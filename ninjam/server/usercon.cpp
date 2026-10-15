@@ -98,9 +98,36 @@ extern void logText(const char *s, ...);
 
 #define TRANSFER_TIMEOUT 8
 
+#define AUTH_TIMEOUT 30 // seconds to wait for a login reply
+#define AUTH_TIMEOUT_LICENSE 120 // longer when there is a license agreement to read
+
+static unsigned int g_next_connection_id;
+
+// drops the oldest transfers from source_id until there is room for one more
+static void trimTransferList(WDL_PtrList<User_TransferState> *list, unsigned int source_id, int maxsize)
+{
+  int cnt=0, x;
+  for (x = 0; x < list->GetSize(); x ++)
+    if (list->Get(x)->source_id == source_id) cnt++;
+
+  for (x = 0; x < list->GetSize() && cnt >= maxsize; x ++)
+  {
+    if (list->Get(x)->source_id == source_id)
+    {
+      delete list->Get(x);
+      list->Delete(x--);
+      cnt--;
+    }
+  }
+}
+
 User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
       m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0)
 {
+  m_id = ++g_next_connection_id;
+  if (!m_id) m_id = ++g_next_connection_id; // 0 is never a valid id
+  m_last_transfer_sweep = 0;
+
   m_netcon.attach(con);
 
   WDL_RNG_bytes(m_challenge,sizeof(m_challenge));
@@ -356,6 +383,7 @@ int User_Connection::OnRunAuth(User_Group *group)
         }
         else
         {
+          group->NotifyUserLeft(u);
           delete u;
           group->m_users.Delete(user);
           break;
@@ -459,8 +487,41 @@ void User_Connection::SendUserList(User_Group *group)
 }
 
 
+void User_Connection::SweepTransfers(time_t now)
+{
+  int x;
+  for (x = 0; x < m_recvfiles.GetSize(); x ++)
+  {
+    User_TransferState *t=m_recvfiles.Get(x);
+    if (now-t->last_acttime > TRANSFER_TIMEOUT)
+    {
+      delete t;
+      m_recvfiles.Delete(x--);
+    }
+  }
+  for (x = 0; x < m_sendfiles.GetSize(); x ++)
+  {
+    User_TransferState *t=m_sendfiles.Get(x);
+    if (now-t->last_acttime > TRANSFER_TIMEOUT)
+    {
+      delete t;
+      m_sendfiles.Delete(x--);
+    }
+  }
+}
+
 int User_Connection::Run(User_Group *group, int *wantsleep)
 {
+  {
+    // transfers that never finish (client crashed, or never sent the end flag) are dropped here
+    const time_t now=time(NULL);
+    if (now != m_last_transfer_sweep)
+    {
+      m_last_transfer_sweep=now;
+      SweepTransfers(now);
+    }
+  }
+
   Net_Message *msg=m_netcon.Run(wantsleep);
   if (m_netcon.GetStatus()) 
   {
@@ -485,8 +546,10 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
     }
     else if (!m_auth_state)
     {
-      if (time(NULL) > m_connect_time+120) // if we haven't gotten an auth reply in 120s, disconnect. The reason this is so long is to give
-                                        // the user time to potentially read the license agreement.
+      // if we haven't gotten an auth reply in time, disconnect. With a license agreement this is long, to give
+      // the user time to read it.
+      const int auth_timeout = group->m_licensetext.Get()[0] ? AUTH_TIMEOUT_LICENSE : AUTH_TIMEOUT;
+      if (time(NULL) > m_connect_time+auth_timeout)
       {
         char buf[256];
         JNL::addr_to_ipstr(m_netcon.GetConnection()->get_remote(),buf,sizeof(buf));
@@ -686,7 +749,7 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
         if (group->m_is_lobby_mode) break;
         {
           mpb_client_upload_interval_begin mp;
-          if (!mp.parse(msg) && mp.chidx < m_max_channels)
+          if (!mp.parse(msg) && mp.chidx < m_max_channels && mp.chidx < MAX_USER_CHANNELS)
           {
             char *myusername=m_username.Get();
 
@@ -705,7 +768,10 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
 
             if (mp.fourcc && memcmp(mp.guid,zero_guid,sizeof(zero_guid))) // zero = silence, so simply rebroadcast
             {
+              trimTransferList(&m_recvfiles,m_id,MAX_UPLOADS);
+
               User_TransferState *newrecv=new User_TransferState;
+              newrecv->source_id=m_id;
               newrecv->bytes_estimated=mp.estsize;
               newrecv->fourcc=mp.fourcc;
               memcpy(newrecv->guid,mp.guid,sizeof(newrecv->guid));
@@ -728,8 +794,11 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                 if (group->m_logfp)
                 {
                   // decide when to write new interval
-                  const char *chn="?";
-                  if (mp.chidx >= 0 && mp.chidx < MAX_USER_CHANNELS) chn=m_channels[mp.chidx].name.Get();
+                  // channel names come from the client: keep them from breaking the line-based log format
+                  char chn[256];
+                  lstrcpyn_safe(chn,m_channels[mp.chidx].name.Get(),sizeof(chn));
+                  for (char *c = chn; *c; c ++)
+                    if (*c == '"' || *c == '\r' || *c == '\n') *c = '_';
                   fprintf(group->m_logfp,"user %s \"%s\" %d \"%s\"\n",guidstr,myusername,mp.chidx,chn);
                 }
               }
@@ -755,7 +824,10 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                       if (memcmp(mp.guid,zero_guid,sizeof(zero_guid))) // zero = silence, so simply rebroadcast
                       {
                         // add entry in send list
+                        trimTransferList(&u->m_sendfiles,m_id,MAX_UPLOADS);
+
                         User_TransferState *nt=new User_TransferState;
+                        nt->source_id=m_id;
                         memcpy(nt->guid,mp.guid,sizeof(nt->guid));
                         nt->bytes_estimated = mp.estsize;
                         nt->fourcc = mp.fourcc;
@@ -822,7 +894,8 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                 for (i=0; i < u->m_sendfiles.GetSize(); i ++)
                 {
                   User_TransferState *t=u->m_sendfiles.Get(i);
-                  if (t && !memcmp(t->guid,mp.guid,sizeof(t->guid)))
+                  // only the user who started this interval may send data for it
+                  if (t && t->source_id == m_id && !memcmp(t->guid,mp.guid,sizeof(t->guid)))
                   {
                     t->last_acttime=now;
                     t->bytes_sofar += mp.audio_data_len;
@@ -1015,41 +1088,7 @@ int User_Group::Run()
         if (ret)
         {
           // broadcast to other users that this user is no longer present
-          if (p->m_auth_state>0) 
-          {
-            if (!m_is_lobby_mode || (m_is_lobby_mode&LOBBY_ALLOW_CHAT))
-            {
-              mpb_chat_message newmsg;
-              newmsg.parms[0]="PART";
-              newmsg.parms[1]=p->m_username.Get();
-              Broadcast(newmsg.build(),p);
-            }
-
-            mpb_server_userinfo_change_notify mfmt;
-            int mfmt_changes=0;
-
-            int whichch=0;
-            if (!m_is_lobby_mode) while (whichch < MAX_USER_CHANNELS)
-            {
-              p->m_channels[whichch].name.Set("");
-
-              if (!whichch || p->m_channels[whichch].active) // only send deactivate if it was previously active
-              {
-                p->m_channels[whichch].active=0;
-                mfmt_changes++;
-                mfmt.build_add_rec(0,whichch,
-                                  p->m_channels[whichch].volume,
-                                  p->m_channels[whichch].panning,
-                                  p->m_channels[whichch].flags,
-                                  p->m_username.Get(),
-                                  p->m_channels[whichch].name.Get());
-              }
-
-              whichch++;
-            }
-
-            if (mfmt_changes) Broadcast(mfmt.build(),p);
-          }
+          NotifyUserLeft(p);
 
           char addrbuf[256];
           JNL::addr_to_ipstr(p->m_netcon.GetConnection()->get_remote(),addrbuf,sizeof(addrbuf));
@@ -1065,6 +1104,44 @@ int User_Group::Run()
     m_run_robin++;
 
     return wantsleep;
+}
+
+void User_Group::NotifyUserLeft(User_Connection *p)
+{
+  if (p->m_auth_state<=0) return;
+
+  if (!m_is_lobby_mode || (m_is_lobby_mode&LOBBY_ALLOW_CHAT))
+  {
+    mpb_chat_message newmsg;
+    newmsg.parms[0]="PART";
+    newmsg.parms[1]=p->m_username.Get();
+    Broadcast(newmsg.build(),p);
+  }
+
+  mpb_server_userinfo_change_notify mfmt;
+  int mfmt_changes=0;
+
+  int whichch=0;
+  if (!m_is_lobby_mode) while (whichch < MAX_USER_CHANNELS)
+  {
+    p->m_channels[whichch].name.Set("");
+
+    if (!whichch || p->m_channels[whichch].active) // only send deactivate if it was previously active
+    {
+      p->m_channels[whichch].active=0;
+      mfmt_changes++;
+      mfmt.build_add_rec(0,whichch,
+                        p->m_channels[whichch].volume,
+                        p->m_channels[whichch].panning,
+                        p->m_channels[whichch].flags,
+                        p->m_username.Get(),
+                        p->m_channels[whichch].name.Get());
+    }
+
+    whichch++;
+  }
+
+  if (mfmt_changes) Broadcast(mfmt.build(),p);
 }
 
 void User_Group::SetConfig(int bpi, int bpm)

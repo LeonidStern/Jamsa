@@ -69,6 +69,7 @@ static void delGroup(User_Group *g) { delete g; }
 WDL_StringKeyedArray<User_Group *> g_private_groups(false,delGroup);
 
 JNL_Listen *m_listener;
+int m_listener_port;
 void onConfigChange(int argc, char **argv);
 void logText(const char *s, ...);
 
@@ -132,6 +133,9 @@ int g_config_maxch_anon;
 int g_config_maxch_user;
 WDL_String g_config_logpath;
 int g_config_log_sessionlen;
+
+int g_config_max_pending; // connections that have not logged in yet, server-wide
+int g_config_max_pending_per_ip; // same, per remote address
 
 int g_config_max_users; // these all must be copied to User_Group
 int g_config_keepalive;
@@ -353,8 +357,14 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
   {
     if (lp->getnumtokens() != 2 && lp->getnumtokens() != 3) return -1;
     
-    g_config_maxch_user=lp->gettoken_int(1);
-    g_config_maxch_anon=lp->gettoken_int(lp->getnumtokens()>2?2:1);
+    g_config_maxch_user=wdl_clamp(lp->gettoken_int(1),0,MAX_USER_CHANNELS);
+    g_config_maxch_anon=wdl_clamp(lp->gettoken_int(lp->getnumtokens()>2?2:1),0,MAX_USER_CHANNELS);
+  }
+  else if (!stricmp(t,"MaxPendingConnections"))
+  {
+    if (lp->getnumtokens() != 2 && lp->getnumtokens() != 3) return -1;
+    g_config_max_pending=lp->gettoken_int(1);
+    if (lp->getnumtokens() > 2) g_config_max_pending_per_ip=lp->gettoken_int(2);
   }
   else if (!stricmp(t,"SetKeepAlive"))
   {
@@ -592,6 +602,8 @@ static int ReadConfig(char *configfile, bool is_init=false)
   g_config_log_sessionlen=10; // ten minute default, tho the user will need to specify the path anyway
 
   g_config_max_users=0; // unlimited users
+  g_config_max_pending=64;
+  g_config_max_pending_per_ip=8;
   g_config_motdfile.Set("");
 
   g_acllist.Resize(0);
@@ -705,6 +717,22 @@ void enforceACL(User_Group *group)
   if (killcnt) logText("killed %d users by enforcing ACL\n",killcnt);
 }
 
+
+// returns true if a new connection from addr would go over the limits on connections that haven't logged in yet
+static bool tooManyPending(unsigned int addr)
+{
+  if (g_config_max_pending <= 0 && g_config_max_pending_per_ip <= 0) return false;
+  int total=0, from_addr=0;
+  for (int x = 0; x < m_group->m_users.GetSize(); x ++)
+  {
+    User_Connection *c=m_group->m_users.Get(x);
+    if (c->m_auth_state > 0) continue;
+    total++;
+    if (c->m_netcon.GetConnection()->get_remote() == addr) from_addr++;
+  }
+  return (g_config_max_pending > 0 && total >= g_config_max_pending) ||
+         (g_config_max_pending_per_ip > 0 && from_addr >= g_config_max_pending_per_ip);
+}
 
 void usage()
 {
@@ -962,9 +990,13 @@ int main(int argc, char **argv)
   {
     logText("Port: %d\n",g_config_port);    
     m_listener = new JNL_Listen(g_config_port);
+    m_listener_port = g_config_port;
     if (m_listener->is_error()) 
     {
-      logText("Error listening on port %d!\n",g_config_port);
+      logText("Error listening on port %d! Another program may already be using it (2049 is also the NFS port), "
+              "or you may need permission to use it. Set a different Port in the config or use -port.\n",g_config_port);
+      if (g_logfp) fclose(g_logfp);
+      return 1;
     }
 
     m_group->CreateUserLookup=myCreateUserLookup;
@@ -991,6 +1023,11 @@ int main(int argc, char **argv)
         if (flag == ACL_FLAG_DENY)
         {
           logText("Denying connection (via ACL)\n");
+          delete con;
+        }
+        else if (flag != ACL_FLAG_RESERVE && tooManyPending(con->get_remote()))
+        {
+          logText("Denying connection (too many connections waiting to log in)\n");
           delete con;
         }
         else
@@ -1349,7 +1386,21 @@ void onConfigChange(int argc, char **argv)
       }
   }
 
-  delete m_listener;
-  m_listener = new JNL_Listen(g_config_port);
-
+  if (g_config_port != m_listener_port)
+  {
+    JNL_Listen *nl = new JNL_Listen(g_config_port);
+    if (nl->is_error())
+    {
+      logText("Error listening on port %d, still listening on port %d\n",g_config_port,m_listener_port);
+      delete nl;
+      g_config_port = m_listener_port;
+    }
+    else
+    {
+      delete m_listener;
+      m_listener = nl;
+      m_listener_port = g_config_port;
+      logText("Now listening on port %d\n",g_config_port);
+    }
+  }
 }

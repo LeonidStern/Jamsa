@@ -41,7 +41,7 @@
 
 #define MAX_USER_CHANNELS 32
 #define MAX_USERS 64
-#define MAX_UPLOADS 32
+#define MAX_UPLOADS (MAX_USER_CHANNELS*2) // in-progress uploads per user (one interval per channel, plus overlap)
 #define MAX_DOWNLOADS 128
 
 #define PRIV_TOPIC 1
@@ -107,6 +107,9 @@ class User_Group
 
     void onChatMessage(User_Connection *con, mpb_chat_message *msg);
 
+    // tells everyone else that this user (and their channels) are gone
+    void NotifyUserLeft(User_Connection *p);
+
 
     WDL_PtrList<User_Connection> m_users;
 
@@ -170,7 +173,7 @@ public:
 class User_TransferState
 {
 public:
-  User_TransferState() : fourcc(0), bytes_estimated(0), bytes_sofar(0), fp(0)
+  User_TransferState() : fourcc(0), bytes_estimated(0), bytes_sofar(0), source_id(0), fp(0)
   { 
     time(&last_acttime);
     memset(guid,0,sizeof(guid));
@@ -187,7 +190,9 @@ public:
   unsigned int bytes_estimated;
 
   unsigned int bytes_sofar;
-  
+
+  unsigned int source_id; // m_id of the User_Connection that is uploading this interval
+
   FILE *fp;
 };
 
@@ -243,6 +248,10 @@ class User_Connection
 
     bool migrateToRoom(const char *p);
     WDL_FastString m_wants_group_migration; // set from lobby in private group mode
+
+    unsigned int m_id; // unique per connection, never reused while the server runs
+    time_t m_last_transfer_sweep;
+    void SweepTransfers(time_t now);
 };
 
 
