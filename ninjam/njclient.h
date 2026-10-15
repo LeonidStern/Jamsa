@@ -120,7 +120,8 @@ public:
   float config_mastervolume,config_masterpan; // master volume
   bool  config_mastermute;
   int   config_debug_level;
-  bool  config_send_opus; // in builds with NINJAM_OPUS: send Opus when everyone in the room can decode it
+  bool  config_send_opus; // in builds with NINJAM_OPUS: send Opus when the server's codec mask has it
+  bool  config_send_flac; // in builds with NINJAM_FLAC: send FLAC when the server's codec mask has it
   int   config_play_prebuffer; // -1 means play instantly, 0 means play when full file is there, otherwise refers to how many
                                // bytes of compressed source to have before play. the default value is 4096.
   int config_remote_autochan; // 1=auto-assign by channel, 2=auto-assign by user
@@ -131,6 +132,15 @@ public:
   enum { NJC_STATUS_DISCONNECTED=-3,NJC_STATUS_INVALIDAUTH=-2, NJC_STATUS_CANTCONNECT=-1, NJC_STATUS_OK=0, NJC_STATUS_PRECONNECT};
   int GetStatus();
 
+  // the codec mask the server sent (CLIENT_CAP_CODEC_* bits; 0 = Vorbis, also when it sent none),
+  // and the codec (fourcc, such as 'OGGv', 'OPUS', 'FLAC') this client uploads the next interval with;
+  // 0 in builds with NINJAM_NO_VORBIS when the room plays neither Opus nor FLAC (nothing is sent)
+  int GetCodecMask() const { return m_codec_mask; }
+  unsigned int GetUploadCodec() const;
+  // the tempo the server set last; GetActualBPM() and GetBPI() follow at the next interval, in AudioProc()
+  int GetServerBPM() const { return m_bpm; }
+  int GetServerBPI() const { return m_bpi; }
+
   void SetWorkDir(char *path);
   const char *GetWorkDir() { return m_workdir.Get(); }
 
@@ -140,6 +150,16 @@ public:
   float GetActualBPM() { return (float) m_active_bpm; }
   int GetBPI() { return m_active_bpi; }
   void GetPosition(int *pos, int *length);  // positions in samples
+  // true while AudioProc() plays intervals: connected, the server set the tempo, and the first one started
+  bool IsIntervalRunning() const { return m_audio_enable && m_interval_pos >= 0; }
+  // the length of an interval at the tempo playing now (GetPosition() gives the one playing now,
+  // which SetIntervalEnd() may have changed)
+  int GetUsualIntervalLength() const { return m_interval_length_usual > 0 ? m_interval_length_usual : m_interval_length; }
+  // Call it where AudioProc() runs, between calls: the interval playing now ends `samples` from
+  // now (at least 1), so it is shorter or longer than usual, and the next one starts then with
+  // the usual length. Each client's interval phase is its own, so a client can line it up with
+  // something else this way, such as a host's bars, without a jump inside an interval.
+  void SetIntervalEnd(int samples);
   int GetLoopCount() { return m_loopcnt; }
   unsigned int GetSessionPosition(); // returns milliseconds
 
@@ -255,6 +275,7 @@ protected:
   int m_loopcnt;
   int m_active_bpm, m_active_bpi;
   int m_interval_length;
+  int m_interval_length_usual; // while SetIntervalEnd() changed the interval playing now, else 0
   int m_interval_pos, m_metronome_state, m_metronome_tmp,m_metronome_interval;
   double m_metronome_pos;
 

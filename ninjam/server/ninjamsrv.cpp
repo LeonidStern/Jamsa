@@ -41,6 +41,14 @@
 #endif
 #include <signal.h>
 #include <stdarg.h>
+#include <atomic>
+
+#ifdef NINJAM_EMBEDDED
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include "ninjamsrv_embedded.h"
+#endif
 
 #include "../../WDL/jnetlib/jnetlib.h"
 #include "../../WDL/jnetlib/httpget.h"
@@ -146,6 +154,7 @@ int g_config_max_pending_per_ip; // same, per remote address
 int g_config_max_users; // these all must be copied to User_Group
 int g_config_portmap;
 int g_config_allow_codecs; // CLIENT_CAP_CODEC_* bits
+int g_config_require_codec; // CLIENT_CAP_CODEC_* bit, 0 for none
 int g_config_keepalive;
 WDL_FastString g_config_motdfile, g_config_private_lobby_motdfile;
 WDL_FastString g_config_default_topic;
@@ -170,7 +179,8 @@ static void copyConfigToGroup(User_Group *group)
   group->m_keepalive = g_config_keepalive;
   if (!group->m_topictext.GetLength()) group->m_topictext.Set(g_config_default_topic.Get());
   group->m_allow_hidden_users = g_config_allow_hidden_users;
-  group->m_allow_codecs = g_config_allow_codecs;
+  group->m_allow_codecs = g_config_allow_codecs | g_config_require_codec; // a required codec is allowed
+  group->m_require_codec = g_config_require_codec;
   group->m_voting_threshold = g_config_voting_threshold;
   group->m_voting_timeout = g_config_voting_timeout;
 }
@@ -394,6 +404,13 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
       else if (x == 2) codecs |= CLIENT_CAP_CODEC_FLAC;
     }
     g_config_allow_codecs=codecs;
+  }
+  else if (!stricmp(t,"RequireCodec"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int x=lp->gettoken_enum(1,"none\0opus\0flac\0");
+    if (x < 0) return -2;
+    g_config_require_codec = x == 1 ? CLIENT_CAP_CODEC_OPUS : x == 2 ? CLIENT_CAP_CODEC_FLAC : 0;
   }
   else if (!stricmp(t,"SetKeepAlive"))
   {
@@ -635,6 +652,7 @@ static int ReadConfig(char *configfile, bool is_init=false)
   g_config_max_pending_per_ip=8;
   g_config_portmap=0;
   g_config_allow_codecs=CLIENT_CAP_CODEC_OPUS; // FLAC needs several times the bandwidth, so servers opt in
+  g_config_require_codec=0;
   g_config_motdfile.Set("");
 
   g_acllist.Resize(0);
@@ -715,7 +733,7 @@ static int ReadConfig(char *configfile, bool is_init=false)
 }
 
 int g_reloadconfig;
-int g_done;
+std::atomic<int> g_done;
 
 
 void sighandler(int sig)
@@ -782,8 +800,27 @@ void usage()
     exit(1);
 }
 
+#ifdef NINJAM_EMBEDDED
+static ninjamsrv_log_func g_log_func;
+static void *g_log_ctx;
+static std::mutex g_log_mutex;
+#endif
+
 void logText(const char *s, ...)
 {
+#ifdef NINJAM_EMBEDDED
+    if (g_log_func)
+    {
+      char buf[2048];
+      va_list ap;
+      va_start(ap,s);
+      vsnprintf(buf,sizeof(buf),s,ap);
+      va_end(ap);
+      std::lock_guard<std::mutex> lock(g_log_mutex); // the port mapping thread logs too
+      g_log_func(g_log_ctx,buf);
+      if (!g_logfp) return; // a LogFile in the config still gets everything
+    }
+#endif
 #ifndef _WIN32
     FILE *outfp = g_logfp?g_logfp:stdout;
     flockfile(outfp); // also called from the port mapping thread
@@ -929,21 +966,32 @@ const char *get_privatemode_stats(int privs, const char *req)
 }
 
 
-int main(int argc, char **argv)
+#ifdef NINJAM_EMBEDDED
+static void embeddedListening(int result);
+static void embeddedPublishUsers();
+#endif
+
+// argv[1] is the config file. embedded: running inside another program (see
+// ninjamsrv_embedded.h), so no signals, pid file, setuid or console keys.
+static int run_server(int argc, char **argv, bool embedded)
 {
-
-  if (argc < 2)
-  {
-    usage();
-  }
-
+  g_done=0;
   m_group=new User_Group;
 
-  printf("%s",startupmessage);
+  if (embedded) logText("%s",startupmessage);
+  else printf("%s",startupmessage);
   if (ReadConfig(argv[1],true))
   {
+#ifdef NINJAM_EMBEDDED
+    logText("Error loading config file!\n");
+    delete m_group;
+    m_group=NULL;
+    embeddedListening(NINJAMSRV_CONFIG_ERROR);
+    return 1;
+#else
     printf("Error loading config file!\n");
     exit(1);
+#endif
   }
   int p;
   for (p = 2; p < argc; p ++)
@@ -990,7 +1038,7 @@ int main(int argc, char **argv)
   int pid=getpid();
   WDL_RNG_addentropy(&pid,sizeof(pid));
 
-  if (g_pidfilename.Get()[0])
+  if (!embedded && g_pidfilename.Get()[0])
   {
     FILE *fp=fopen(g_pidfilename.Get(),"w");
     if (fp)
@@ -1003,11 +1051,17 @@ int main(int argc, char **argv)
 
 
 
-  signal(SIGPIPE,sighandler);
-  signal(SIGHUP,sighandler);
+  if (!embedded)
+  {
+    signal(SIGPIPE,sighandler);
+    signal(SIGHUP,sighandler);
+  }
 #endif
-  signal(SIGINT,sighandler);
-  signal(SIGTERM,sighandler);
+  if (!embedded)
+  {
+    signal(SIGINT,sighandler);
+    signal(SIGTERM,sighandler);
+  }
 
 
   if (g_logfilename.Get()[0])
@@ -1033,12 +1087,20 @@ int main(int argc, char **argv)
       logText("Error listening on port %d! Another program may already be using it (2049 is also the NFS port), "
               "or you may need permission to use it. Set a different Port in the config or use -port.\n",g_config_port);
       if (g_logfp) fclose(g_logfp);
+      g_logfp=0;
+#ifdef NINJAM_EMBEDDED
+      delete m_listener;
+      m_listener=NULL;
+      delete m_group;
+      m_group=NULL;
+      JNL::close_socketlib();
+      embeddedListening(NINJAMSRV_LISTEN_ERROR);
+#endif
       return 1;
     }
 
 #ifndef _WIN32
-    // drop root only after the port is open, so ports below 1024 (e.g. 443 on restrictive networks) work with SetUID
-    if (g_set_uid != -1)
+    if (!embedded && g_set_uid != -1) // drop root only after the port is open, so ports below 1024 (e.g. 443 on restrictive networks) work with SetUID
     {
       struct passwd *pw = getpwuid(g_set_uid);
       if (pw)
@@ -1071,8 +1133,13 @@ int main(int argc, char **argv)
 
     m_group->SetLicenseText(g_config_license.Get());
 
+#ifdef NINJAM_EMBEDDED
+    embeddedListening(NINJAMSRV_OK);
+    time_t next_users_publish=0;
+#endif
+
 #ifdef _WIN32
-    int needprompt=2;
+    int needprompt=embedded?0:2;
     int esc_state=0;
 #endif
     while (!g_done)
@@ -1218,10 +1285,18 @@ int main(int argc, char **argv)
         }
       }
 
+#ifdef NINJAM_EMBEDDED
+      if (embedded && time(NULL) >= next_users_publish)
+      {
+        embeddedPublishUsers();
+        next_users_publish=time(NULL)+1;
+      }
+#endif
+
       if (can_idle)
       {
 #ifdef _WIN32
-        if (needprompt)
+        if (!embedded && needprompt)
         {
           if (needprompt>1) printf("\nKeys:\n"
                "  [S]how user table\n"
@@ -1231,7 +1306,7 @@ int main(int argc, char **argv)
           printf(": ");
           needprompt=0;
         }
-        if (kbhit())
+        if (!embedded && kbhit())
         {
           int c=toupper_safe(getch());
           printf("%c\n",isalpha_safe(c)?c:'?');
@@ -1318,7 +1393,7 @@ int main(int argc, char **argv)
         nanosleep(&ts,NULL);
 #endif
 
-        if (g_reloadconfig && strcmp(argv[1],"-"))
+        if (!embedded && g_reloadconfig && strcmp(argv[1],"-"))
         {
           g_reloadconfig=0;
 
@@ -1396,7 +1471,9 @@ int main(int argc, char **argv)
 
   g_private_groups.DeleteAll();
   delete m_group;
+  m_group=NULL;
   delete m_listener;
+  m_listener=NULL;
 
   if (g_logfp)
   {
@@ -1407,6 +1484,123 @@ int main(int argc, char **argv)
   JNL::close_socketlib();
   return 0;
 }
+
+#ifndef NINJAM_EMBEDDED
+
+int main(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    usage();
+  }
+  return run_server(argc,argv,false);
+}
+
+#else
+
+static std::thread g_embedded_thread;
+static std::mutex g_embedded_mutex; // serializes start and stop
+static std::mutex g_listening_mutex;
+static std::condition_variable g_listening_cv;
+static int g_listening_result;
+static bool g_listening_done;
+static std::mutex g_users_mutex;
+static WDL_FastString g_users;
+static int g_users_count;
+
+static void embeddedListening(int result)
+{
+  std::lock_guard<std::mutex> lock(g_listening_mutex);
+  g_listening_result=result;
+  g_listening_done=true;
+  g_listening_cv.notify_all();
+}
+
+static void embeddedPublishUsers()
+{
+  WDL_FastString names;
+  int cnt=0;
+  for (int pass = -1; pass < g_private_groups.GetSize(); pass ++)
+  {
+    User_Group *g = pass < 0 ? m_group : g_private_groups.Enumerate(pass,NULL);
+    if (!g) continue;
+    for (int x = 0; x < g->m_users.GetSize(); x ++)
+    {
+      User_Connection *c=g->m_users.Get(x);
+      if (c->m_auth_state < 1) continue;
+      names.Append(c->m_username.Get());
+      names.Append("\n");
+      cnt++;
+    }
+  }
+  std::lock_guard<std::mutex> lock(g_users_mutex);
+  g_users.Set(names.Get());
+  g_users_count=cnt;
+}
+
+int ninjamsrv_embedded_start(const char *configfile, ninjamsrv_log_func log, void *ctx)
+{
+  std::lock_guard<std::mutex> lock(g_embedded_mutex);
+  if (g_embedded_thread.joinable()) return NINJAMSRV_ALREADY_RUNNING;
+
+  g_log_func=log;
+  g_log_ctx=ctx;
+  {
+    std::lock_guard<std::mutex> lock(g_listening_mutex);
+    g_listening_done=false;
+    g_listening_result=NINJAMSRV_LISTEN_ERROR;
+  }
+
+  WDL_String cfg(configfile);
+  g_embedded_thread=std::thread([cfg]() mutable {
+    char name[]="ninjamsrv";
+    char *argv[3]={name,cfg.Get(),NULL};
+    run_server(2,argv,true);
+  });
+
+  int result;
+  {
+    std::unique_lock<std::mutex> lock(g_listening_mutex);
+    g_listening_cv.wait(lock,[]{ return g_listening_done; });
+    result=g_listening_result;
+  }
+  if (result != NINJAMSRV_OK)
+  {
+    g_embedded_thread.join();
+    g_log_func=NULL;
+    g_log_ctx=NULL;
+  }
+  return result;
+}
+
+void ninjamsrv_embedded_stop()
+{
+  std::lock_guard<std::mutex> lock(g_embedded_mutex);
+  if (!g_embedded_thread.joinable()) return;
+  g_done=1;
+  g_embedded_thread.join();
+  g_log_func=NULL;
+  g_log_ctx=NULL;
+
+  std::lock_guard<std::mutex> ulock(g_users_mutex);
+  g_users.Set("");
+  g_users_count=0;
+}
+
+bool ninjamsrv_embedded_running()
+{
+  std::lock_guard<std::mutex> lock(g_embedded_mutex);
+  return g_embedded_thread.joinable();
+}
+
+int ninjamsrv_embedded_users(char *buf, int bufsize)
+{
+  std::lock_guard<std::mutex> lock(g_users_mutex);
+  if (buf && bufsize > 0) lstrcpyn_safe(buf,g_users.Get(),bufsize);
+  return g_users_count;
+}
+
+#endif
 
 
 void onConfigChange(int argc, char **argv)

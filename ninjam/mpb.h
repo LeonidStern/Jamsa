@@ -163,9 +163,15 @@ class mpb_server_download_interval_write
 //
 // A client that can decode codecs besides Vorbis sets their CLIENT_CAP_CODEC_* bits
 // in the client_caps of MESSAGE_CLIENT_AUTH_USER. A server that supports negotiation
-// then sends that client MESSAGE_SERVER_CODEC_MASK: the codecs everyone in the room
-// can decode (and the server allows), and sends it again whenever that changes.
+// then sends that client MESSAGE_SERVER_CODEC_MASK: codecs everyone in the room can
+// decode (and the server allows), and sends it again whenever that changes.
 // Clients that didn't set any codec bits never get this message.
+//
+// ninjamsrv puts just one codec in the mask, the one the room uses, so that everyone
+// uploads the same one. Any player can switch it by typing !codec opus, !codec flac
+// or !codec vorbis in the chat; if someone in the room can't decode that codec, the
+// room uses the best one everyone can until they leave. A client shows the room's
+// codec from the mask.
 //
 // A client may upload an interval in one of these codecs only while the latest mask it
 // received includes it, and must choose the codec at the start of each interval.

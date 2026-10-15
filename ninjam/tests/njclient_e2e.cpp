@@ -5,7 +5,7 @@
   whether audio made it through the encoder, the server and the decoder.
 
   Usage: njclient_e2e host:port seconds samplerate
-  Used by test_opus_e2e.py.
+  Used by test_codecs_e2e.py.
 */
 
 #include <stdio.h>

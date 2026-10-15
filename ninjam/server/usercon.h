@@ -107,11 +107,21 @@ class User_Group
 
     void onChatMessage(User_Connection *con, mpb_chat_message *msg);
 
+    // !codec [opus|flac|vorbis]: any player can switch the codec of the whole room
+    // (not to Vorbis with RequireCodec)
+    void onCodecCommand(User_Connection *con, const char *arg);
+
     // tells everyone else that this user (and their channels) are gone
     void NotifyUserLeft(User_Connection *p);
 
-    // tells clients that negotiate codecs which ones everyone in the room can decode, when that changes
+    // tells clients that negotiate codecs which one the room uses, when that changes
     void SendCodecMask();
+
+    // The codec (CLIENT_CAP_CODEC_* bit, 0 for Vorbis) everyone in the room uploads: the one
+    // chosen with !codec if everyone can decode it, else the best one they all can, which
+    // with RequireCodec is never Vorbis.
+    // *cant_decode gets someone whose client can't decode the chosen one.
+    int RoomCodec(User_Connection **cant_decode=NULL);
 
 
     WDL_PtrList<User_Connection> m_users;
@@ -131,6 +141,10 @@ class User_Group
     int m_allow_hidden_users;
 
     int m_allow_codecs; // CLIENT_CAP_CODEC_* bits of the codecs this server relays
+    int m_require_codec; // CLIENT_CAP_CODEC_* bit every client must play to log in (RequireCodec), 0 for none.
+                         // With it, rooms never use Vorbis.
+    int m_room_codec; // codec chosen with !codec, 0 for Vorbis
+    int m_room_codec_announced; // codec the room was last told about, -1 while the room is empty
 
 #define LOBBY_ALLOW_CHAT 2
     int m_is_lobby_mode; // nonzero for lobby (and LOBBY_ALLOW_CHAT etc optional)

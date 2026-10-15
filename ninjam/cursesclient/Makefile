@@ -39,11 +39,16 @@ else
   LFLAGS += -lvorbis -lvorbisenc -logg
 endif
 
-# OPUS=1 builds in Opus support (needs libopus): sends Opus when everyone in the room can decode it
+# OPUS=1 builds in Opus support (needs libopus), FLAC=1 FLAC support (needs libFLAC):
+# the client then sends whichever of them the server names as the room's codec
 ifdef OPUS
   CFLAGS += -DNINJAM_OPUS
   OBJS += ../../WDL/resample.o
   LFLAGS += -lopus
+endif
+ifdef FLAC
+  CFLAGS += -DNINJAM_FLAC
+  LFLAGS += -lFLAC
 endif
 
 CXXFLAGS = $(CFLAGS)

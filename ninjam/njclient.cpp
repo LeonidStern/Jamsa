@@ -37,6 +37,46 @@
 #define MAKE_NJ_FOURCC(A,B,C,D) ((A) | ((B)<<8) | ((C)<<16) | ((D)<<24))
 #define NJ_ENCODER_FMT_TYPE MAKE_NJ_FOURCC('O','G','G','v')
 #define NJ_OPUS_FMT_TYPE MAKE_NJ_FOURCC('O','P','U','S')
+#define NJ_FLAC_FMT_TYPE MAKE_NJ_FOURCC('F','L','A','C')
+
+// NINJAM_NO_VORBIS leaves Vorbis out (no libvorbis): such a client sends Opus or FLAC
+// only, so it sends nothing where the room can't play either, and plays Vorbis
+// intervals as silence. It needs NINJAM_OPUS.
+#ifdef NINJAM_NO_VORBIS
+#ifndef NINJAM_OPUS
+#error NINJAM_NO_VORBIS needs NINJAM_OPUS
+#endif
+// the codec interfaces, as WDL/vorbisencdec.h declares them (which needs the Vorbis headers)
+class I_NJDecoder
+{
+public:
+  virtual ~I_NJDecoder(){}
+  virtual int GetSampleRate()=0;
+  virtual int GetNumChannels()=0;
+  virtual void *DecodeGetSrcBuffer(int srclen)=0;
+  virtual void DecodeWrote(int srclen)=0;
+  virtual void Reset()=0;
+  virtual int Available()=0;
+  virtual float *Get()=0;
+  virtual void Skip(int amt)=0;
+  virtual int GenerateLappingSamples()=0;
+};
+
+class I_NJEncoder
+{
+public:
+  virtual ~I_NJEncoder(){}
+  virtual void Encode(float *in, int inlen, int advance=1, int spacing=1)=0; // length in sample (PAIRS)
+  virtual int isError()=0;
+  virtual int Available()=0;
+  virtual void *Get()=0;
+  virtual void Advance(int)=0;
+  virtual void Compact()=0;
+  virtual void reinit(int bla=0)=0;
+};
+  #define CreateNJEncoder(srate,ch,br,id) ((I_NJEncoder *)NULL)
+  #define CreateNJDecoder() ((I_NJDecoder *)NULL)
+#else
 
 #ifdef REANINJAM
 #define WDL_VORBIS_INTERFACE_ONLY
@@ -84,16 +124,26 @@
   #define CreateNJDecoder() ((I_NJDecoder *)new VorbisDecoder)
 #endif
 
+#endif // !NINJAM_NO_VORBIS
+
 // NINJAM_OPUS builds in Opus (needs libopus): the client then tells the server it can
 // decode Opus, and sends Opus while the server says everyone in the room can decode it
 #ifdef NINJAM_OPUS
 #include "opusencdec.h"
 #endif
 
+// NINJAM_FLAC builds in FLAC (needs libFLAC) the same way
+#ifdef NINJAM_FLAC
+#include "flacencdec.h"
+#endif
+
 static I_NJEncoder *CreateEncoderForType(unsigned int fourcc, int srate, int nch, int bitrate, int serno)
 {
 #ifdef NINJAM_OPUS
   if (fourcc == NJ_OPUS_FMT_TYPE) return new NJOpusEncoder(srate,nch,bitrate,serno);
+#endif
+#ifdef NINJAM_FLAC
+  if (fourcc == NJ_FLAC_FMT_TYPE) return new NJFlacEncoder(srate,nch,bitrate,serno);
 #endif
   return CreateNJEncoder(srate,nch,bitrate,serno);
 }
@@ -102,6 +152,9 @@ static I_NJDecoder *CreateDecoderForType(unsigned int fourcc)
 {
 #ifdef NINJAM_OPUS
   if (fourcc == NJ_OPUS_FMT_TYPE) return new NJOpusDecoder;
+#endif
+#ifdef NINJAM_FLAC
+  if (fourcc == NJ_FLAC_FMT_TYPE) return new NJFlacDecoder;
 #endif
   return CreateNJDecoder();
 }
@@ -454,6 +507,7 @@ public:
 
   double decode_peak_vol[2];
   bool m_need_header;
+  bool m_skip_interval; // nothing is sent this interval: no codec the room can play
   int out_chan_index;
   int flags;
 
@@ -462,6 +516,7 @@ public:
   unsigned int m_enc_fourcc; // codec of m_enc, chosen at the start of each interval
   int m_enc_bitrate_used;
   int m_enc_nch_used;
+  int m_enc_srate_used;
   Net_Message *m_enc_header_needsend;
 #endif
 
@@ -605,6 +660,7 @@ NJClient::NJClient()
 
   config_autosubscribe=1;
   config_send_opus=true;
+  config_send_flac=true;
   m_codec_mask=0;
   config_savelocalaudio=0;
   config_metronome=0.5f;
@@ -663,6 +719,7 @@ void NJClient::_reinit()
   m_active_bpm=120;
   m_active_bpi=32;
   m_interval_length=1000;
+  m_interval_length_usual=0;
   m_interval_pos=-1;
   m_metronome_pos=0.0;
   m_metronome_state=0;
@@ -764,6 +821,13 @@ void NJClient::GetPosition(int *pos, int *length)  // positions in samples
   if (pos && (*pos=m_interval_pos)<0) *pos=0;
 }
 
+void NJClient::SetIntervalEnd(int samples)
+{
+  if (m_interval_pos < 0 || samples < 1) return;
+  if (m_interval_length_usual <= 0) m_interval_length_usual=m_interval_length;
+  m_interval_length=m_interval_pos+samples;
+}
+
 unsigned int NJClient::GetSessionPosition()// returns milliseconds
 {
   unsigned int a=m_session_pos_ms;
@@ -814,6 +878,11 @@ void NJClient::AudioProc(float **inbuf, int innch, float **outbuf, int outnch, i
     int x=m_interval_length-m_interval_pos;
     if (!x || m_interval_pos < 0)
     {
+      if (m_interval_length_usual > 0) // SetIntervalEnd() changed the one that ends here
+      {
+        m_interval_length=m_interval_length_usual;
+        m_interval_length_usual=0;
+      }
       m_misc_cs.Enter();
       if (m_beatinfo_updated)
       {
@@ -929,6 +998,23 @@ void NJClient::Connect(const char *host, const char *user, const char *pass)
 
   m_status=0;
   m_codec_mask=0; // Vorbis until the server says otherwise
+}
+
+unsigned int NJClient::GetUploadCodec() const
+{
+  // ninjamsrv names one codec, the room's. If a mask ever holds more than one,
+  // FLAC goes first, then Opus, as JamTaba does, so every client picks the same
+#ifdef NINJAM_FLAC
+  if (config_send_flac && (m_codec_mask & CLIENT_CAP_CODEC_FLAC)) return NJ_FLAC_FMT_TYPE;
+#endif
+#ifdef NINJAM_OPUS
+  if (config_send_opus && (m_codec_mask & CLIENT_CAP_CODEC_OPUS)) return NJ_OPUS_FMT_TYPE;
+#endif
+#ifdef NINJAM_NO_VORBIS
+  return 0; // the room plays neither (or the server sent no mask): send nothing
+#else
+  return NJ_ENCODER_FMT_TYPE; // Vorbis, also when the server sent no mask (older servers)
+#endif
 }
 
 int NJClient::GetStatus()
@@ -1089,6 +1175,9 @@ int NJClient::Run() // nonzero if sleep ok
 
 #ifdef NINJAM_OPUS
               repl.client_caps|=CLIENT_CAP_CODEC_OPUS; // we can decode Opus
+#endif
+#ifdef NINJAM_FLAC
+              repl.client_caps|=CLIENT_CAP_CODEC_FLAC; // we can decode FLAC
 #endif
 
               WDL_SHA1 tmp;
@@ -1539,22 +1628,28 @@ int NJClient::Run() // nonzero if sleep ok
         if (lc->m_need_header)
         {
           // the codec can only change at the start of an interval
-          unsigned int fourcc=NJ_ENCODER_FMT_TYPE;
-#ifdef NINJAM_OPUS
-          if (config_send_opus && (m_codec_mask & CLIENT_CAP_CODEC_OPUS)) fourcc=NJ_OPUS_FMT_TYPE;
-#endif
-          if (lc->m_enc && lc->m_enc_fourcc != fourcc)
+          const unsigned int fourcc=GetUploadCodec();
+          if (lc->m_enc && (lc->m_enc_fourcc != fourcc || lc->m_enc_srate_used != m_srate))
           {
             delete lc->m_enc;
             lc->m_enc=0;
           }
           lc->m_enc_fourcc=fourcc;
+          lc->m_skip_interval=!fourcc;
+          if (!fourcc) lc->m_need_header=false; // decided for this interval
+        }
+        if (lc->m_skip_interval)
+        {
+          // no codec to send this interval with (see GetUploadCodec)
+          lc->m_bq.DisposeBlock(p);
+          p=0;
+          continue;
         }
         if (!lc->m_enc)
         {
-          // Vorbis gets a third more for stereo; Opus codes stereo efficiently and uses the setting as is
-          const int br = lc->m_enc_fourcc == NJ_OPUS_FMT_TYPE ? lc->bitrate : lc->bitrate+(block_nch>1?lc->bitrate/3:0);
-          lc->m_enc = CreateEncoderForType(lc->m_enc_fourcc,m_srate,lc->m_enc_nch_used=block_nch,lc->m_enc_bitrate_used = br,WDL_RNG_int32());
+          // Vorbis gets a third more for stereo; Opus codes stereo efficiently and uses the setting as is (FLAC ignores it)
+          const int br = lc->m_enc_fourcc != NJ_ENCODER_FMT_TYPE ? lc->bitrate : lc->bitrate+(block_nch>1?lc->bitrate/3:0);
+          lc->m_enc = CreateEncoderForType(lc->m_enc_fourcc,lc->m_enc_srate_used=m_srate,lc->m_enc_nch_used=block_nch,lc->m_enc_bitrate_used = br,WDL_RNG_int32());
         }
 
         if (lc->m_need_header)
@@ -1767,9 +1862,14 @@ DecodeState *NJClient::start_decode(unsigned char *guid, int chanflags, unsigned
 
   // types we understand
   unsigned int types[]={
+#ifndef NINJAM_NO_VORBIS
     NJ_ENCODER_FMT_TYPE,
+#endif
 #ifdef NINJAM_OPUS
     NJ_OPUS_FMT_TYPE,
+#endif
+#ifdef NINJAM_FLAC
+    NJ_FLAC_FMT_TYPE,
 #endif
   };
   unsigned int found_type = fourcc;
@@ -3245,10 +3345,11 @@ Local_Channel::Local_Channel() : channel_idx(0), src_channel(0), volume(1.0f), p
                 m_enc_fourcc(NJ_ENCODER_FMT_TYPE),
                 m_enc_bitrate_used(0),
                 m_enc_nch_used(0),
+                m_enc_srate_used(0),
                 m_enc_header_needsend(NULL),
 #endif
                 bcast_active(false), cbf(NULL), cbf_inst(NULL),
-                bitrate(64), m_need_header(true), out_chan_index(0), flags(0),
+                bitrate(64), m_need_header(true), m_skip_interval(false), out_chan_index(0), flags(0),
                 m_curwritefile_starttime(0.0),
                 m_curwritefile_writelen(0.0),
                 m_curwritefile_curbuflen(0.0),
