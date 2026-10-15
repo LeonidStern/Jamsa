@@ -154,6 +154,7 @@ int g_config_max_pending_per_ip; // same, per remote address
 int g_config_max_users; // these all must be copied to User_Group
 int g_config_portmap;
 int g_config_allow_codecs; // CLIENT_CAP_CODEC_* bits
+int g_config_require_codec; // CLIENT_CAP_CODEC_* bit, 0 for none
 int g_config_keepalive;
 WDL_FastString g_config_motdfile, g_config_private_lobby_motdfile;
 WDL_FastString g_config_default_topic;
@@ -178,7 +179,8 @@ static void copyConfigToGroup(User_Group *group)
   group->m_keepalive = g_config_keepalive;
   if (!group->m_topictext.GetLength()) group->m_topictext.Set(g_config_default_topic.Get());
   group->m_allow_hidden_users = g_config_allow_hidden_users;
-  group->m_allow_codecs = g_config_allow_codecs;
+  group->m_allow_codecs = g_config_allow_codecs | g_config_require_codec; // a required codec is allowed
+  group->m_require_codec = g_config_require_codec;
   group->m_voting_threshold = g_config_voting_threshold;
   group->m_voting_timeout = g_config_voting_timeout;
 }
@@ -402,6 +404,13 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
       else if (x == 2) codecs |= CLIENT_CAP_CODEC_FLAC;
     }
     g_config_allow_codecs=codecs;
+  }
+  else if (!stricmp(t,"RequireCodec"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int x=lp->gettoken_enum(1,"none\0opus\0flac\0");
+    if (x < 0) return -2;
+    g_config_require_codec = x == 1 ? CLIENT_CAP_CODEC_OPUS : x == 2 ? CLIENT_CAP_CODEC_FLAC : 0;
   }
   else if (!stricmp(t,"SetKeepAlive"))
   {
@@ -643,6 +652,7 @@ static int ReadConfig(char *configfile, bool is_init=false)
   g_config_max_pending_per_ip=8;
   g_config_portmap=0;
   g_config_allow_codecs=CLIENT_CAP_CODEC_OPUS; // FLAC needs several times the bandwidth, so servers opt in
+  g_config_require_codec=0;
   g_config_motdfile.Set("");
 
   g_acllist.Resize(0);

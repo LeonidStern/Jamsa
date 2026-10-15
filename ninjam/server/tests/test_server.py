@@ -370,6 +370,77 @@ class RoomCodecTests(CodecTestCase):
         self.assertEqual(b.drain(0.3), [])
 
 
+class RequireCodecTests(CodecTestCase):
+    extra_config = "AllowCodecs opus flac\nRequireCodec opus\n"
+
+    def test_client_that_cannot_play_opus_is_refused(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        self.assertEqual(self.mask(a), CAP_OPUS)
+        a.drain(0.2)
+        for caps in (0, CAP_FLAC):  # an older client (Vorbis only), and one that plays FLAC but not Opus
+            old = Client(self.server.port)
+            try:
+                self.assertEqual(old.login("anonymous:old", codecs=caps),
+                                 (False, "this server needs a NINJAM client that plays Opus"))
+            finally:
+                old.close()
+        # the room never saw them, and still plays Opus
+        self.assertEqual(a.drain(0.3), [])
+        self.client("bob", CAP_OPUS)
+
+    def test_codec_vorbis_is_refused(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        b = self.client("bob", CAP_OPUS | CAP_FLAC)
+        self.assertEqual(self.mask(a), CAP_OPUS)
+        b.drain(0.2)
+        a.chat("MSG", "!codec vorbis")
+        msgs = a.drain(0.5)
+        self.assertNotIn(CODEC_MASK, [m[0] for m in msgs])
+        self.assertIn("[server] this server doesn't allow Vorbis",
+                      [chat_fields(m[1])[2] for m in msgs if m[0] == CHAT])
+        self.assertEqual(b.drain(0.3), [])
+
+    def test_help_does_not_offer_vorbis(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        self.assertEqual(self.mask(a), CAP_OPUS)
+        a.chat("MSG", "!codec")
+        self.assertIn("[server] room audio is Opus. Change it with !codec opus or !codec flac", self.server_says(a))
+
+    def test_room_falls_back_between_opus_and_flac_only(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        b = self.client("bob", CAP_OPUS | CAP_FLAC)
+        a.chat("MSG", "!codec flac")
+        self.assertEqual(self.last_mask(b), CAP_FLAC)
+        a.drain(0.2)
+
+        # someone who plays Opus but not FLAC: the room falls back to Opus, not further
+        c = self.client("carol", CAP_OPUS)
+        self.assertEqual(self.mask(c), CAP_OPUS)
+        self.assertEqual(self.last_mask(b), CAP_OPUS)
+        self.assertIn("[server] room audio is now Opus, because %s's client can't play FLAC" % c.username,
+                      self.server_says(a))
+        b.chat("MSG", "!codec")
+        self.assertIn("[server] room audio is Opus (FLAC was chosen, but %s's client can't play it). "
+                      "Change it with !codec opus or !codec flac" % c.username, self.server_says(b))
+
+        c.close()
+        self.clients.remove(c)
+        self.assertIn("[server] room audio is back to FLAC", self.server_says(a))
+        self.assertEqual(self.last_mask(b), CAP_FLAC)
+        b.chat("MSG", "!codec opus")
+        self.assertEqual(self.last_mask(a), CAP_OPUS)
+
+
+class RequireCodecWithoutAllowCodecsTests(CodecTestCase):
+    extra_config = "AllowCodecs none\nRequireCodec opus\n"
+
+    def test_required_codec_is_allowed(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        self.assertEqual(self.mask(a), CAP_OPUS)
+        a.chat("MSG", "!codec flac")
+        self.assertIn("[server] this server doesn't allow FLAC", self.server_says(a))
+
+
 class AllowCodecsTests(ServerTest):
     extra_config = "AllowCodecs opus flac\n"
 

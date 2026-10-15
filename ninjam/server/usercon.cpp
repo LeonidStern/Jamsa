@@ -101,6 +101,8 @@ extern void logText(const char *s, ...);
 #define AUTH_TIMEOUT 30 // seconds to wait for a login reply
 #define AUTH_TIMEOUT_LICENSE 120 // longer when there is a license agreement to read
 
+static const char *codec_name(int codec);
+
 static unsigned int g_next_connection_id;
 
 // drops the oldest transfers from source_id until there is room for one more
@@ -339,6 +341,18 @@ int User_Connection::OnRunAuth(User_Group *group)
       SendConnectInfo(group);
     }
 
+    return 0;
+  }
+
+  if (group->m_require_codec && !(m_clientcaps & group->m_require_codec))
+  {
+    // RequireCodec: an older client, which would make the room fall back to Vorbis
+    char buf[128];
+    snprintf(buf,sizeof(buf),"this server needs a NINJAM client that plays %s",codec_name(group->m_require_codec));
+    logText("%s: Refusing user %s, %s\n",addrbuf,m_lookup->username.Get(),buf);
+    mpb_server_auth_reply bh;
+    bh.errmsg=buf;
+    Send(bh.build());
     return 0;
   }
 
@@ -976,7 +990,7 @@ bool User_Connection::migrateToRoom(const char *p)
 
 User_Group::User_Group() : m_max_users(0), m_last_bpm(120), m_last_bpi(32), m_keepalive(0), 
   m_voting_threshold(110), m_voting_timeout(120),
-  m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_allow_codecs(CLIENT_CAP_CODEC_OPUS),
+  m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_allow_codecs(CLIENT_CAP_CODEC_OPUS), m_require_codec(0),
   m_room_codec(CLIENT_CAP_CODEC_OPUS), m_room_codec_announced(-1), m_is_lobby_mode(0)
 
 {
@@ -1165,7 +1179,14 @@ int User_Group::RoomCodec(User_Connection **cant_decode)
   if (!m_room_codec || (all & m_room_codec)) return m_room_codec;
   if (all & CLIENT_CAP_CODEC_OPUS) return CLIENT_CAP_CODEC_OPUS;
   if (all & CLIENT_CAP_CODEC_FLAC) return CLIENT_CAP_CODEC_FLAC;
-  return 0;
+  return m_require_codec; // everyone here plays it (see OnRunAuth), so never Vorbis with RequireCodec
+}
+
+// the end of the !codec help: the codecs the room can switch to
+static const char *codec_choices(int require_codec)
+{
+  // with RequireCodec, Vorbis is out (and !codec flac says if the server doesn't allow it)
+  return require_codec ? "Change it with !codec opus or !codec flac" : "Change it with !codec opus, !codec flac or !codec vorbis";
 }
 
 void User_Group::SendCodecMask()
@@ -1221,10 +1242,10 @@ void User_Group::onCodecCommand(User_Connection *con, const char *arg)
     User_Connection *cant_decode;
     const int codec = RoomCodec(&cant_decode);
     if (codec != m_room_codec && cant_decode)
-      snprintf(buf,sizeof(buf),"[server] room audio is %s (%s was chosen, but %s's client can't play it). Change it with !codec opus, !codec flac or !codec vorbis",
-        codec_name(codec),codec_name(m_room_codec),display_name(cant_decode));
+      snprintf(buf,sizeof(buf),"[server] room audio is %s (%s was chosen, but %s's client can't play it). %s",
+        codec_name(codec),codec_name(m_room_codec),display_name(cant_decode),codec_choices(m_require_codec));
     else
-      snprintf(buf,sizeof(buf),"[server] room audio is %s. Change it with !codec opus, !codec flac or !codec vorbis",codec_name(codec));
+      snprintf(buf,sizeof(buf),"[server] room audio is %s. %s",codec_name(codec),codec_choices(m_require_codec));
     con->Send(server_chat(buf));
     return;
   }
@@ -1233,7 +1254,7 @@ void User_Group::onCodecCommand(User_Connection *con, const char *arg)
     con->Send(server_chat("[server] you don't have permission to change the room's audio"));
     return;
   }
-  if (choice && !(m_allow_codecs & choice))
+  if (choice ? !(m_allow_codecs & choice) : m_require_codec != 0)
   {
     snprintf(buf,sizeof(buf),"[server] this server doesn't allow %s",codec_name(choice));
     con->Send(server_chat(buf));
