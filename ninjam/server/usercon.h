@@ -110,6 +110,9 @@ class User_Group
     // tells everyone else that this user (and their channels) are gone
     void NotifyUserLeft(User_Connection *p);
 
+    // tells clients that negotiate codecs which ones everyone in the room can decode, when that changes
+    void SendCodecMask();
+
 
     WDL_PtrList<User_Connection> m_users;
 
@@ -126,6 +129,8 @@ class User_Group
     unsigned int m_run_robin;
 
     int m_allow_hidden_users;
+
+    int m_allow_codecs; // CLIENT_CAP_CODEC_* bits of the codecs this server relays
 
 #define LOBBY_ALLOW_CHAT 2
     int m_is_lobby_mode; // nonzero for lobby (and LOBBY_ALLOW_CHAT etc optional)
@@ -225,6 +230,7 @@ class User_Connection
     int m_auth_state;      // 1 if authorized, 0 if not yet, -1 if auth pending
     unsigned char m_challenge[8];
     int m_clientcaps;
+    int m_codec_mask_sent; // last MESSAGE_SERVER_CODEC_MASK sent, -1 for none
 
     int m_auth_privs;
 

@@ -221,6 +221,46 @@ Net_Message *mpb_server_config_change_notify::build()
 }
 
 
+// MESSAGE_SERVER_CODEC_MASK
+int mpb_server_codec_mask::parse(Net_Message *msg) // return 0 on success
+{
+  if (msg->get_type() != MESSAGE_SERVER_CODEC_MASK) return -1;
+  if (msg->get_size() < 4) return 1; // allow longer messages, for future extensions
+  unsigned char *p=(unsigned char *)msg->get_data();
+  if (!p) return 2;
+
+  codecs = ((int)*p++);
+  codecs |= ((int)*p++)<<8;
+  codecs |= ((int)*p++)<<16;
+  codecs |= ((int)*p++)<<24;
+
+  return 0;
+}
+
+Net_Message *mpb_server_codec_mask::build()
+{
+  Net_Message *nm=new Net_Message;
+  nm->set_type(MESSAGE_SERVER_CODEC_MASK);
+
+  nm->set_size(4);
+
+  unsigned char *p=(unsigned char *)nm->get_data();
+
+  if (!p)
+  {
+    delete nm;
+    return 0;
+  }
+
+  *p++=codecs&0xff;
+  *p++=(codecs>>8)&0xff;
+  *p++=(codecs>>16)&0xff;
+  *p++=(codecs>>24)&0xff;
+
+  return nm;
+}
+
+
 // MESSAGE_SERVER_USERINFO_CHANGE_NOTIFY
 int mpb_server_userinfo_change_notify::parse(Net_Message *msg) // return 0 on success
 {

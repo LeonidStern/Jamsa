@@ -12,7 +12,8 @@ import time
 import unittest
 import uuid
 
-from njclient import (Client, chat_fields, CHAT, DOWNLOAD_BEGIN, DOWNLOAD_WRITE)
+from njclient import (Client, chat_fields, codec_mask, CHAT, CODEC_MASK, DOWNLOAD_BEGIN, DOWNLOAD_WRITE,
+                      CAP_OPUS, CAP_FLAC)
 from fake_router import FakeIGD, FakeNatPmp
 
 # absolute, because each server runs with its own temporary directory as cwd
@@ -94,9 +95,9 @@ class ServerTest(unittest.TestCase):
         self.assertNotIn("runtime error", out)
         self.assertNotIn("AddressSanitizer", out)
 
-    def client(self, name):
+    def client(self, name, codecs=0):
         c = Client(self.server.port)
-        ok, _ = c.login("anonymous:" + name)
+        ok, _ = c.login("anonymous:" + name, codecs=codecs)
         self.assertTrue(ok)
         self.clients.append(c)
         return c
@@ -210,6 +211,102 @@ class ArchiveTests(ServerTest):
             a.upload_begin(uuid.uuid4().bytes)
         time.sleep(1.0)
         self.assertLess(self.server.open_fds() - before, 80)
+
+
+class CodecTests(ServerTest):
+    def mask(self, c):
+        m = c.wait_for(lambda m: m[0] == CODEC_MASK)
+        self.assertIsNotNone(m, "no codec mask")
+        return codec_mask(m)
+
+    def last_mask(self, c):
+        masks = [codec_mask(m) for m in c.drain(0.3) if m[0] == CODEC_MASK]
+        return masks[-1] if masks else None
+
+    def interval(self, sender, fourcc, data=b"audio"):
+        guid = uuid.uuid4().bytes
+        sender.upload_begin(guid, fourcc=fourcc)
+        sender.upload_write(guid, data, end=True)
+        return guid
+
+    def received(self, c):
+        """(guid, fourcc) of each interval start, and the data written, for everything c got."""
+        msgs = c.drain(0.5)
+        begins = [(m[1][:16], m[1][20:24]) for m in msgs if m[0] == DOWNLOAD_BEGIN]
+        writes = [m[1][17:] for m in msgs if m[0] == DOWNLOAD_WRITE]
+        return begins, writes
+
+    def test_mask_follows_who_is_in_the_room(self):
+        a = self.client("alice", CAP_OPUS)
+        self.assertEqual(self.mask(a), CAP_OPUS)
+        b = self.client("bob", CAP_OPUS)
+        self.assertEqual(self.mask(b), CAP_OPUS)
+
+        old = self.client("old")  # can only decode Vorbis
+        self.assertEqual(self.last_mask(a), 0)
+        self.assertEqual(self.last_mask(b), 0)
+        self.assertNotIn(CODEC_MASK, [m[0] for m in old.drain(0.3)])
+
+        old.close()
+        self.clients.remove(old)
+        self.assertEqual(self.mask(a), CAP_OPUS)
+
+    def test_opus_reaches_only_clients_that_decode_it(self):
+        a = self.client("alice", CAP_OPUS)
+        b = self.client("bob", CAP_OPUS)
+        old = self.client("old")
+        a.set_channels(["mic"])
+        for c in (b, old):
+            c.subscribe(a.username)
+        time.sleep(0.2)
+        for c in (a, b, old):
+            c.drain(0.2)
+
+        guid = self.interval(a, b"OPUS")
+        self.assertEqual(self.received(b), ([(guid, b"OPUS")], [b"audio"]))
+        self.assertEqual(self.received(old), ([(bytes(16), bytes(4))], []))  # a silent interval
+
+        guid = self.interval(a, b"OGGv")
+        self.assertEqual(self.received(old), ([(guid, b"OGGv")], [b"audio"]))
+
+    def test_flac_is_off_unless_the_server_allows_it(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        b = self.client("bob", CAP_OPUS | CAP_FLAC)
+        self.assertEqual(self.mask(a), CAP_OPUS)
+        b.subscribe(a.username)
+        time.sleep(0.2)
+        b.drain(0.2)
+        self.interval(a, b"FLAC")
+        self.assertEqual(self.received(b), ([(bytes(16), bytes(4))], []))
+
+
+class AllowCodecsTests(ServerTest):
+    extra_config = "AllowCodecs opus flac\n"
+
+    def test_flac_is_relayed_when_allowed(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        b = self.client("bob", CAP_FLAC)
+        # FLAC is the only codec both can decode
+        self.assertIsNotNone(a.wait_for(lambda m: m[0] == CODEC_MASK and codec_mask(m) == CAP_FLAC))
+        b.subscribe(a.username)
+        time.sleep(0.2)
+        b.drain(0.2)
+        guid = uuid.uuid4().bytes
+        a.upload_begin(guid, fourcc=b"FLAC")
+        a.upload_write(guid, b"lossless", end=True)
+        msgs = b.drain(0.5)
+        self.assertIn((guid, b"FLAC"), [(m[1][:16], m[1][20:24]) for m in msgs if m[0] == DOWNLOAD_BEGIN])
+        self.assertIn(b"lossless", [m[1][17:] for m in msgs if m[0] == DOWNLOAD_WRITE])
+
+
+class VorbisOnlyTests(ServerTest):
+    extra_config = "AllowCodecs none\n"
+
+    def test_mask_is_empty(self):
+        a = self.client("alice", CAP_OPUS)
+        m = a.wait_for(lambda m: m[0] == CODEC_MASK)
+        self.assertIsNotNone(m)
+        self.assertEqual(codec_mask(m), 0)
 
 
 class StartupTests(unittest.TestCase):

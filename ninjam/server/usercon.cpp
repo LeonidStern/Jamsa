@@ -121,7 +121,7 @@ static void trimTransferList(WDL_PtrList<User_TransferState> *list, unsigned int
   }
 }
 
-User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
+User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_codec_mask_sent(-1), m_auth_privs(0), m_reserved(0), m_max_channels(0),
       m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0)
 {
   m_id = ++g_next_connection_id;
@@ -765,6 +765,10 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                     
             static unsigned char zero_guid[16];
 
+            // subscribers whose client can't decode this codec (or that the server doesn't relay) get silence instead
+            const int codec_cap = mpb_codec_cap_for_fourcc(mp.fourcc);
+            Net_Message *silencemsg = NULL;
+
 
             if (mp.fourcc && memcmp(mp.guid,zero_guid,sizeof(zero_guid))) // zero = silence, so simply rebroadcast
             {
@@ -819,7 +823,19 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                   User_SubscribeMask *sm=u->m_sublist.Get(i);
                   if (!strcasecmp(sm->username.Get(),myusername))
                   {
-                    if (sm->channelmask & (1<<mp.chidx))
+                    if ((sm->channelmask & (1<<mp.chidx)) && codec_cap && !(u->m_clientcaps & group->m_allow_codecs & codec_cap))
+                    {
+                      if (!silencemsg)
+                      {
+                        mpb_server_download_interval_begin sb; // zero GUID, no fourcc
+                        sb.chidx = mp.chidx;
+                        sb.username = myusername;
+                        silencemsg = sb.build();
+                        silencemsg->addRef();
+                      }
+                      u->Send(silencemsg);
+                    }
+                    else if (sm->channelmask & (1<<mp.chidx))
                     {
                       if (memcmp(mp.guid,zero_guid,sizeof(zero_guid))) // zero = silence, so simply rebroadcast
                       {
@@ -842,6 +858,7 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
               }
             }
             newmsg->releaseRef();
+            if (silencemsg) silencemsg->releaseRef();
           }
         }
         //m_recvfiles
@@ -959,7 +976,7 @@ bool User_Connection::migrateToRoom(const char *p)
 
 User_Group::User_Group() : m_max_users(0), m_last_bpm(120), m_last_bpi(32), m_keepalive(0), 
   m_voting_threshold(110), m_voting_timeout(120),
-  m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_is_lobby_mode(0)
+  m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_allow_codecs(CLIENT_CAP_CODEC_OPUS), m_is_lobby_mode(0)
 
 {
   m_logfp = NULL;
@@ -1103,7 +1120,32 @@ int User_Group::Run()
     }
     m_run_robin++;
 
+    if (!m_is_lobby_mode) SendCodecMask();
+
     return wantsleep;
+}
+
+void User_Group::SendCodecMask()
+{
+  int mask = m_allow_codecs & CLIENT_CAP_CODECS;
+  int x;
+  for (x = 0; x < m_users.GetSize() && mask; x ++)
+  {
+    User_Connection *u = m_users.Get(x);
+    if (u->m_auth_state > 0) mask &= u->m_clientcaps;
+  }
+
+  for (x = 0; x < m_users.GetSize(); x ++)
+  {
+    User_Connection *u = m_users.Get(x);
+    if (u->m_auth_state > 0 && (u->m_clientcaps & CLIENT_CAP_CODECS) && u->m_codec_mask_sent != mask)
+    {
+      mpb_server_codec_mask cm;
+      cm.codecs = mask;
+      u->Send(cm.build());
+      u->m_codec_mask_sent = mask;
+    }
+  }
 }
 
 void User_Group::NotifyUserLeft(User_Connection *p)

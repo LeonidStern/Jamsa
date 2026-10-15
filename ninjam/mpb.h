@@ -159,6 +159,49 @@ class mpb_server_download_interval_write
 
 
 
+// Codec negotiation. Optional: servers and clients that don't know it ignore it.
+//
+// A client that can decode codecs besides Vorbis sets their CLIENT_CAP_CODEC_* bits
+// in the client_caps of MESSAGE_CLIENT_AUTH_USER. A server that supports negotiation
+// then sends that client MESSAGE_SERVER_CODEC_MASK: the codecs everyone in the room
+// can decode (and the server allows), and sends it again whenever that changes.
+// Clients that didn't set any codec bits never get this message.
+//
+// A client may upload an interval in one of these codecs only while the latest mask it
+// received includes it, and must choose the codec at the start of each interval.
+// Without a mask (older servers never send one) it uploads Vorbis.
+// The server never forwards an interval to someone whose client_caps lack its codec:
+// that subscriber gets a silent interval (zero GUID) instead.
+#define CLIENT_CAP_CODEC_OPUS 0x100 // fourcc 'OPUS': Ogg Opus (RFC 7845), one Ogg stream per interval
+#define CLIENT_CAP_CODEC_FLAC 0x200 // fourcc 'FLAC': FLAC, lossless
+#define CLIENT_CAP_CODECS 0xff00    // bits 8-15 are reserved for codecs
+
+#define NJ_FOURCC(a,b,c,d) ((unsigned int)(a) | ((unsigned int)(b)<<8) | ((unsigned int)(c)<<16) | ((unsigned int)(d)<<24))
+
+// the client_caps bit needed to receive intervals of this type, or 0 if every client gets them (Vorbis, video)
+static inline int mpb_codec_cap_for_fourcc(unsigned int fourcc)
+{
+  if (fourcc == NJ_FOURCC('O','P','U','S')) return CLIENT_CAP_CODEC_OPUS;
+  if (fourcc == NJ_FOURCC('F','L','A','C')) return CLIENT_CAP_CODEC_FLAC;
+  return 0;
+}
+
+#define MESSAGE_SERVER_CODEC_MASK 0x06
+class mpb_server_codec_mask
+{
+  public:
+    mpb_server_codec_mask() : codecs(0) { }
+    ~mpb_server_codec_mask() { }
+
+    int parse(Net_Message *msg); // return 0 on success
+    Net_Message *build();
+
+    // public data
+    int codecs; // CLIENT_CAP_CODEC_* bits; 0 = Vorbis only
+};
+
+
+
 #define MESSAGE_CLIENT_AUTH_USER 0x80
 class mpb_client_auth_user
 {
