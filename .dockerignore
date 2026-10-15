@@ -1,0 +1,3 @@
+**/*.o
+ninjam/server/ninjamsrv
+**/__pycache__
