@@ -1,0 +1,306 @@
+name: ninjam-vst3
+
+# Builds the NINJAM VST3 plug-in (ninjam/vst3) on Linux, Windows and macOS, checks it with
+# Steinberg's validator and Tracktion's pluginval (which also opens the editor), runs the
+# plug-in's tests and uploads what users install.
+
+on:
+  push:
+    branches: [main]
+    paths: ['ninjam/**', 'WDL/**', '.github/workflows/ninjam-vst3.yml']
+  pull_request:
+    paths: ['ninjam/**', 'WDL/**', '.github/workflows/ninjam-vst3.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # pluginval release and the SHA-256 of each of its zips
+  PLUGINVAL_VERSION: v1.0.4
+  PLUGINVAL_SHA256_LINUX: c01c49d8063965c4c2dea8324468336768f5c9139e0b1caebde14c2400b55352
+  PLUGINVAL_SHA256_WINDOWS: c08e61ce3b96db41636f8ec7e76f4c7e2c13ebdac7fa1b5a1f52b4f32ec715ab
+  PLUGINVAL_SHA256_MACOS: 3c4c533bda0c5059eea3ddaea752d757ee2025041f0f47e6bcb0e87f6082b29f
+  # pluginval v1.0.4 validates in its own process (it has no --validate-in-process flag) and
+  # runs the tests that open the editor unless --skip-gui-tests is given, so neither is passed.
+  PLUGINVAL_ARGS: --strictness-level 10 --timeout-ms 120000 --output-dir pluginval-logs
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and test packages
+        run: |
+          sudo apt-get update
+          # VSTGUI on Linux; Xvfb (and ALSA, which pluginval links) for the editor tests;
+          # the system codecs and Vorbis for the old clients of the end-to-end test
+          sudo apt-get install -y ninja-build \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-util-dev libxcb-cursor-dev libxcb-keysyms1-dev \
+            libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev libglib2.0-dev libcairo2-dev \
+            libpango1.0-dev libfontconfig-dev libfreetype-dev libwayland-dev wayland-protocols \
+            xvfb xauth libasound2t64 \
+            libopus-dev libflac-dev libogg-dev libvorbis-dev
+          # the unit test also reads and writes the state in a locale that writes 95,5
+          sudo locale-gen de_DE.UTF-8
+
+      - name: Configure
+        run: cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON
+
+      - name: Build
+        run: |
+          cmake --build build --target NINJAM validator plugin_unit_test plugin_e2e_host -- -k 0
+          # what gets validated, tested and shipped
+          strip --strip-unneeded build/VST3/Release/NINJAM.vst3/Contents/x86_64-linux/NINJAM.so
+          ls -l build/VST3/Release/NINJAM.vst3/Contents/x86_64-linux/
+
+      - name: Steinberg validator
+        run: |
+          build/bin/Release/validator -e build/VST3/Release/NINJAM.vst3 2>&1 | tee validator.log
+          grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator.log
+
+      - name: pluginval (with the editor, under Xvfb)
+        run: |
+          curl -fsSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_Linux.zip"
+          echo "$PLUGINVAL_SHA256_LINUX  pluginval.zip" | sha256sum -c -
+          unzip -q -o pluginval.zip -d pluginval
+          xvfb-run -a -s "-screen 0 1400x900x24" pluginval/pluginval $PLUGINVAL_ARGS --validate build/VST3/Release/NINJAM.vst3
+
+      - name: Servers and old clients for the end-to-end test
+        run: |
+          make -C ninjam/server -j"$(nproc)"
+          make -C ninjam/tests -j"$(nproc)" njclient_e2e_vorbis
+
+      - name: Tests
+        env:
+          NINJAMSRV: ${{ github.workspace }}/ninjam/server/ninjamsrv
+          NJCLIENT_E2E_VORBIS: ${{ github.workspace }}/ninjam/tests/njclient_e2e_vorbis
+        run: ctest --test-dir build --output-on-failure -V
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp -R build/VST3/Release/NINJAM.vst3 dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NINJAM-vst3-linux-x86_64
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-linux
+          path: |
+            validator.log
+            pluginval-logs/
+          if-no-files-found: ignore
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (MSVC, static runtime, single-file NINJAM.vst3)
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+          call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          where ninja >nul 2>nul || choco install ninja --no-progress -y || exit /b 1
+          cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DSMTG_USE_STATIC_CRT=ON || exit /b 1
+          cmake --build build --target NINJAM validator plugin_unit_test -- -k 0 || exit /b 1
+
+      - name: Find the plug-in and the validator
+        shell: bash
+        run: |
+          PLUGIN=$(find build/VST3 -name NINJAM.vst3 -type f | head -1)
+          VALIDATOR=$(find build/bin -name validator.exe -type f | head -1)
+          test -n "$PLUGIN" && test -n "$VALIDATOR"
+          echo "PLUGIN=$PLUGIN" >> "$GITHUB_ENV"
+          echo "VALIDATOR=$VALIDATOR" >> "$GITHUB_ENV"
+          ls -l "$PLUGIN"
+
+      - name: DLLs it needs (no Visual C++ runtime)
+        shell: bash
+        run: |
+          VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          DUMPBIN=$(cygpath -u "$("$VSWHERE" -latest -products '*' -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | head -1 | tr -d '\r')")
+          MSYS_NO_PATHCONV=1 "$DUMPBIN" /nologo /dependents "$PLUGIN" | tee dependents.txt
+          if grep -i -E "vcruntime|msvcp|ucrtbase|api-ms-win-crt" dependents.txt; then
+            echo "NINJAM.vst3 needs the Visual C++ runtime; it should be built with /MT"
+            exit 1
+          fi
+
+      - name: Steinberg validator (single file, and in the folder layout)
+        shell: bash
+        run: |
+          "$VALIDATOR" -e "$PLUGIN" 2>&1 | tee validator.log
+          grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator.log
+          mkdir -p validate/NINJAM.vst3/Contents/x86_64-win
+          cp "$PLUGIN" validate/NINJAM.vst3/Contents/x86_64-win/NINJAM.vst3
+          "$VALIDATOR" -e validate/NINJAM.vst3 2>&1 | tee validator-folder.log
+          grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator-folder.log
+
+      - name: pluginval (with the editor)
+        shell: bash
+        run: |
+          curl -fsSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_Windows.zip"
+          echo "$PLUGINVAL_SHA256_WINDOWS  pluginval.zip" | sha256sum -c -
+          7z x -y -opluginval pluginval.zip
+          pluginval/pluginval.exe $PLUGINVAL_ARGS --validate "$PLUGIN" && status=0 || status=$?
+          cat pluginval-logs/*.txt || true
+          exit $status
+
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure -V
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "$PLUGIN" dist/NINJAM.vst3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NINJAM-vst3-windows-x64
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-windows
+          path: |
+            dependents.txt
+            validator*.log
+            pluginval-logs/
+          if-no-files-found: ignore
+
+  macos:
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+      BUNDLE: build/VST3/Release/NINJAM.vst3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: brew list ninja >/dev/null 2>&1 || brew install ninja
+
+      - name: Configure (universal, macOS 12 and later)
+        run: cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+
+      - name: Build
+        run: cmake --build build --target NINJAM validator plugin_unit_test plugin_e2e_host -- -k 0
+
+      - name: Strip and sign (ad hoc)
+        run: |
+          strip -x "$BUNDLE/Contents/MacOS/NINJAM"
+          codesign --force --deep --sign - "$BUNDLE"
+          codesign --verify --deep --strict --verbose=2 "$BUNDLE"
+
+      - name: Check the bundle
+        run: |
+          BIN="$BUNDLE/Contents/MacOS/NINJAM"
+          lipo -archs "$BIN"
+          lipo -archs "$BIN" | grep -w arm64 && lipo -archs "$BIN" | grep -w x86_64
+          otool -l "$BIN" | grep -A4 LC_BUILD_VERSION | grep minos
+          plutil -p "$BUNDLE/Contents/Info.plist"
+          test "$(plutil -extract CFBundlePackageType raw "$BUNDLE/Contents/Info.plist")" = BNDL
+
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure -V
+
+      - name: Are there Developer ID secrets?
+        id: devid
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -n "$MACOS_CERT_P12" ] && [ -n "$MACOS_CERT_PASSWORD" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            echo "No Developer ID secrets: the bundle stays ad hoc signed and isn't notarized."
+          fi
+
+      - name: Sign with Developer ID, notarize and staple
+        if: steps.devid.outputs.notarize == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          if [ -z "$IDENTITY" ]; then echo "MACOS_CERT_P12 has no Developer ID Application certificate"; exit 1; fi
+
+          codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$BUNDLE"
+          codesign --verify --deep --strict --verbose=2 "$BUNDLE"
+
+          ditto -c -k --keepParent "$BUNDLE" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait --output-format json > "$RUNNER_TEMP/notarize.json" || true
+          cat "$RUNNER_TEMP/notarize.json"
+          STATUS=$(plutil -extract status raw "$RUNNER_TEMP/notarize.json" 2>/dev/null || echo unknown)
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "Notarization: $STATUS"
+            ID=$(plutil -extract id raw "$RUNNER_TEMP/notarize.json" 2>/dev/null || true)
+            if [ -n "$ID" ]; then
+              xcrun notarytool log "$ID" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" || true
+            fi
+            exit 1
+          fi
+          xcrun stapler staple "$BUNDLE"
+          xcrun stapler validate "$BUNDLE"
+          codesign --verify --deep --strict --verbose=2 "$BUNDLE"
+
+      - name: Remove the signing keychain
+        if: always() && steps.devid.outputs.notarize == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - name: Steinberg validator
+        run: |
+          build/bin/Release/validator -e "$BUNDLE" 2>&1 | tee validator.log
+          grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator.log
+
+      - name: pluginval (with the editor)
+        run: |
+          curl -fsSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_macOS.zip"
+          echo "$PLUGINVAL_SHA256_MACOS  pluginval.zip" | shasum -a 256 -c -
+          ditto -x -k pluginval.zip pluginval
+          pluginval/pluginval.app/Contents/MacOS/pluginval $PLUGINVAL_ARGS --validate "$BUNDLE"
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent "$BUNDLE" dist/NINJAM-vst3-macos.zip
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NINJAM-vst3-macos-universal
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-macos
+          path: |
+            validator.log
+            pluginval-logs/
+          if-no-files-found: ignore
