@@ -240,8 +240,6 @@ NinjamController::NinjamController(controller::MainController *mainController) :
     lastBeat(0),
     currentBpi(0),
     currentBpm(0),
-    mutex(QMutex::Recursive),
-    encodersMutex(QMutex::Recursive),
     encodingThread(nullptr),
     preparedForTransmit(false),
     waitingIntervals(0) // waiting for start transmit

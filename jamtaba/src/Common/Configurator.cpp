@@ -1,9 +1,5 @@
 #include <QtGlobal>
 
-#ifdef Q_OS_WIN
-    #include "log/stackwalker/WindowsStackWalker.h"
-#endif
-
 #include "Configurator.h"
 #include <QFile>
 #include <QDebug>
@@ -99,7 +95,7 @@ void Configurator::logHandler(QtMsgType type, const QMessageLogContext &context,
            << QString(QString(context.category) + "." + messageType).leftJustified(17, ' ')
            << " [" << timeStamp << "] "
            << localMsg.constData()
-           << COLOR_RESET << " [" << file << ", line " << context.line << "]" << endl;
+           << COLOR_RESET << " [" << file << ", line " << context.line << "]" << Qt::endl;
 
     QTextStream(stdout) << stringMsg;
 
@@ -197,14 +193,14 @@ void Configurator::signalHandler(int signal)
 
 void Configurator::terminateHandler()
 {
-#ifdef Q_OS_WIN
-    WindowsStackWalker stackWalker;
-    stackWalker.ShowCallstack();
-#endif
 }
 
 bool Configurator::setUp()
 {
+    // the resources are compiled into a static library, so they must be registered explicitly
+    Q_INIT_RESOURCE(jamtaba);
+    Q_INIT_RESOURCE(mainframe);
+
     initializeDirs(); // directories initialization is different in Standalone and VstPlugin. Check the files ConfiguratorStandalone.cpp and VstPlugin.cpp
 
     lastLogFileContent = loadPreviousLogContent();
@@ -223,10 +219,6 @@ bool Configurator::setUp()
     std::signal(SIGINT, Configurator::signalHandler);  // Receipt of an interactive attention signal.
     std::signal(SIGSEGV, Configurator::signalHandler); // An invalid access to storage.
     std::signal(SIGTERM, Configurator::signalHandler); // A termination request sent to the program.
-
-#ifdef Q_OS_WIN
-    SetUnhandledExceptionFilter(WindowsStackWalker::topLevelExceptionHandler);
-#endif
 
     // themes dir is the same for Standalone and Vst plugin
     themesDir = QDir(getApplicationDataDir().absoluteFilePath(THEMES_FOLDER_NAME));

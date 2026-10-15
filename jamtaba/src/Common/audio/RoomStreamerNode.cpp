@@ -123,7 +123,7 @@ void AbstractMp3Streamer::decode(const unsigned int maxBytesToDecode)
 {
     if (!device)
         return;
-    qint64 totalBytesToProcess = std::min((int)maxBytesToDecode, bytesToDecode.size());
+    qint64 totalBytesToProcess = std::min((qint64)maxBytesToDecode, (qint64)bytesToDecode.size());
     char *in = bytesToDecode.data();
 
     if (totalBytesToProcess > 0) {
@@ -184,7 +184,7 @@ void NinjamRoomStreamerNode::initialize(const QString &streamPath)
 
         QNetworkReply *reply = httpClient.get(QNetworkRequest(QUrl(streamPath)));
         QObject::connect(reply, SIGNAL(readyRead()), this, SLOT(on_reply_read()));
-        QObject::connect(reply, SIGNAL(error(QNetworkReply::NetworkError)), this, SLOT(on_reply_error(QNetworkReply::NetworkError)));
+        QObject::connect(reply, SIGNAL(errorOccurred(QNetworkReply::NetworkError)), this, SLOT(on_reply_error(QNetworkReply::NetworkError)));
         this->device = reply;
     }
 }

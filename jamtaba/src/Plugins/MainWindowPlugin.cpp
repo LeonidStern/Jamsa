@@ -7,7 +7,8 @@
 #include "audio/core/LocalInputNode.h"
 #include "TopLevelTextEditorModifier.h"
 
-#include <QDesktopWidget>
+#include <QGuiApplication>
+#include <QScreen>
 
 const QSize MainWindowPlugin::PLUGIN_WINDOW_MIN_SIZE = QSize(990, 600);
 
@@ -124,8 +125,7 @@ PreferencesDialog *MainWindowPlugin::createPreferencesDialog()
 
 QSize MainWindowPlugin::getZoomStepSize() const
 {
-    QDesktopWidget desktop;
-    QSize screenSize = desktop.availableGeometry().size();
+    QSize screenSize = QGuiApplication::primaryScreen()->availableGeometry().size();
     float scaleFactor = static_cast<float>(screenSize.width())/screenSize.height();
 
     const int widthStep = ZOOM_STEP * scaleFactor;
@@ -136,8 +136,7 @@ QSize MainWindowPlugin::getZoomStepSize() const
 
 QSize MainWindowPlugin::getMaxWindowSize() const
 {
-    QDesktopWidget desktop;
-    return desktop.availableGeometry().size();
+    return QGuiApplication::primaryScreen()->availableGeometry().size();
 }
 
 bool MainWindowPlugin::canIncreaseWindowHeight() const

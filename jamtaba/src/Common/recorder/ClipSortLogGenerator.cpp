@@ -56,19 +56,12 @@ void ClipSortLogGenerator::setJamDir(const QString &newJamName, const QString &r
 QString ClipSortLogGenerator::getAudioAbsolutePath(const QString &audioFileName)
 {
     QDir jamDir = QDir(this->clipsortPath);
-    QString replacementFilePath = QUuid::createUuid().toString().remove(QRegExp("[-{}]"));
+    QString replacementFilePath = QUuid::createUuid().toString().remove(QRegularExpression("[-{}]"));
     if (!jamDir.exists(replacementFilePath.left(1)) && !jamDir.mkdir(replacementFilePath.left(1))) {
         qCritical() << "Could not create clip directory in " << this->clipsortPath;
-        return QString::null;
+        return QString();
     }
     return jamDir.absoluteFilePath(replacementFilePath.left(1) + "/" +
             replacementFilePath + "." +
             QFileInfo(audioFileName).suffix());
-}
-
-QString ClipSortLogGenerator::getVideoAbsolutePath(const QString &videoFileName)
-{
-    Q_UNUSED(videoFileName);
-
-    return QString();
 }

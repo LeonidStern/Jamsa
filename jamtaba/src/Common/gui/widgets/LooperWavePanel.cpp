@@ -299,7 +299,7 @@ void LooperWavePanel::drawLayerNumber(QPainter &painter)
     painter.setBrush(color);
 
     QString text = QString::number(layerID + 1);
-    qreal textWidth = fontMetrics().width(text);
+    qreal textWidth = fontMetrics().horizontalAdvance(text);
     qreal textHeight = fontMetrics().height();
 
     QRectF textRect(3, 3, textWidth * 2, textHeight);

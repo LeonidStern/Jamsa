@@ -4,7 +4,6 @@
 #include "TrackGroupView.h"
 #include "NinjamTrackView.h"
 #include "widgets/MarqueeLabel.h"
-#include "video/VideoWidget.h"
 
 #include <QLabel>
 #include <QBoxLayout>
@@ -38,15 +37,11 @@ public:
     void updateGuiElements() override;
     void setEstimatedChunksPerInterval(int estimatedChunks);
 
-    bool isShowingVideo() const;
-
     NinjamTrackView *addTrackView(long trackID) override;
 
     void setTracksLayout(TracksLayout newLayout);
 
     QSize sizeHint() const override;
-
-    void addVideoInterval(const QByteArray &encodedVideoData);
 
     QColor getTintColor() const;
 
@@ -55,9 +50,6 @@ public:
 
 signals:
     void createPrivateChat(const QString &userName, const QString &userIP);
-
-public slots:
-    void updateVideoFrame(const QImage &frame);
 
 protected:
     NinjamTrackView *createTrackView(long trackID) override;
@@ -72,13 +64,6 @@ private:
     QLabel *chatBlockIconLabel;
     QString userIP;
     TracksLayout tracksLayoutEnum;
-
-    VideoWidget *videoWidget;
-    QByteArray encodedVideoData;
-    quint64 lastVideoRender;
-    QList<QList<QImage>> decodedImages;
-    uint videoFrameRate;
-    uint intervalsWithoutReceiveVideo;
 
     void setupHorizontalLayout();
     void setupVerticalLayout();
@@ -98,8 +83,6 @@ private slots:
     void unblockChatMessages();
     void hideChatBlockIcon(const QString &unblockedUserName);
     void showChatBlockIcon(const QString &blockedUserName);
-
-    void startVideoStream();
 };
 
 #endif // NINJAMTRACKGROUPVIEW_H

@@ -24,7 +24,7 @@
 #include "MetronomeUtils.h"
 
 #include <QMessageBox>
-#include <QRegExp>
+#include <QRegularExpression>
 #include <QLocale>
 #include <cassert>
 #include <QComboBox>
@@ -534,21 +534,12 @@ void NinjamRoomWindow::resizeEvent(QResizeEvent *ev)
 
 }
 
-bool cameraSorter(NinjamTrackGroupView *track1, NinjamTrackGroupView *)
-{
-     return track1 && track1->isShowingVideo();
-}
-
 void NinjamRoomWindow::reAddTrackGroups()
 {
     for (auto trackGroup : trackGroups.values()) // remove all tracks from layout
         ui->tracksLayout->removeWidget(trackGroup);
 
     auto itemsToAdd = trackGroups.values();
-
-    if (tracksLayout == TracksLayout::GridLayout) { // if layout is Grid reorder trackGroups to show active cams first
-        qSort(itemsToAdd.begin(), itemsToAdd.end(), cameraSorter);
-    }
 
     for (auto trackGroup : itemsToAdd)
         addTrack(trackGroup);
@@ -657,8 +648,8 @@ NinjamRoomWindow::~NinjamRoomWindow()
 
 void NinjamRoomWindow::showServerLicence()
 {
-    static QRegExp ccLink("(http://creativecommons.org/licenses/\\S+/)");
-    static QRegExp brPattern("(\\r\\n|\\r|\\n)");
+    static QRegularExpression ccLink("(http://creativecommons.org/licenses/\\S+/)");
+    static QRegularExpression brPattern("(\\r\\n|\\r|\\n)");
     QString locale = QLocale::system().name();
     QString anchorTag = QStringLiteral("<a href=\"\\1deed.%1\">\\1</a>").arg(locale);
 
@@ -761,8 +752,6 @@ void NinjamRoomWindow::setupSignals(controller::NinjamController* ninjamControll
 
     connect(ninjamPanel, &NinjamPanel::intervalShapeChanged, this, &NinjamRoomWindow::setNewIntervalShape);
 
-    connect(mainController->getNinjamService(), &ninjam::client::Service::videoIntervalCompleted, this, &NinjamRoomWindow::setVideoInterval);
-
     connect(ui->chordsButton, &QPushButton::clicked, [=](){
 
         auto chordsPanel = mainWindow->getChordsPanel();
@@ -779,14 +768,6 @@ void NinjamRoomWindow::showChordProgressionDialog(const ChordProgression &curren
     if (chordProgressionDialog) {
         auto currentBpi = ninjamPanel->getBpi();
         chordProgressionDialog->show(currentBpi, currentProgression);
-    }
-}
-
-void NinjamRoomWindow::setVideoInterval(const User &user, const QByteArray &encodedVideoData)
-{
-    auto group = trackGroups[user.getFullName()];
-    if (group) {
-        group->addVideoInterval(encodedVideoData);
     }
 }
 

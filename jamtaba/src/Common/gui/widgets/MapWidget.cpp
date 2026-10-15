@@ -337,7 +337,7 @@ void MapWidget::drawMapTiles(QPainter &p, const QRect &rect)
     }
 }
 
-void MapWidget::enterEvent(QEvent *)
+void MapWidget::enterEvent(QEnterEvent *)
 {
     repaint(); // to paint or not the countries legend on mouse hover
 }
@@ -451,7 +451,7 @@ int MapWidget::getMaximumCountryNameWidth() const
     QFontMetrics metrics(countryFont);
 
     for (const auto &marker : markers) {
-        auto countryNameWidth = metrics.width(marker.getCountryName());
+        auto countryNameWidth = metrics.horizontalAdvance(marker.getCountryName());
         if (countryNameWidth > maxWidth)
             maxWidth = countryNameWidth;
     }
@@ -642,7 +642,7 @@ void MapWidget::drawMarker(const MapMarker &marker, QPainter &painter, const QPo
     painter.setFont(font());
 
     QFontMetrics metrics = painter.fontMetrics();
-    qreal playerNameWidth = metrics.width(playerName);
+    qreal playerNameWidth = metrics.horizontalAdvance(playerName);
     painter.setPen(markerTextColor);
     qreal textY = markerRect.center().y() + TEXT_MARGIM + metrics.descent()/2.0;
     painter.drawText(hOffset, textY, playerName);
@@ -674,7 +674,7 @@ QSizeF MapWidget::getMarkerSize(const MapMarker &marker) const
     qreal markerWidth = TEXT_MARGIM; // left margin
 
     QFontMetrics metrics(font());
-    markerWidth += metrics.width(marker.getPlayerName());
+    markerWidth += metrics.horizontalAdvance(marker.getPlayerName());
     markerWidth += TEXT_MARGIM; // space between player and country name
 
     markerWidth += TEXT_MARGIM + flag.width();

@@ -6,9 +6,6 @@
 #include <QTranslator>
 #include <QMainWindow>
 #include <QMessageBox>
-#include <QCamera>
-#include <QCameraInfo>
-#include <QVideoFrame>
 #include <QComboBox>
 #include <QFileInfo>
 
@@ -21,8 +18,6 @@ class ChordsPanel;
 class ChatPanel;
 class InactivityDetector;
 class LocalTrackGroupView;
-class CameraFrameGrabber;
-class VideoWidget;
 class BusyDialog;
 class LooperWindow;
 class UsersColorsPool;
@@ -108,10 +103,6 @@ public:
 
     virtual TextEditorModifier *createTextEditorModifier() = 0;
 
-    QImage pickCameraFrame() const;
-
-    bool cameraIsActivated() const;
-
     void closeAllFloatingWindows();
 
     void setTheme(const QString &themeName);
@@ -191,13 +182,6 @@ protected:
     virtual inline QSize getMinimumWindowSize() const { return MAIN_WINDOW_MIN_SIZE; }
 
     static const QSize MAIN_WINDOW_MIN_SIZE;
-
-    QCamera *camera;
-    CameraFrameGrabber *videoFrameGrabber;
-    VideoWidget *cameraView;
-    QComboBox *cameraCombo;
-    QVBoxLayout *cameraLayout;
-    QString preferredCameraName;
 
     QColor tintColor;
 
@@ -302,10 +286,6 @@ private slots:
 
     void updateUserNameLineEditToolTip();
 
-    void changeCameraStatus(bool activated);
-
-    void selectNewCamera(int cameraIndex);
-
     void handleUserLeaving(const QString &userFullName);
     void handleUserEntering(const QString &userName);
 
@@ -403,10 +383,6 @@ private:
 
     static bool jamRoomLessThan(const login::RoomInfo &r1, const login::RoomInfo &r2);
 
-    void setCameraComboVisibility(bool show);
-
-    void initializeCamera(const QString &cameraDeviceName);
-
     void initializeLoginService();
     void initializeLocalInputChannels(const persistence::LocalInputTrackSettings &localInputSettings);
 
@@ -423,11 +399,6 @@ private:
     void initializeMeteringOptions();
 
     void initializeGuiRefreshTimer();
-
-    void initializeCameraWidget();
-
-    QCamera::FrameRateRange getBestSupportedFrameRate() const;
-    QSize getBestCameraResolution(const QList<QSize> resolutions) const;
 
     void updateUserNameLabel();
 

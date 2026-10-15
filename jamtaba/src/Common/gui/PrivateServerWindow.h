@@ -4,17 +4,13 @@
 #include <QDialog>
 #include <QScopedPointer>
 
-#include "upnp/UPnPManager.h"
-
 namespace Ui {
 class PrivateServerWindow;
 }
 
-namespace ninjam { namespace server {
-    class Server;
-}}
-
-using ninjam::server::Server;
+namespace ninjam {
+    class PrivateServer;
+}
 
 class PrivateServerWindow : public QDialog
 {
@@ -41,9 +37,6 @@ private slots:
     void serverStarted();
     void serverStopped();
 
-    void portOpened(const QString &localIP, const QString &externalIP);
-    void upnpError(const QString &error);
-
 private:
     Ui::PrivateServerWindow *ui;
 
@@ -54,8 +47,7 @@ private:
 
     void appendTextInLog(const QString &text);
 
-    QScopedPointer<Server> server;
-    UPnPManager upnpManager;
+    QScopedPointer<ninjam::PrivateServer> server;
 
     int networkUsageTimerID;
 

@@ -339,7 +339,7 @@ void BaseTrackView::toggleSoloStatus()
 QPoint BaseTrackView::getDbValuePosition(const QString &dbValueText,
                                          const QFontMetrics &fontMetrics) const
 {
-    int textWidth = fontMetrics.width(dbValueText);
+    int textWidth = fontMetrics.horizontalAdvance(dbValueText);
     int textX = levelSlider->x() + levelSlider->width()/2 - textWidth - ((!narrowed) ? 14 : 11);
     float sliderPosition = (double)levelSlider->value()/levelSlider->maximum();
     int offset = levelSlider->y() + fontMetrics.height();

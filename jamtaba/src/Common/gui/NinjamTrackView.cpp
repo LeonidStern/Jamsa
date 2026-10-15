@@ -261,11 +261,6 @@ void NinjamTrackView::setChannelMode(NinjamTrackNode::ChannelMode mode)
     }
 }
 
-bool NinjamTrackView::isVideoChannel() const
-{
-    return instrumentsButton->getSelectedIcon() == static_cast<int>(InstrumentIndex::Video);
-}
-
 qint8 NinjamTrackView::guessInstrumentIcon() const
 {
     auto channelName = instrumentsButton->toolTip();
@@ -437,7 +432,7 @@ QPoint NinjamTrackView::getDbValuePosition(const QString &dbValueText,
 
     float sliderPosition = (double)levelSlider->value()/levelSlider->maximum();
     int textX = sliderPosition * levelSlider->width() + levelSlider->x()
-                - metrics.width(dbValueText) - FADER_HEIGHT;
+                - metrics.horizontalAdvance(dbValueText) - FADER_HEIGHT;
     int textY = levelSlider->y() + levelSlider->height() + 3;
     return QPoint(textX, textY);
 }

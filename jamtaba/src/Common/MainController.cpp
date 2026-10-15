@@ -1,13 +1,8 @@
 #include <QtGlobal>
 
-#ifdef Q_OS_WIN
-    #include "log/stackwalker/WindowsStackWalker.h"
-#endif
-
 #include "MainController.h"
 #include "NinjamController.h"
 #include "Utils.h"
-#include "loginserver/natmap.h"
 #include "audio/core/AudioNode.h"
 #include "audio/core/LocalInputNode.h"
 #include "audio/core/LocalInputGroup.h"
@@ -24,16 +19,12 @@
 #include <QBuffer>
 #include <QByteArray>
 #include <QDateTime>
-#include <QSize>
 
 using ninjam::client::Service;
 using ninjam::client::ServerInfo;
 using persistence::Settings;
 using persistence::LocalInputTrackSettings;
 using controller::MainController;
-
-const quint8 MainController::CAMERA_FPS = 10;
-const QSize MainController::MAX_VIDEO_SIZE(320, 240); // max video resolution in pixels
 
 const QString MainController::CRASH_FLAG_STRING = "JamTaba closed without crash :)";
 
@@ -45,14 +36,11 @@ MainController::MainController(const Settings &settings) :
     ninjamService(new Service()),
     settings(settings),
     mainWindow(nullptr),
-    mutex(QMutex::Recursive),
-    videoEncoder(),
-    currentStreamingRoomID(-1000),
+    currentStreamingRoomID(),
     started(false),
     masterGain(1),
     usersDataCache(Configurator::getInstance()->getCacheDir()),
     lastInputTrackID(0),
-    lastFrameTimeStamp(0),
     emojiManager(":/emoji/emoji.json", ":/emoji/icons")
 {
     QDir cacheDir = Configurator::getInstance()->getCacheDir();
@@ -60,8 +48,6 @@ MainController::MainController(const Settings &settings) :
     // Register known JamRecorders here:
     jamRecorders.append(new recorder::JamRecorder(new recorder::ReaperProjectGenerator()));
     jamRecorders.append(new recorder::JamRecorder(new recorder::ClipSortLogGenerator()));
-
-    connect(&videoEncoder, &FFMpegMuxer::dataEncoded, this, &MainController::enqueueVideoDataToUpload);
 
     for (auto emojiCode: settings.getRecentEmojis())
         emojiManager.addRecent(emojiCode);
@@ -107,21 +93,6 @@ long MainController::getTotalUploadTransferRate() const
         return 0;
 
     return ninjamService->getTotalUploadTransferRate();
-}
-
-void MainController::setVideoProperties(const QSize &resolution)
-{
-    QSize bestResolution(resolution);
-    if (resolution.width() > MainController::MAX_VIDEO_SIZE.width())
-         bestResolution = MainController::MAX_VIDEO_SIZE;
-
-    videoEncoder.setVideoResolution(bestResolution);
-    videoEncoder.setVideoFrameRate(CAMERA_FPS);
-}
-
-QSize MainController::getVideoResolution() const
-{
-    return videoEncoder.getVideoResolution();
 }
 
 void MainController::blockUserInChat(const QString &userNameToBlock)
@@ -181,9 +152,6 @@ void MainController::finishUploads()
         auto &audioInterval = audioIntervalsToUpload[channelIndex];
         ninjamService->sendIntervalPart(audioInterval.getGUID(), QByteArray(), true);
     }
-
-    if (videoIntervalToUpload)
-        ninjamService->sendIntervalPart(videoIntervalToUpload->getGUID(), QByteArray(), true);
 }
 
 void MainController::quitFromNinjamServer(const QString &error)
@@ -221,7 +189,6 @@ void MainController::setupNinjamControllerSignals()
     connect(controller, &NinjamController::startingNewInterval, this, &MainController::handleNewNinjamInterval);
     connect(controller, &NinjamController::currentBpiChanged, this, &MainController::updateBpi);
     connect(controller, &NinjamController::currentBpmChanged, this, &MainController::updateBpm);
-    connect(controller, &NinjamController::startProcessing, this, &MainController::requestCameraFrame);
 }
 
 void MainController::connectInNinjamServer(const ServerInfo &server)
@@ -274,36 +241,6 @@ void MainController::handleNewNinjamInterval()
         for (auto jamRecorder : jamRecorders)
             jamRecorder->newInterval();
     }
-
-    if (mainWindow->cameraIsActivated())
-        videoEncoder.startNewInterval();
-}
-
-void MainController::processCapturedFrame(int frameID, const QImage &frame)
-{
-    Q_UNUSED(frameID);
-
-    if (ninjamController && ninjamController->isPreparedForTransmit())
-        videoEncoder.encodeImage(frame); // video encoder will emit a signal when video frame is encoded
-}
-
-void MainController::requestCameraFrame(int intervalPosition)
-{
-    if (isPlayingInNinjamRoom() && mainWindow->cameraIsActivated()) {
-        bool isFirstPart = intervalPosition == 0;
-        if (isFirstPart || canGrabNewFrameFromCamera()) {
-            static int frameID = 0;
-            processCapturedFrame(frameID++, mainWindow->pickCameraFrame());
-            lastFrameTimeStamp = QDateTime::currentMSecsSinceEpoch();
-        }
-    }
-}
-
-uint MainController::getFramesPerInterval() const
-{
-    auto intervalTimeInSeconds = ninjamController->getSamplesPerInterval()/getSampleRate();
-
-    return intervalTimeInSeconds * CAMERA_FPS;
 }
 
 void MainController::updateBpi(int newBpi)
@@ -363,43 +300,6 @@ void MainController::enqueueAudioDataToUpload(const QByteArray &encodedData, qui
         for (auto jamRecorder : getActiveRecorders())
             jamRecorder->appendLocalUserAudio(encodedData, channelIndex, isFirstPart);
     }
-}
-
-void MainController::enqueueVideoDataToUpload(const QByteArray &encodedData, bool isFirstPart)
-{
-    if (!ninjamService)
-        return;
-
-    if (isFirstPart) {
-        if (videoIntervalToUpload) {
-            // flush the end of previous interval
-            ninjamService->sendIntervalPart(videoIntervalToUpload->getGUID(), videoIntervalToUpload->getData(), true); // is the last part of interval
-            videoIntervalToUpload->clear();
-        }
-
-        videoIntervalToUpload.reset(new UploadIntervalData()); // generate a new GUID
-
-        static const auto videoChannelIndex = 1; // always sending video in 2nd channel to avoid drop intervals in first channel
-        ninjamService->sendIntervalBegin(videoIntervalToUpload->getGUID(), videoChannelIndex, false); // starting a new video interval
-    }
-
-    if (!videoIntervalToUpload || !ninjamService)
-        return;
-
-    videoIntervalToUpload->appendData(encodedData);
-
-    bool canSend = videoIntervalToUpload->getTotalBytes() >= 4096;
-    if (canSend) {
-        ninjamService->sendIntervalPart(videoIntervalToUpload->getGUID(), videoIntervalToUpload->getData(), false); // is not the last part of interval
-        videoIntervalToUpload->clear();
-    }
-
-    // disabling the video recording
-// if (settings.isSaveMultiTrackActivated() && isPlayingInNinjamRoom()) {
-// for (auto jamRecorder : getActiveRecorders()) {
-// jamRecorder->appendLocalUserVideo(encodedData, isFirstPart);
-// }
-// }
 }
 
 int MainController::getMaxAudioChannelsForEncoding(uint trackGroupIndex) const
@@ -708,11 +608,6 @@ void MainController::process(const audio::SamplesBuffer &in, audio::SamplesBuffe
     catch (...)
     {
         qCritical() << "Exception in MainController::process";
-
-        #ifdef Q_OS_WIN
-        WindowsStackWalker stackWalker;
-        stackWalker.ShowCallstack();
-        #endif
 
         qFatal("Aborting in  MainController::process!");
     }
@@ -1117,8 +1012,6 @@ void MainController::stopNinjamController()
         ninjamController->stop(true);
 
     audioIntervalsToUpload.clear();
-
-    videoEncoder.finish(); // release memory used by video encoder
 }
 
 void MainController::setTranslationLanguage(const QString &languageCode)
@@ -1157,15 +1050,6 @@ audio::LocalInputNode *MainController::getInputTrackInGroup(quint8 groupIndex, q
         return nullptr;
 
     return trackGroup->getInputNode(trackIndex);
-}
-
-bool MainController::canGrabNewFrameFromCamera() const
-{
-    static const quint64 timeBetweenFrames = 1000/CAMERA_FPS;
-
-    const quint64 now = QDateTime::currentMSecsSinceEpoch();
-
-    return (now - lastFrameTimeStamp) >= timeBetweenFrames;
 }
 
 QList<recorder::JamRecorder *> MainController::getActiveRecorders() const

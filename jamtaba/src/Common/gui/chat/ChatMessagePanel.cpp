@@ -265,7 +265,7 @@ bool messageContainsDownloadableImageLink(const QString &message)
 void ChatMessagePanel::setMessageLabelText(const QString &msg)
 {
     QString newMessage(msg);
-    newMessage = newMessage.replace(QRegExp("<.+?>"), ""); // scape html tags
+    newMessage = newMessage.replace(QRegularExpression("<.+?>"), ""); // scape html tags
     newMessage = newMessage.replace("\n", "<br/>");
 
    if (messageContainsDownloadableImageLink(msg)) {
@@ -317,7 +317,7 @@ void ChatMessagePanel::insertImage(const QImage &image, const QString &link)
 QString ChatMessagePanel::replaceLinksInString(const QString &string)
 {
     static QString regex = "((?:https?|ftp|www)://\\S+)";
-    return QString(string).replace(QRegExp(regex), "<a href=\"\\1\">\\1</a>");
+    return QString(string).replace(QRegularExpression(regex), "<a href=\"\\1\">\\1</a>");
 }
 
 ChatMessagePanel::~ChatMessagePanel()
@@ -344,7 +344,7 @@ void ChatMessagePanel::translate()
 
     QNetworkReply *reply = httpClient->get(req);
 
-    QObject::connect(reply, SIGNAL(error(QNetworkReply::NetworkError)), this, SLOT(handleTranslationError(QNetworkReply::NetworkError)));
+    QObject::connect(reply, SIGNAL(errorOccurred(QNetworkReply::NetworkError)), this, SLOT(handleTranslationError(QNetworkReply::NetworkError)));
 
     QObject::connect(httpClient, SIGNAL(finished(QNetworkReply *)), this, SLOT(handleAvailableTranslation(QNetworkReply *)));
 
@@ -399,8 +399,8 @@ void ChatMessagePanel::handleAvailableTranslation(QNetworkReply *reply)
 
         QString downloadedData(reply->readAll());
 
-        int startSlash = downloadedData.indexOf(QRegExp("\""));
-        int endSlash = downloadedData.indexOf(QRegExp("\""), startSlash + 1);
+        int startSlash = downloadedData.indexOf(QRegularExpression("\""));
+        int endSlash = downloadedData.indexOf(QRegularExpression("\""), startSlash + 1);
 
         QString translatedText = downloadedData.mid(startSlash+1, endSlash - startSlash - 1);
         if (translatedText.isEmpty())

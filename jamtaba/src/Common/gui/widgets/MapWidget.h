@@ -34,7 +34,7 @@ public:
 protected:
     void resizeEvent(QResizeEvent *) override;
     void paintEvent(QPaintEvent *event) override;
-    void enterEvent(QEvent *) override;
+    void enterEvent(QEnterEvent *) override;
     void leaveEvent(QEvent *) override;
     QSize minimumSizeHint() const override;
     bool eventFilter(QObject *, QEvent *) override;

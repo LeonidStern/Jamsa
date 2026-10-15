@@ -135,7 +135,7 @@ private:
         for (auto option : options) {
             QCheckBox *newCheckBox = new QCheckBox(getOptionName(option));
             newCheckBox->setToolTip(getOptionToolTip(option));
-            newCheckBox->setProperty("option", qVariantFromValue(option));
+            newCheckBox->setProperty("option", QVariant::fromValue(option));
             mapToAddCheckBoxes.insert(option, newCheckBox);
 
             layoutToAddCheckboxes->addWidget(newCheckBox);

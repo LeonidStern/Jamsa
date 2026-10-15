@@ -30,7 +30,6 @@
 #include "audio/core/LocalInputNode.h"
 #include "audio/RoomStreamerNode.h"
 #include "performance/PerformanceMonitor.h"
-#include "video/VideoFrameGrabber.h"
 #include "chat/NinjamChatMessageParser.h"
 #include "loginserver/MainChat.h"
 #include "TextEditorModifier.h"
@@ -38,16 +37,13 @@
 #include "ninjam/client/Types.h"
 
 // to get versions
-#include "libavutil/avutil.h"
 #include "vorbis/codec.h"
-#include "miniupnpc.h"
 
-#include <QDesktopWidget>
+#include <QActionGroup>
 #include <QDesktopServices>
+#include <QScreen>
 #include <QRect>
 #include <QDateTime>
-#include <QImage>
-#include <QCameraInfo>
 #include <QToolTip>
 
 const QSize MainWindow::MAIN_WINDOW_MIN_SIZE = QSize(1100, 695);
@@ -77,11 +73,6 @@ using audio::AbstractMp3Streamer;
 MainWindow::MainWindow(MainController *mainController, QWidget *parent) :
     QMainWindow(parent),
     mainController(mainController),
-    camera(nullptr),
-    videoFrameGrabber(nullptr),
-    cameraView(nullptr),
-    cameraCombo(nullptr),
-    cameraLayout(nullptr),
     bottomCollapsed(false),
     busyDialog(new BusyDialog()),
     bpmVotingExpirationTimer(nullptr),
@@ -115,7 +106,6 @@ MainWindow::MainWindow(MainController *mainController, QWidget *parent) :
     initializeTranslator();
     initializeThemeMenu();
     initializeMeteringOptions();
-    initializeCameraWidget();
     setupWidgets();
     setupSignals();
 
@@ -197,250 +187,6 @@ void MainWindow::setupMainTabCornerWidgets()
     frameLayout->addWidget(buttonCollapseChat);
 
     ui.contentTabWidget->setCornerWidget(frame);
-}
-
-void MainWindow::setCameraComboVisibility(bool show)
-{
-    if (!cameraCombo)
-        return;
-
-    if (show) {
-        cameraCombo->clear();
-        auto cameras = QCameraInfo::availableCameras();
-        for (auto cameraInfo : cameras) {
-            cameraCombo->addItem(cameraInfo.description(), cameraInfo.deviceName());
-        }
-    }
-    else {
-        cameraCombo->clear();
-    }
-
-    cameraCombo->setVisible(show && cameraCombo->count() > 1);
-
-    if (ui.localControlsCollapseButton->isChecked()) {
-        cameraCombo->setVisible(false);
-    }
-}
-
-void MainWindow::initializeCamera(const QString &cameraDeviceName)
-{
-    if (camera) {
-        camera->unload();
-        camera->deleteLater();
-    }
-
-    preferredCameraName = cameraDeviceName.isEmpty() ? QCameraInfo::defaultCamera().deviceName() : cameraDeviceName;
-
-    camera = new QCamera(preferredCameraName.toUtf8());
-
-    connect(camera, static_cast<void(QCamera::*)(QCamera::Error)>(&QCamera::error), [=]()
-    {
-        QMessageBox::critical(this, tr("Error!"), camera->errorString());
-    });
-
-    if (videoFrameGrabber)
-        camera->setViewfinder(videoFrameGrabber);
-
-    camera->start();
-
-    // setting resolution after start to fix #944 - https://github.com/elieserdejesus/JamTaba/issues/944
-    QList<QSize> resolutions = camera->supportedViewfinderResolutions();
-    if (!resolutions.isEmpty()) {
-        QCameraViewfinderSettings settings;
-        QSize bestResolution = getBestCameraResolution(resolutions);
-        settings.setResolution(bestResolution);
-        camera->setViewfinderSettings(settings);
-        qDebug() << "Setting camera viewFinder resolution to " << camera->viewfinderSettings().resolution();
-
-        //getBestSupportedFrameRate();
-
-        mainController->setVideoProperties(bestResolution);
-    }
-    else {
-        qCritical() << "Camera resolutions list is empty!";
-    }
-
-    setCameraComboVisibility(camera->state() == QCamera::ActiveState);
-
-    // adjust selected camera in combo
-    for(int i = 0 ; i < cameraCombo->count(); i++) {
-        if (cameraCombo->itemData(i) == preferredCameraName) {
-            cameraCombo->setCurrentIndex(i);
-            break;
-        }
-    }
-}
-
-QSize MainWindow::getBestCameraResolution(const QList<QSize> resolutions) const
-{
-    auto bestResolution = MainController::MAX_VIDEO_SIZE;
-
-    if (!resolutions.isEmpty()) {
-        auto lowestResolution = resolutions.first();
-        if (lowestResolution.width() > MainController::MAX_VIDEO_SIZE.width()) { // using the lowest resolution in big resolution cams
-            bestResolution = lowestResolution;
-        }
-        else { // pick the first resolution where width < 320
-            for (int i = resolutions.size() - 1; i >= 0;  --i) {
-                if (resolutions.at(i).width() <= MainController::MAX_VIDEO_SIZE.width()) {
-                    bestResolution = resolutions.at(i);
-                    break;
-                }
-            }
-            //bestResolution = resolutions.first();
-        }
-    }
-
-    return bestResolution;
-}
-
-void MainWindow::changeCameraStatus(bool activated)
-{
-    if (camera) {
-
-        // camera is used by another application?
-        if (camera->status() == QCamera::UnloadedStatus && camera->state() == QCamera::UnloadedState) {
-            camera->unload();
-            cameraView->setVisible(false);
-            return;
-        }
-    }
-
-    if (!activated) {
-        if (camera) {
-            camera->unload();
-            camera->deleteLater();
-            camera = nullptr;
-
-            videoFrameGrabber->deleteLater();
-            videoFrameGrabber = nullptr;
-
-            setCameraComboVisibility(false);
-
-            if (localGroupChannels.size() > 1) {
-                auto secondChannel = localGroupChannels.at(1);
-                if (secondChannel && secondChannel->isVideoChannel()) {
-                    removeChannelsGroup(secondChannel->getChannelIndex());
-                }
-            }
-
-            return;
-        }
-    }
-
-    // activating the camera?
-
-    if (!videoFrameGrabber) {
-        videoFrameGrabber = new CameraFrameGrabber(this);
-
-        connect(videoFrameGrabber, &CameraFrameGrabber::frameAvailable, [=](const QImage &frame) {
-
-            if (mainController && !mainController->isPlayingInNinjamRoom()) {
-                if (cameraView)
-                    cameraView->setCurrentFrame(frame);
-            }
-
-        });
-    }
-
-    initializeCamera(preferredCameraName);
-
-    if(camera && camera->state() != QCamera::ActiveState) { // camera is used by another application?
-        camera->unload();
-
-        videoFrameGrabber->deleteLater();
-        videoFrameGrabber = nullptr;
-
-        cameraView->activate(false);
-    }
-    else { // if the camera is correctly activated we need need create a 2nd channel to xmit the video
-
-        while (localGroupChannels.size() > 1)
-            removeChannelsGroup(localGroupChannels.at(1)->getChannelIndex()); // delete the 2nd channel if exists
-
-        addChannelsGroup(-1); // add the 2nd channel using the default icon
-
-        auto secondChannel = localGroupChannels.at(1);
-        secondChannel->setPeakMeterMode(localGroupChannels.first()->isShowingPeakMeterOnly());
-        if (secondChannel) {
-            auto channelIndex = secondChannel->getChannelIndex();
-            auto voiceChatActivated = mainController->isVoiceChatActivated(channelIndex);
-            if (voiceChatActivated) {
-                mainController->setVoiceChatStatus(channelIndex, false);
-            }
-
-            secondChannel->setAsVideoChannel();
-        }
-    }
-
-}
-
-void MainWindow::selectNewCamera(int cameraIndex)
-{
-    QString cameraDeviceName = cameraCombo->itemData(cameraIndex).toString();
-    initializeCamera(cameraDeviceName);
-}
-
-void MainWindow::initializeCameraWidget()
-{
-    auto cameras = QCameraInfo::availableCameras();
-
-    if (!cameras.isEmpty()) {
-
-        if (!cameraView) {
-            QIcon webcamIcon = IconFactory::createWebcamIcon(tintColor);
-            cameraView = new VideoWidget(this, webcamIcon, false);
-            cameraView->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-            cameraView->setMaximumHeight(136);
-
-            connect(cameraView, &VideoWidget::statusChanged, this, &MainWindow::changeCameraStatus);
-        }
-
-        if (!cameraLayout) {
-            cameraLayout = new QVBoxLayout();
-
-            cameraCombo = new QComboBox();
-            cameraCombo->setObjectName(QStringLiteral("cameraCombo"));
-            connect(cameraCombo, SIGNAL(activated(int)), this, SLOT(selectNewCamera(int)));
-            cameraCombo->setVisible(false);
-            cameraCombo->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Maximum);
-
-            cameraLayout->addWidget(cameraView, 1, Qt::AlignHCenter);
-            cameraLayout->addWidget(cameraCombo);
-
-            auto leftPanelLayout = static_cast<QVBoxLayout *>(ui.leftPanel->layout());
-            leftPanelLayout->addLayout(cameraLayout);
-            leftPanelLayout->setAlignment(cameraLayout, Qt::AlignCenter);
-        }
-    }
-}
-
-QCamera::FrameRateRange MainWindow::getBestSupportedFrameRate() const
-{
-    return QCamera::FrameRateRange();
-}
-
-bool MainWindow::cameraIsActivated() const
-{
-    return cameraView && cameraView->isActivated();
-}
-
-QImage MainWindow::pickCameraFrame() const
-{
-    if (videoFrameGrabber && cameraView) {
-        auto frame = videoFrameGrabber->grab();
-        cameraView->setCurrentFrame(frame);
-
-        // scale the grabed frame if is bigger than MAX_VIDEO_SIZE. This is necessary because some cameras
-        // have only big resolutions, and we have problems sensing big resolution videos to ninjam servers.
-
-        if (frame.width() > MainController::MAX_VIDEO_SIZE.width())
-            return frame.scaled(mainController->getVideoResolution(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-
-        return frame;
-    }
-
-    return QImage();
 }
 
 void MainWindow::initializeMeteringOptions()
@@ -538,9 +284,6 @@ void MainWindow::setTintColor(const QColor &color)
     for(auto group : this->localGroupChannels) {
         group->setTintColor(color);
     }
-
-    if (cameraView)
-        cameraView->setIcon(IconFactory::createWebcamIcon(color));
 
     if (ninjamWindow)
         ninjamWindow->setTintColor(color);
@@ -708,14 +451,6 @@ void MainWindow::showPeakMetersOnlyInLocalControls(bool showPeakMetersOnly)
 
     ui.localControlsCollapseButton->setChecked(showPeakMetersOnly);
 
-    if (cameraView) {
-        cameraCombo->setVisible(cameraView->isVisible() && cameraCombo->count() > 1);
-        
-        if (showPeakMetersOnly) {
-            cameraCombo->setVisible(false);
-        }
-    }
-    
     updateLocalInputChannelsGeometry();
 
     ui.userNamePanel->setVisible(!showPeakMetersOnly);
@@ -842,9 +577,6 @@ void MainWindow::removeChannelsGroup(int channelIndex)
 
             // TODO Refactoring: emit a signal 'localChannel removed' and catch this signal in NinjamController
             mainController->sendRemovedChannelMessage(channelIndex);
-
-            if (channel->isVideoChannel())
-                cameraView->activate(false); // deactivate the camera if the 2nd channel is deleted
 
             update();
         }
@@ -1131,14 +863,6 @@ bool MainWindow::jamRoomLessThan(const login::RoomInfo &r1, const login::RoomInf
 
 void MainWindow::detachMainController()
 {
-    //if (videoFrameGrabber) { // necessary to avoid crash VST host when Jamtaba is removed
-        //disconnect(videoFrameGrabber, &CameraFrameGrabber::frameAvailable, this, nullptr);
-    //}
-
-    if (camera) { // necessary to avoid crash VST host when Jamtaba is removed
-        camera->unload();
-    }
-
     mainController = nullptr;
 }
 
@@ -1245,7 +969,7 @@ void MainWindow::refreshPublicRoomsList(const QList<login::RoomInfo> &publicRoom
     hideBusyDialog();
 
     QList<login::RoomInfo> sortedRooms(publicRooms);
-    qSort(sortedRooms.begin(), sortedRooms.end(), jamRoomLessThan);
+    std::sort(sortedRooms.begin(), sortedRooms.end(), jamRoomLessThan);
 
     // put the private servers (if available) at the first positions
     int totalPrivateServers = 0;
@@ -2323,7 +2047,7 @@ void MainWindow::translateCollapseButtonsToolTips()
 
 QPointF MainWindow::computeLocation() const
 {
-    QRect screen = QApplication::desktop()->screenGeometry();
+    QRect screen = QGuiApplication::primaryScreen()->geometry();
     float x = (float)this->pos().x()/screen.width();
     float y = (float)this->pos().y()/screen.height();
     return QPointF(x, y);
@@ -2609,9 +2333,7 @@ QSize MainWindow::getSanitizedWindowSize(const QSize &size, const QSize &minimum
     // minimum size is less then desktop size the fullScreen is buggy because we are forcing an
     // impossible minimum size (the minimum size is too large). This code is ensuring the minimum
     // window size is a valid window size.
-    QDesktopWidget desktop;
-
-    QSize screenSize = desktop.availableGeometry().size();
+    QSize screenSize = QGuiApplication::primaryScreen()->availableGeometry().size();
 
     static int topBarHeight = 0;
     if (topBarHeight == 0) // when the window is fullscreen the topBarHeight is zero (no title window).
@@ -2713,9 +2435,7 @@ void MainWindow::showJamtabaCurrentVersion()
     auto text = tr("Jamtaba version is %1").arg(QApplication::applicationVersion());
     text += QString(" (%1 bits) \n\n").arg(QSysInfo::WordSize);
     text += QString("Qt: \t %1 \n").arg(qVersion());
-    text += QString("FFMpeg:\t %1 \n").arg(av_version_info());
     text += QString("Vorbis:\t %1 \n").arg(vorbis_version_string());
-    text += QString("MiniUpnP:\t %1 \n").arg(MINIUPNPC_VERSION);
     text += QString("Architecture:\t %1 \n").arg(QSysInfo::buildCpuArchitecture());
 
     auto box = new QMessageBox();

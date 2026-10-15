@@ -261,7 +261,7 @@ void WavePeakPanel::paintPixeledSoundWave(QPainter &painter)
         painter.fillRect(xPos, yPos, peaksRectWidth, peakHeight * 2, color);
 
         // draw pixelizing horizontal lines
-        painter.setPen(QPen(color.dark(), 1));
+        painter.setPen(QPen(color.darker(), 1));
         int linesToDraw = peakHeight / peaksRectWidth;
         for (int i = 0; i < linesToDraw; ++i) {
             int yTop = maxPeakHeight - (i * peaksRectWidth);

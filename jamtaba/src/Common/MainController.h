@@ -2,7 +2,6 @@
 #define MAIN_CONTROLLER_H
 
 #include <QScopedPointer>
-#include <QImage>
 
 #include "UploadIntervalData.h"
 #include "loginserver/LoginService.h"
@@ -10,7 +9,6 @@
 #include "persistence/UsersDataCache.h"
 #include "audio/core/AudioMixer.h"
 #include "midi/MidiDriver.h"
-#include "video/FFMpegMuxer.h"
 #include "gui/chat/EmojiManager.h"
 
 class MainWindow;
@@ -82,10 +80,6 @@ public:
     long getTotalUploadTransferRate() const;
     long getTotalDownloadTransferRate() const;
     long getDownloadTransferRate(const QString userFullName, quint8 channelIndex) const;
-
-    void setVideoProperties(const QSize &resolution);
-
-    QSize getVideoResolution() const;
 
     void setFullScreenView(bool fullScreen);
 
@@ -312,8 +306,6 @@ public:
 
     void setPublicChatActivated(bool activated);
 
-    const static QSize MAX_VIDEO_SIZE;
-
 signals:
     void themeChanged();
     void userBlockedInChat(const QString &userName);
@@ -331,8 +323,6 @@ public slots:
 
     void blockUserInChat(const QString &userNameToBlock);
     void unblockUserInChat(const QString &userNameToUnblock);
-
-    void processCapturedFrame(int frameID, const QImage &frame);
 
     virtual void connectInNinjamServer(const ServerInfo &server);
 
@@ -362,9 +352,8 @@ protected:
 
     // map the input channel indexes to a GUID (used to upload audio to ninjam server)
     QMap<quint8, UploadIntervalData> audioIntervalsToUpload;
-    QScopedPointer<UploadIntervalData> videoIntervalToUpload;
 
-    QMutex mutex;
+    QRecursiveMutex mutex;
 
     virtual void setupNinjamControllerSignals();
 
@@ -377,8 +366,6 @@ protected:
                                 int sampleRate);
 
     virtual void syncWithNinjamIntervalStart(uint intervalLenght);
-
-    FFMpegMuxer videoEncoder;
 
 private:
     void setAllTracksActivation(bool activated);
@@ -409,15 +396,7 @@ private:
 
     int lastInputTrackID;     // used to generate a unique key/ID for each input track
 
-    const static quint8 CAMERA_FPS;
-
-    bool canGrabNewFrameFromCamera() const;
-
-    quint64 lastFrameTimeStamp;
-
     void recreateMetronome();
-
-    uint getFramesPerInterval() const;
 
     static const QString CRASH_FLAG_STRING;
 
@@ -432,15 +411,12 @@ protected slots:
     virtual void quitFromNinjamServer(const QString &error);
 
     void enqueueAudioDataToUpload(const QByteArray &encodedData, quint8 channelIndex, bool isFirstPart);
-    void enqueueVideoDataToUpload(const QByteArray &encodedData, bool isFirstPart);
 
     virtual void updateBpi(int newBpi);
     virtual void updateBpm(int newBpm);
 
     // TODO move this slot to NinjamController
     virtual void handleNewNinjamInterval();
-
-    void requestCameraFrame(int intervalPosition);
 
 };
 

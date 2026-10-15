@@ -5,7 +5,7 @@ using namespace loginserver;
 
 Version Version::fromString(const QString &string)
 {
-    QStringList versionParts = QString(string).replace(QRegExp("[^0-9\\.]"), "").split(QRegExp("\\."));
+    QStringList versionParts = QString(string).replace(QRegularExpression("[^0-9\\.]"), "").split(QRegularExpression("\\."));
     if(versionParts.length() != 3){
         qWarning() << "version string with wrong format: " << string << "  versionParts: " << versionParts.length();
         return Version();

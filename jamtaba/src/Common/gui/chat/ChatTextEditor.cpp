@@ -40,7 +40,7 @@ quint32 ChatTextEditor::computeBestWidth() const
     int maxBlockWidth = 0;
     auto block = document()->begin();
     while (block != document()->end()) {
-        int w = fontMetrics().width(block.text()) + 30;
+        int w = fontMetrics().horizontalAdvance(block.text()) + 30;
 
         w += getEmojisCount() * 22; // add emoji width (22 pixels) because emoji icon is larger than a simple character
 

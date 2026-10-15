@@ -8,6 +8,7 @@
 #include <cstring>
 #include <vector>
 #include <QThread>
+#include <QRandomGenerator>
 
 using audio::Looper;
 using audio::AudioPeak;
@@ -187,7 +188,7 @@ void Looper::incrementLockedLayer()
     if (getLockedLayers() > 0) {
         do {
             if (isRandomizing)
-                nextLayer = qrand() % maxLayers;
+                nextLayer = QRandomGenerator::global()->bounded(maxLayers);
             else
                 nextLayer = (nextLayer + 1) % maxLayers;
         }
@@ -209,7 +210,7 @@ void Looper::incrementCurrentLayer()
 
     quint8 nextLayer = currentLayerIndex;
     if (isRandomizing && maxLayers > 1)
-        nextLayer = qrand() % maxLayers;
+        nextLayer = QRandomGenerator::global()->bounded(maxLayers);
     else
         nextLayer = (nextLayer + 1) % maxLayers;
 

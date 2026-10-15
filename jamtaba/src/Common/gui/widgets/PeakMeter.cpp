@@ -389,7 +389,7 @@ void AudioMeter::drawDbMarkers(QPainter &painter)
         }
 
         QString text = QString::number(qAbs(db));
-        int textWidth = metrics.width(text);
+        int textWidth = metrics.horizontalAdvance(text);
 
         qreal linearValue = getSmoothedLinearPeakValue(Utils::dbToLinear(db));
 

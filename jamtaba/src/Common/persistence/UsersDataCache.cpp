@@ -28,7 +28,7 @@ const qint8 CacheEntry::DEFAULT_INSTRUMENT_INDEX = -1;
 
 // well formed address is an acceptable.
 // no need to validate the number within 8 bits.
-QRegExp CacheEntry::ipPattern("(?:\\d{1,3}\\.){3}(\\d{1,3}|x)");
+QRegularExpression CacheEntry::ipPattern(QRegularExpression::anchoredPattern("(?:\\d{1,3}\\.){3}(\\d{1,3}|x)"));
 
 
 QDataStream &operator<<(QDataStream &stream, const CacheEntry &entry)
@@ -101,7 +101,7 @@ void CacheEntry::setLowCutState(quint8 state)
 
 void CacheEntry::setUserIP(const QString &userIp)
 {
-    if (ipPattern.exactMatch(userIp))
+    if (ipPattern.match(userIp).hasMatch())
         this->userIp = userIp;
     else
         qCDebug(jtCache) << "invalid ip address: " << userIp;
@@ -146,7 +146,7 @@ UsersDataCache::UsersDataCache(const QDir &cacheDir) :
 {
     // check if the tracks_cache_bin file is in the old dir and copy the file to the 'cache' dir.
     // This piece of code will be deleted in future versions.
-    QDir baseDir = QStandardPaths::writableLocation(QStandardPaths::DataLocation);
+    QDir baseDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     QFile oldCacheFile(baseDir.absoluteFilePath(CACHE_FILE_NAME));
     if (oldCacheFile.exists()) {
         if (oldCacheFile.rename(cacheDir.absoluteFilePath(CACHE_FILE_NAME)))

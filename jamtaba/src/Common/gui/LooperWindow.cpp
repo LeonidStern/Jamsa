@@ -591,7 +591,7 @@ void LooperWindow::setMaxLayerComboBoxValuesAvailability(int valuesToDisable)
         item->setFlags(disable ? item->flags() & ~(Qt::ItemIsSelectable|Qt::ItemIsEnabled) : Qt::ItemIsSelectable|Qt::ItemIsEnabled);
         // visually disable by greying out - works only if combobox has been painted already and palette returns the wanted color
         item->setData(disable ? disabledColor : QVariant(), // clear item data in order to use default color
-                                Qt::TextColorRole);
+                                Qt::ForegroundRole);
     }
 }
 
@@ -680,7 +680,7 @@ void LooperWindow::initializeControls()
 
     for (uint i = 0; i < playModes.size(); ++i) {
         Looper::Mode playMode = playModes[i];
-        ui->comboBoxPlayMode->addItem(Looper::getModeString(playMode), qVariantFromValue(playMode));
+        ui->comboBoxPlayMode->addItem(Looper::getModeString(playMode), QVariant::fromValue(playMode));
     }
 
     createPlayingOptionsCheckBoxes();
@@ -759,7 +759,7 @@ void LooperWindow::showSaveDialogs()
     // user is overwriting?
     if (loopFileName == originalLoopName) {
         QString text = tr("Loop file already exists. Do you want to overwrite?");
-        int button = QMessageBox::question(this, title, text,  QMessageBox::Yes|QMessageBox::Default, QMessageBox::No|QMessageBox::Escape);
+        int button = QMessageBox::question(this, title, text, QMessageBox::Yes|QMessageBox::No, QMessageBox::Yes);
         if (button != QMessageBox::Yes) {
             qDebug() << "Overwrite looper dialog canceled";
             return; // user canceled the overwrite dialog

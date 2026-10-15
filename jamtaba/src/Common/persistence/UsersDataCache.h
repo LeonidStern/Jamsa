@@ -3,7 +3,7 @@
 
 #include <QString>
 #include <QMap>
-#include <QRegExp>
+#include <QRegularExpression>
 #include <QDir>
 
 /**
@@ -84,7 +84,7 @@ public:
     void setInstrumentIndex(qint8 index);
     bool hasValidInstrumentIndex() const;
 
-    static QRegExp ipPattern;
+    static QRegularExpression ipPattern;
 
     static const bool DEFAULT_MUTED;
     static const quint8 DEFAULT_LOW_CUT_STATE;

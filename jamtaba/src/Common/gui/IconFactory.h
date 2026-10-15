@@ -24,7 +24,6 @@ public:
     static QIcon createReceiveIcon(const QColor &tintColor);
     static QList<QImage> createLowCutIcons(const QColor &tintColor);
     static QIcon createLocalControlsIcon(const QColor &tintColor);
-    static QIcon createWebcamIcon(const QColor &tintColor);
     static QIcon createLooperRecordIcon(const QColor &tintColor);
     static QIcon createLooperPlayIcon(const QColor &tintColor);
     static QIcon createLooperSaveIcon(const QColor &tintColor);

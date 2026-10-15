@@ -170,8 +170,6 @@ public:
     virtual void setJamDir(const QString &newJamName, const QString &recordBasePath) = 0;
 
     virtual QString getAudioAbsolutePath(const QString &audioFileName) = 0;
-
-    virtual QString getVideoAbsolutePath(const QString &videoFileName) = 0;
 };
 
 // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -227,8 +225,6 @@ public:
     void appendLocalUserAudio(const QByteArray &encodedAudio, quint8 channelIndex,
                               bool isFirstPartOfInterval);
 
-    void appendLocalUserVideo(const QByteArray &encodedVideo, bool isFirstPartOfInterval);
-
     void addRemoteUserAudio(const QString &userName, const QByteArray &encodedAudio, quint8 channelIndex);
     void startRecording(const QString &localUser, const QDir &recordBasePath, int bpm, int bpi, int sampleRate);
 
@@ -258,17 +254,14 @@ private:
 
     /**
         Audio Intervals: Using channel index as key and store encoded bytes. When a full interval is stored the encoded bytes are store in a ogg file.
-        Video Intervals: Using 255 as default channel index.
      */
-    QMap<quint8, LocalNinjamInterval> localUserIntervals; // storing encoded data for audio and video intervals
-    static const quint8 VIDEO_CHANNEL_KEY;
+    QMap<quint8, LocalNinjamInterval> localUserIntervals; // storing encoded data for audio intervals
 
     QString getNewJamName();
 
     void writeEncodedFile(const QByteArray &encodedData, const QString &path);
 
     static QString buildAudioFileName(const QString &userName, quint8 channelIndex, int currentInterval);
-    static QString buildVideoFileName(const QString &userName, int currentInterval, const QString &fileExtension);
     static QString buildPaddedFileNumber(int fileNumber);
 
     void writeProjectFile();

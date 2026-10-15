@@ -25,7 +25,6 @@ public:
     void setJamDir(const QString &newJamName, const QString &recordBasePath) override;
 
     QString getAudioAbsolutePath(const QString &audioFileName) override;
-    QString getVideoAbsolutePath(const QString &videoFileName) override;
 
 private:
     QString clipsortPath;

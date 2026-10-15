@@ -506,7 +506,7 @@ void AudioSlider::drawDbMarkers(QPainter &painter)
         if (db > 0)
             text = "+" + text;
 
-        int textWidth = metrics.width(text);
+        int textWidth = metrics.horizontalAdvance(text);
 
         qreal linearPos = 1.0 - Utils::poweredGainToLinear(Utils::dbToLinear(db - maxDbValue));
 

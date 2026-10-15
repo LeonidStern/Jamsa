@@ -205,7 +205,6 @@ QIcon ChatTabWidget::createChatTabIcon(uint unreadedMessages)
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::TextAntialiasing);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.setRenderHint(QPainter::HighQualityAntialiasing);
 
     QString text(QString::number(unreadedMessages));
 

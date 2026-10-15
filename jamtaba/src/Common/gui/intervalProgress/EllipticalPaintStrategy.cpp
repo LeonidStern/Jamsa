@@ -47,7 +47,7 @@ void IntervalProgressDisplay::EllipticalPaintStrategy::drawCurrentBeatValue(QPai
     p.setFont(font);
     QString numberString(QString::number(context.currentBeat + 1) + " / " + QString::number(context.beatsPerInterval));
 
-    int strWidth =  p.fontMetrics().width(numberString);
+    int strWidth =  p.fontMetrics().horizontalAdvance(numberString);
     p.drawText(rect.center().x() - strWidth / 2, rect.center().y() + p.fontMetrics().height()/2, numberString);
 }
 

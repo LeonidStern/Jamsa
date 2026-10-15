@@ -22,7 +22,7 @@ ChordProgressionCreationDialog::ChordProgressionCreationDialog(QWidget *parent) 
         accept();
     });
 
-    connect(ui->comboMeasures, static_cast<void (QComboBox::*)(const QString &)>(&QComboBox::activated), [=](const QString &newText){
+    connect(ui->comboMeasures, &QComboBox::textActivated, [=](const QString &newText){
 
         auto measures = newText.toInt();
         auto chordsPerMeasure = ui->comboChordsPerMeasure->currentText().toInt();
@@ -30,7 +30,7 @@ ChordProgressionCreationDialog::ChordProgressionCreationDialog(QWidget *parent) 
         setupChordSlots(measures, chordsPerMeasure);
     });
 
-    connect(ui->comboChordsPerMeasure,  static_cast<void (QComboBox::*)(const QString &)>(&QComboBox::activated), [=](const QString &newText){
+    connect(ui->comboChordsPerMeasure, &QComboBox::textActivated, [=](const QString &newText){
 
         auto measures = ui->comboMeasures->currentText().toInt();
         auto chordsPerMeasure = newText.toInt();

@@ -6,7 +6,6 @@
 #include <QNetworkReply>
 #include "ninjam/client/ServerInfo.h"
 
-class NatMap;
 class QTimer;
 
 namespace login {

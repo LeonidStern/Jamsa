@@ -115,7 +115,7 @@ void NinjamPanel::translate()
     QFontMetrics fontMetrics = ui->comboShape->fontMetrics();
     int maxComboItemWidth = 0;
     for (int i = 0; i < items; ++i) {
-        int itemTextWidth = fontMetrics.width(ui->comboShape->itemText(i));
+        int itemTextWidth = fontMetrics.horizontalAdvance(ui->comboShape->itemText(i));
         if (itemTextWidth > maxComboItemWidth)
             maxComboItemWidth = itemTextWidth;
     }
@@ -143,8 +143,8 @@ void NinjamPanel::setupSignals()
     connect(ui->lineEditAccentBeats, SIGNAL(editingFinished()), this, SLOT(handleAccentBeatsTextEdited()));
     connect(ui->comboShape, SIGNAL(currentIndexChanged(int)), this, SLOT(updateIntervalProgressShape(int)));
 
-    connect(ui->comboBpi, SIGNAL(activated(QString)), this, SLOT(handleBpiComboActication(QString)));
-    connect(ui->comboBpm, SIGNAL(activated(QString)), this, SLOT(handleBpmComboActication(QString)));
+    connect(ui->comboBpi, SIGNAL(textActivated(QString)), this, SLOT(handleBpiComboActication(QString)));
+    connect(ui->comboBpm, SIGNAL(textActivated(QString)), this, SLOT(handleBpmComboActication(QString)));
 
     connect(ui->checkboxSync, SIGNAL(clicked(bool)), this, SIGNAL(midiSyncChanged(bool)));
 }
@@ -330,7 +330,7 @@ QStringList NinjamPanel::getBpiDividers(int bpi)
     for (uint divider : intDividers)
         foundedDividers.append(QString::number(divider));
 
-    qSort(foundedDividers.begin(), foundedDividers.end(), compareBpis);
+    std::sort(foundedDividers.begin(), foundedDividers.end(), compareBpis);
 
     return foundedDividers;
 }

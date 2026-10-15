@@ -172,8 +172,7 @@ NinjamTrackNode::NinjamTrackNode(int ID) :
     ID(ID),
     lowCut(new NinjamTrackNode::LowCutFilter(44100)),
     //processingLastPartOfInterval(false),
-    currentDecoder(nullptr),
-    decodersMutex(QMutex::NonRecursive)
+    currentDecoder(nullptr)
 {
 
 }
@@ -347,7 +346,7 @@ void NinjamTrackNode::addVorbisEncodedInterval(const QByteArray &fullIntervalByt
     decodersMutex.unlock();
 
     //decoding the first samples in a separated thread to avoid slow down the audio thread in interval start (first beat)
-    QtConcurrent::run(newIntervalDecoder, &NinjamTrackNode::IntervalDecoder::decode, 256);
+    QtConcurrent::run(&NinjamTrackNode::IntervalDecoder::decode, newIntervalDecoder, 256);
 }
 
 // ++++++++++++++

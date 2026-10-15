@@ -58,7 +58,7 @@ public:
                 painter.setRenderHint(QPainter::Antialiasing);
 
                 QString text(QString::number(currentLayer + 1));
-                qreal rectWidth = fontMetrics.width(text) * 2;
+                qreal rectWidth = fontMetrics.horizontalAdvance(text) * 2;
 
                 QRectF textRect(pixmap.width() - rectWidth, pixmap.height() - fontMetrics.height(), rectWidth, fontMetrics.height());
 

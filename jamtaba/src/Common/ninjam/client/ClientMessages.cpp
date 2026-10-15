@@ -66,13 +66,13 @@ ClientAuthUserMessage::ClientAuthUserMessage(const QString &userName, const QByt
     }
 
     QCryptographicHash sha1(QCryptographicHash::Sha1);
-    sha1.addData( userName.toStdString().c_str(), userName.size() );
-    sha1.addData(":", 1);
-    sha1.addData(password.toStdString().c_str(), password.size());
+    sha1.addData(QByteArrayView(userName.toStdString().c_str(), userName.size()));
+    sha1.addData(QByteArrayView(":", 1));
+    sha1.addData(QByteArrayView(password.toStdString().c_str(), password.size()));
     QByteArray passHash = sha1.result();
     sha1.reset();
     sha1.addData(passHash);
-    sha1.addData(challenge.constData(), 8);
+    sha1.addData(QByteArrayView(challenge.constData(), 8));
     this->passwordHash = sha1.result();
     this->payload = 29 + this->userName.size();
 }
@@ -119,7 +119,7 @@ void ClientAuthUserMessage::serializeTo(QIODevice *device) const
 
 void ClientAuthUserMessage::printDebug(QDebug &dbg) const
 {
-    dbg << "SEND ClientAuthUserMessage{  userName:" << userName << " challenge:" << challenge <<"}" << endl;
+    dbg << "SEND ClientAuthUserMessage{  userName:" << userName << " challenge:" << challenge <<"}" << Qt::endl;
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -198,7 +198,7 @@ void ClientSetChannel::serializeTo(QIODevice *device) const
 //    }
 //    str += "}";
 
-//    qDebug() << str << endl;
+//    qDebug() << str << Qt::endl;
 
 
     //++++++++
@@ -218,7 +218,7 @@ void ClientSetChannel::printDebug(QDebug &dbg) const
         << " channels="
         << channels.size()
         << '}'
-        << endl;
+        << Qt::endl;
 }
 
 //+++++++++++++++++++++
@@ -242,7 +242,7 @@ void ClientKeepAlive::serializeTo(QIODevice *device) const
 void ClientKeepAlive::printDebug(QDebug &dbg) const
 {
     dbg << "SEND {Client KeepAlive}"
-        << endl;
+        << Qt::endl;
 }
 
 //+++++++++++++++++

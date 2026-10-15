@@ -306,9 +306,7 @@ public:
         return GUID;
     }
 
-    bool isAudio() const;
-
-    bool isVideo() const;
+    bool isAudio() const; // Ogg Vorbis interval ('OGGv'). Other intervals (e.g. JamTaba video) are ignored.
 
     inline bool shouldBeStopped() const
     {

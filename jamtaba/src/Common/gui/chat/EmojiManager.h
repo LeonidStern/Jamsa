@@ -15,7 +15,7 @@ class Emoji
 public:
     Emoji() = default;
     Emoji(const QString &name, const QString category, uint sortOrder, const QString &unifiedCode);
-    bool operator ==(const Emoji &other);
+    bool operator ==(const Emoji &other) const;
 
     QString category;
     QString name;

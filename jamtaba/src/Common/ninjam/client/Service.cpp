@@ -81,7 +81,7 @@ private:
     QString userFullName;
     QByteArray GUID; // Global Unique ID
     QByteArray vorbisData;
-    bool containsAudio; // audio or video?
+    bool containsAudio; // Ogg Vorbis audio? Other intervals (e.g. JamTaba video) are ignored
 };
 
 // ++++++++++++++++++++++++++++++++++++++++
@@ -102,7 +102,7 @@ Service::~Service()
         return;
 
     disconnect(socket, SIGNAL(readyRead()), this, SLOT(handleAllReceivedMessages()));
-    disconnect(socket, SIGNAL(error(QAbstractSocket::SocketError)), this, SLOT(handleSocketError(QAbstractSocket::SocketError)));
+    disconnect(socket, SIGNAL(errorOccurred(QAbstractSocket::SocketError)), this, SLOT(handleSocketError(QAbstractSocket::SocketError)));
     disconnect(socket, SIGNAL(disconnected()), this, SLOT(handleSocketDisconnection()));
     disconnect(socket, SIGNAL(connected()), this, SLOT(handleSocketConnection()));
 
@@ -114,7 +114,7 @@ void Service::setupSocketSignals()
 {
     Q_ASSERT(socket);
     connect(socket, SIGNAL(readyRead()), this, SLOT(handleAllReceivedMessages()));
-    connect(socket, SIGNAL(error(QAbstractSocket::SocketError)), this, SLOT(handleSocketError(QAbstractSocket::SocketError)));
+    connect(socket, SIGNAL(errorOccurred(QAbstractSocket::SocketError)), this, SLOT(handleSocketError(QAbstractSocket::SocketError)));
     connect(socket, SIGNAL(disconnected()), this, SLOT(handleSocketDisconnection()));
     connect(socket, SIGNAL(connected()), this, SLOT(handleSocketConnection()));
 
@@ -299,7 +299,7 @@ void Service::setChannelReceiveStatus(const QString &userFullName, quint8 channe
 
 void Service::process(const DownloadIntervalBegin &msg)
 {
-    if (!msg.shouldBeStopped() && (msg.isAudio() || msg.isVideo())) {
+    if (!msg.shouldBeStopped()) {
         quint8 channelIndex = msg.getChannelIndex();
         QString userFullName = msg.getUserName();
         QByteArray GUID = msg.getGUID();
@@ -312,6 +312,12 @@ void Service::process(const DownloadIntervalWrite &msg)
     if (downloads.contains(msg.getGUID())) {
         Download &download = downloads[msg.getGUID()];
 
+        if (!download.isAudio()) { // not an Ogg Vorbis interval (e.g. JamTaba video), ignored
+            if (msg.downloadIsComplete())
+                downloads.remove(msg.getGUID());
+            return;
+        }
+
         bool isFirstPart = download.getEncodedData().isEmpty();
 
         download.appendEncodedData(msg.getEncodedData());
@@ -322,20 +328,14 @@ void Service::process(const DownloadIntervalWrite &msg)
 
         User user = currentServer->getUser(download.getUserFullName());
 
-        if (download.isAudio()) {
-            if (user.getChannel(download.getChannelIndex()).isActive()) {
-                if (msg.downloadIsComplete()) {
-                    emit audioIntervalDownloading(user, download.getChannelIndex(), msg.getEncodedData(), isFirstPart, true); // the last chunk
-                    emit audioIntervalCompleted(user, download.getChannelIndex(), download.getEncodedData()); // full interval
-                    downloads.remove(msg.getGUID());
-                }
-                else
-                    emit audioIntervalDownloading(user, download.getChannelIndex(), msg.getEncodedData(), isFirstPart, false);
-             }
-        }
-        else if (msg.downloadIsComplete()) { // download is video
-            emit videoIntervalCompleted(user, download.getEncodedData());
-            downloads.remove(msg.getGUID());
+        if (user.getChannel(download.getChannelIndex()).isActive()) {
+            if (msg.downloadIsComplete()) {
+                emit audioIntervalDownloading(user, download.getChannelIndex(), msg.getEncodedData(), isFirstPart, true); // the last chunk
+                emit audioIntervalCompleted(user, download.getChannelIndex(), download.getEncodedData()); // full interval
+                downloads.remove(msg.getGUID());
+            }
+            else
+                emit audioIntervalDownloading(user, download.getChannelIndex(), msg.getEncodedData(), isFirstPart, false);
         }
     } else {
         qCritical() << "GUID is not in map!";

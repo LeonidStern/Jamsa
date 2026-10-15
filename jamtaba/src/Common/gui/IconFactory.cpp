@@ -189,15 +189,6 @@ QIcon IconFactory::createLooperPlayIcon(const QColor &tintColor)
     return icon;
 }
 
-QIcon IconFactory::createWebcamIcon(const QColor &tintColor)
-{
-    QImage webcamImage(":/images/webcam.png");
-
-    IconFactory::tintImage(webcamImage, tintColor, false);
-
-    return QIcon(QPixmap::fromImage(webcamImage));
-}
-
 QIcon IconFactory::createLocalControlsIcon(const QColor &tintColor)
 {
     QImage left(":/images/mini arrow left.png");

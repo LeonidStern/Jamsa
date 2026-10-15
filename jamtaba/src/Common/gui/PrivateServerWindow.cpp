@@ -1,10 +1,11 @@
 #include "PrivateServerWindow.h"
 #include "ui_PrivateServerWindow.h"
-#include "ninjam/server/Server.h"
+#include "ninjam/PrivateServer.h"
 
 #include <QDateTime>
-#include <QtConcurrent/QtConcurrent>
 #include <QMessageBox>
+
+using ninjam::PrivateServer;
 
 const quint16 PrivateServerWindow::PREFERRED_PORT = 2049;
 
@@ -24,14 +25,6 @@ PrivateServerWindow::PrivateServerWindow(QWidget *parent) :
 
     ui->pushButtonStart->setEnabled(true);
     ui->pushButtonStop->setEnabled(false);
-
-    connect(&upnpManager, &UPnPManager::portOpened, this, &PrivateServerWindow::portOpened);
-
-    connect(&upnpManager, &UPnPManager::portClosed, [=](){
-        appendTextInLog(tr("Port closed in your router!"));
-    });
-
-    connect(&upnpManager, &UPnPManager::errorDetected, this, &PrivateServerWindow::upnpError);
 
     setServerDetailsVisibility(false);
 
@@ -57,36 +50,8 @@ quint16 PrivateServerWindow::getServerPort() const
 
 QString PrivateServerWindow::getServerExternalIP() const
 {
-    if (!serverIsRunning())
-        return QString();
-
-    return upnpManager.getExternalIp();
-}
-
-void PrivateServerWindow::upnpError(const QString &error)
-{
-    //: The '%1' symbol will be replaced by the UPnP error description, please keep the '%1' symbol in your translation
-    appendTextInLog(tr("ERROR in UPnP protocol: %1").arg(error));
-}
-
-void PrivateServerWindow::portOpened(const QString &localIP, const QString &externalIP)
-{
-    Q_UNUSED(localIP);
-    appendTextInLog(tr("Port opened in your router using UPnP protocol! Other ninjamers can connect in your server!"));
-    appendTextInLog(tr("Your external IP is %1").arg(externalIP));
-
-    ui->labelIPValue->setText(externalIP);
-    ui->labelPortValue->setText(QString::number(PREFERRED_PORT));
-
-    setServerDetailsVisibility(true);
-
-    QString title = tr("Your Private Server");
-    QString text = tr("Connect with private server ...");
-    auto buttons = QMessageBox::StandardButtons(QMessageBox::Yes|QMessageBox::No);
-    int result = QMessageBox::question(this, title, text, buttons);
-    if (result == QMessageBox::Yes) {
-        emit userConnectingInPrivateServer(localIP, PREFERRED_PORT);
-    }
+    // the external IP was discovered with UPnP, which was removed
+    return QString();
 }
 
 PrivateServerWindow::~PrivateServerWindow()
@@ -102,24 +67,24 @@ void PrivateServerWindow::setupServer()
     if (!server)
         return;
 
-    connect(server.data(), &Server::serverStarted, this, &PrivateServerWindow::serverStarted);
-    connect(server.data(), &Server::serverStopped, this, &PrivateServerWindow::serverStopped);
+    connect(server.data(), &PrivateServer::serverStarted, this, &PrivateServerWindow::serverStarted);
+    connect(server.data(), &PrivateServer::serverStopped, this, &PrivateServerWindow::serverStopped);
 
-    connect(server.data(), &Server::errorStartingServer, [=](const QString &errorMessage){
+    connect(server.data(), &PrivateServer::errorStartingServer, [=](const QString &errorMessage){
         appendTextInLog(errorMessage);
     });
 
-    connect(server.data(), &Server::incommingConnection, [=](const QString &ip){
+    connect(server.data(), &PrivateServer::incommingConnection, [=](const QString &ip){
         appendTextInLog(tr("Incomming connection from %1").arg(ip));
     });
 
-    connect(server.data(), &Server::userEntered, [=](const QString &userName){
+    connect(server.data(), &PrivateServer::userEntered, [=](const QString &userName){
         appendTextInLog(tr("%1 entered in the server").arg(userName));
 
         updateUserList();
     });
 
-    connect(server.data(), &Server::userLeave, [=](const QString &userName){
+    connect(server.data(), &PrivateServer::userLeave, [=](const QString &userName){
         appendTextInLog(tr("%1 left the server").arg(userName));
 
         updateUserList();
@@ -160,10 +125,20 @@ void PrivateServerWindow::serverStarted()
 
     networkUsageTimerID = startTimer(3000);
 
+    // the external IP was discovered with UPnP, which was removed, so only the port is shown
+    ui->labelPortValue->setText(QString::number(server->getPort()));
 
-    // UPnP
-    appendTextInLog(tr("Trying to open the port %1 in your router (UPnP) to allow external connections ...").arg(server->getPort()));
-    QtConcurrent::run(&upnpManager, &UPnPManager::openPort, server->getPort());
+    setServerDetailsVisibility(true);
+    ui->labelIP->setVisible(false);
+    ui->labelIPValue->setVisible(false);
+
+    QString title = tr("Your Private Server");
+    QString text = tr("Connect with private server ...");
+    auto buttons = QMessageBox::StandardButtons(QMessageBox::Yes|QMessageBox::No);
+    int result = QMessageBox::question(this, title, text, buttons);
+    if (result == QMessageBox::Yes) {
+        emit userConnectingInPrivateServer(QStringLiteral("127.0.0.1"), server->getPort());
+    }
 }
 
 void PrivateServerWindow::serverStopped()
@@ -200,7 +175,7 @@ void PrivateServerWindow::setServerDetailsVisibility(bool visible)
 void PrivateServerWindow::startServer()
 {
     if (!server) {
-        server.reset(new Server());
+        server.reset(new PrivateServer());
         setupServer();
     }
 
@@ -215,11 +190,8 @@ void PrivateServerWindow::stopServer()
     if (!server)
         return;
 
-    if (server->isStarted()) {
+    if (server->isStarted())
         server->shutdown();
-
-        QtConcurrent::run(&upnpManager, &UPnPManager::closePort, PREFERRED_PORT);
-    }
 }
 
 void PrivateServerWindow::timerEvent(QTimerEvent *)

@@ -142,8 +142,8 @@ private:
     int currentBpi;
     int currentBpm;
 
-    QMutex mutex;
-    QMutex encodersMutex;
+    QRecursiveMutex mutex;
+    QRecursiveMutex encodersMutex;
 
     long computeTotalSamplesInInterval();
     long getSamplesPerBeat();

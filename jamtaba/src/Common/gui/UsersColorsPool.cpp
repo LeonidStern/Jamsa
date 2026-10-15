@@ -2,13 +2,13 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <QDateTime>
+#include <QRandomGenerator>
 
 const int UsersColorsPool::TOTAL_COLORS = 8;
 
 UsersColorsPool::UsersColorsPool() :
     availableColors(createColors(TOTAL_COLORS))
 {
-    qsrand(QDateTime::currentMSecsSinceEpoch());
 }
 
 QColor UsersColorsPool::get(const QString &userName)
@@ -18,7 +18,7 @@ QColor UsersColorsPool::get(const QString &userName)
 
     if (availableColors.isEmpty()) { // no more colors, returning a duplicated random color
         auto colors = pool.values();
-        auto randomColor = colors.at(qrand() % colors.size());
+        auto randomColor = colors.at(QRandomGenerator::global()->bounded(colors.size()));
         pool.insert(userName, randomColor);
         return randomColor;
     }
@@ -52,7 +52,6 @@ QList<QColor> UsersColorsPool::createColors(int totalColors) const
         color.setHsvF(h, 0.25, 0.95, 0.85);
         colors.append(color);
     }
-    srand(QDateTime::currentMSecsSinceEpoch());
-    std::random_shuffle(colors.begin(), colors.end());
+    std::shuffle(colors.begin(), colors.end(), *QRandomGenerator::global());
     return colors;
 }

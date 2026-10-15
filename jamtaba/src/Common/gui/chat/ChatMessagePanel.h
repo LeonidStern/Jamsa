@@ -2,6 +2,7 @@
 #define CHATMESSAGEPANEL_H
 
 #include <QFrame>
+#include <QPainterPath>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 

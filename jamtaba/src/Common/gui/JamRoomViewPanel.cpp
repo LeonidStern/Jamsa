@@ -187,7 +187,7 @@ void JamRoomViewPanel::updateMap()
 {
     if (!roomInfo.isEmpty()) {
         QList<login::UserInfo> userInfos = roomInfo.getUsers();
-        qSort(userInfos.begin(), userInfos.end(), userInfoLessThan);
+        std::sort(userInfos.begin(), userInfos.end(), userInfoLessThan);
         QList<MapMarker> newMarkers;
         for (const auto &user : userInfos) {
             if (!userIsBot(user)) {

@@ -40,7 +40,7 @@ Emoji::Emoji(const QString &name, const QString category, uint sortOrder, const 
 
 }
 
-bool Emoji::operator ==(const Emoji &other)
+bool Emoji::operator ==(const Emoji &other) const
 {
     return unifiedCode == other.unifiedCode;
 }
@@ -104,7 +104,8 @@ QString EmojiManager::emojify(const QString &string)
     QString newString;
     for (uint code : codes) {
         if (!EmojiManager::codeIsEmoji(code)) {
-            newString.append(QString::fromUcs4(&code, 1));
+            const char32_t codePoint = code;
+            newString.append(QString::fromUcs4(&codePoint, 1));
         }
         else{
             Emoji emoji = getByCode(code);
@@ -175,7 +176,7 @@ void EmojiManager::loadData(const QString &jsonPath)
     //sort each loaded category
     for (auto key : categorizedMap.keys()) {
         auto &emojis = categorizedMap[key];
-        qSort(emojis.begin(), emojis.end(), emojiLessThan);
+        std::sort(emojis.begin(), emojis.end(), emojiLessThan);
     }
 }
 
@@ -188,7 +189,7 @@ QString EmojiManager::emojiCodeToUtf8(const QString &emojiCode)
 {
     static const int MAX_CODES = 4;  // max of 4 codes
 
-    uint codePoints[MAX_CODES];
+    char32_t codePoints[MAX_CODES];
 
     QStringList codes = emojiCode.split("-");
     for (int i = 0; i < qMin(codes.size(), MAX_CODES); ++i) {

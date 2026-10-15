@@ -21,7 +21,6 @@ LocalTrackGroupView::LocalTrackGroupView(int channelIndex, MainWindow *mainWindo
     index(channelIndex),
     mainWindow(mainWindow),
     peakMeterOnly(false),
-    videoChannel(false),
     preparingToTransmit(false),
     usingSmallSpacingInLayouts(false)
 {
@@ -54,34 +53,6 @@ LocalTrackGroupView::LocalTrackGroupView(int channelIndex, MainWindow *mainWindo
     translateUi();
 }
 
-void LocalTrackGroupView::setAsVideoChannel()
-{
-    if (index < 1 || videoChannel)
-        return; // first channel can't be a video channel
-
-    videoChannel = true;
-
-    auto instrumentIcon = static_cast<int>(videoChannel ? InstrumentIndex::Video : InstrumentIndex::JamTabaIcon);
-    setInstrumentIcon(instrumentIcon);
-    instrumentsButton->setStyleSheet(QString("margin-left: 0px"));
-    instrumentsButton->blockSignals(true);
-    instrumentsButton->setVisible(!peakMeterOnly);
-    xmitButton->setChecked(false);
-    xmitButton->setVisible(false);
-
-    auto tracks = getTracks<LocalTrackView *>();
-    for (auto track : tracks) {
-        track->setVisible(false);
-        track->getInputNode()->setToNoInput();
-    }
-
-    toolButton->setVisible(false);
-
-    updateXmitButtonText();
-
-    voiceChatButton->setVisible(false);
-}
-
 InstrumentsButton *LocalTrackGroupView::createInstrumentsButton()
 {
     auto defaultIcon = IconFactory::getDefaultInstrumentIcon();
@@ -111,7 +82,7 @@ void LocalTrackGroupView::translateUi()
 
 void LocalTrackGroupView::updateXmitButtonText()
 {
-    if (peakMeterOnly || videoChannel) {
+    if (peakMeterOnly) {
         xmitButton->setText(""); // no text, just the up arrow icon
     }
     else{
@@ -459,7 +430,7 @@ void LocalTrackGroupView::deletePreset(QAction *action)
 
 QSize LocalTrackGroupView::sizeHint() const
 {
-    if (peakMeterOnly || videoChannel)
+    if (peakMeterOnly)
         return QFrame::sizeHint();
 
     return TrackGroupView::sizeHint();

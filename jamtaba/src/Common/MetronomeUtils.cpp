@@ -58,7 +58,7 @@ QList<int> metronomeUtils::getAccentBeats(int beatsPerAccent, int bpi)
 QList<int> metronomeUtils::getAccentBeatsFromString(QString value)
 {
     QList<int> accentBeats;
-    QList<QString> accentBeatsStrings = value.trimmed().split(QRegExp("  *"));
+    QList<QString> accentBeatsStrings = value.trimmed().split(QRegularExpression("  *"));
 
     foreach(QString accentBeatString, accentBeatsStrings) {
         bool ok;

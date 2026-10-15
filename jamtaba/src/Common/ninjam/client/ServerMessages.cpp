@@ -95,11 +95,11 @@ AuthChallengeMessage AuthChallengeMessage::from(QIODevice *device, quint32)
 
 void AuthChallengeMessage::printDebug(QDebug &dbg) const
 {
-    dbg << "RECEIVED ServerAuthChallengeMessage{" << endl
-        << "\t challenge=" << getChallenge() << endl
-        << "\t protocolVersion=" << getProtocolVersion()<< endl
-        << "\t serverKeepAlivePeriod=" << getServerKeepAlivePeriod() << endl
-        <<"}" << endl;
+    dbg << "RECEIVED ServerAuthChallengeMessage{" << Qt::endl
+        << "\t challenge=" << getChallenge() << Qt::endl
+        << "\t protocolVersion=" << getProtocolVersion()<< Qt::endl
+        << "\t serverKeepAlivePeriod=" << getServerKeepAlivePeriod() << Qt::endl
+        <<"}" << Qt::endl;
 }
 
 quint32 AuthChallengeMessage::getServerKeepAlivePeriod() const
@@ -162,7 +162,7 @@ void AuthReplyMessage::printDebug(QDebug &debug) const
     debug << "RECEIVED ServerAuthReply{ flag=" << flag
           << " errorMessage='" << message
           << "' maxChannels=" << maxChannels << '}'
-          << endl;
+          << Qt::endl;
 }
 
 // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++=
@@ -224,7 +224,7 @@ ConfigChangeNotifyMessage ConfigChangeNotifyMessage::from(QIODevice *device, qui
 
 void ConfigChangeNotifyMessage::printDebug(QDebug &dbg) const
 {
-    dbg << "RECEIVE ConfigChangeNotify{ bpm=" << bpm << ", bpi=" << bpi << "}" << endl;
+    dbg << "RECEIVE ConfigChangeNotify{ bpm=" << bpm << ", bpi=" << bpi << "}" << Qt::endl;
 }
 
 // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++=
@@ -337,16 +337,16 @@ UserInfoChangeNotifyMessage::~UserInfoChangeNotifyMessage()
 
 void UserInfoChangeNotifyMessage::printDebug(QDebug &dbg) const
 {
-    dbg << endl
-        << "UserInfoChangeNotify " << endl
-        << "{" << endl;
+    dbg << Qt::endl
+        << "UserInfoChangeNotify " << Qt::endl
+        << "{" << Qt::endl;
 
     for (const User &user : users.values()) {
         dbg << " ->" << user.getFullName() << "\n";
         for (const UserChannel &channel : user.getChannels()) {
-            dbg << "  ->>" << channel.getIndex() << " - " <<  channel.getName() << "active:" << channel.isActive() <<  " flags:" << channel.getFlags() << endl;
+            dbg << "  ->>" << channel.getIndex() << " - " <<  channel.getName() << "active:" << channel.isActive() <<  " flags:" << channel.getFlags() << Qt::endl;
         }
-        dbg << endl;
+        dbg << Qt::endl;
     }
     dbg << "}";
 }
@@ -484,7 +484,7 @@ void ServerToClientChatMessage::printDebug(QDebug &dbg) const
 {
     dbg << "RECEIVE ServerChatMessage{ command=" << command
         << " arguments=" << arguments << "}"
-        << endl;
+        << Qt::endl;
 }
 
 // ++++++++++++++++++++++++++++++++++++++++++++++
@@ -565,22 +565,17 @@ bool DownloadIntervalBegin::isAudio() const
            fourCC[3] == 'v';
 }
 
-bool DownloadIntervalBegin::isVideo() const
-{
-   return !isAudio();
-}
-
 void DownloadIntervalBegin::printDebug(QDebug &dbg) const
 {
-    dbg << "DownloadIntervalBegin{ " <<endl
-        << "\tfourCC='"<< fourCC[0] << fourCC[1] << fourCC[2] << fourCC[3] << endl
-        << "\tGUID={"<< GUID << "} " << endl
-        << "\tisValidOggDownload="<< isAudio() << endl
-        << "\tdownloadShoudBeStopped="<< shouldBeStopped() << endl
-        << "\tdownloadIsComplete="<< isComplete() << endl
-        << "\testimatedSize=" << estimatedSize << endl
-        << "\tchannelIndex=" << channelIndex  << endl
-        << "}" << endl;
+    dbg << "DownloadIntervalBegin{ " <<Qt::endl
+        << "\tfourCC='"<< fourCC[0] << fourCC[1] << fourCC[2] << fourCC[3] << Qt::endl
+        << "\tGUID={"<< GUID << "} " << Qt::endl
+        << "\tisValidOggDownload="<< isAudio() << Qt::endl
+        << "\tdownloadShoudBeStopped="<< shouldBeStopped() << Qt::endl
+        << "\tdownloadIsComplete="<< isComplete() << Qt::endl
+        << "\testimatedSize=" << estimatedSize << Qt::endl
+        << "\tchannelIndex=" << channelIndex  << Qt::endl
+        << "}" << Qt::endl;
 }
 
 // -------------------------------------------------------------------

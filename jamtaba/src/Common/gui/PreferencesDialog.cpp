@@ -91,7 +91,7 @@ void PreferencesDialog::initialize(PreferencesTab initialTab, const persistence:
     QRadioButton *myRadioButton;
 
     dateFormat = Qt::TextDate;
-    nowString = "Jam-" + now.toString(dateFormat).replace(QRegExp("[/:]"), "-").replace(QRegExp("[ ]"), "_");
+    nowString = "Jam-" + now.toString(dateFormat).replace(QRegularExpression("[/:]"), "-").replace(QRegularExpression("[ ]"), "_");
     myRadioButton = new QRadioButton(this);
     myRadioButton->setObjectName("rbdfTextDate");
     myRadioButton->setText(nowString);
@@ -100,7 +100,7 @@ void PreferencesDialog::initialize(PreferencesTab initialTab, const persistence:
     jamDateFormatRadioButtons[myRadioButton] = "Qt::TextDate";
 
     dateFormat = Qt::ISODate;
-    nowString = "Jam-" + now.toString(dateFormat).replace(QRegExp("[/:]"), "-").replace(QRegExp("[ ]"), "_");
+    nowString = "Jam-" + now.toString(dateFormat).replace(QRegularExpression("[/:]"), "-").replace(QRegularExpression("[ ]"), "_");
     myRadioButton = new QRadioButton(this);
     myRadioButton->setObjectName("rbdfISODate");
     myRadioButton->setText(nowString);
@@ -143,7 +143,8 @@ void PreferencesDialog::setupSignals()
         QString currentLoopsFolder = ui->lineEditLoopsFolder->text();
         QFileDialog folderDialog(this, tr("Choosing loops folder ..."), currentLoopsFolder);
         folderDialog.setAcceptMode(QFileDialog::AcceptOpen);
-        folderDialog.setFileMode(QFileDialog::DirectoryOnly);
+        folderDialog.setFileMode(QFileDialog::Directory);
+        folderDialog.setOption(QFileDialog::ShowDirsOnly, true);
         if (folderDialog.exec()) {
             QDir dir = folderDialog.directory();
             QString newLoopsFolder = dir.absolutePath();
@@ -384,7 +385,8 @@ void PreferencesDialog::openRecordingPathBrowser()
 {
     QFileDialog fileDialog(this, tr("Choosing recording path ..."));
     fileDialog.setAcceptMode(QFileDialog::AcceptOpen);
-    fileDialog.setFileMode(QFileDialog::DirectoryOnly);
+    fileDialog.setFileMode(QFileDialog::Directory);
+    fileDialog.setOption(QFileDialog::ShowDirsOnly, true);
 
     if (fileDialog.exec()) {
         QDir dir = fileDialog.directory();

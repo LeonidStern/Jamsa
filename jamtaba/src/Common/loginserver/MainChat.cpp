@@ -37,7 +37,11 @@ MainChat::MainChat(QObject *parent) :
 
     connect(&webSocket, &QWebSocket::textMessageReceived, this, &MainChat::textMessageReceived);
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    connect(&webSocket, &QWebSocket::errorOccurred, [&]() {
+#else
     connect(&webSocket, static_cast<void(QWebSocket::*)(QAbstractSocket::SocketError)>(&QWebSocket::error), [&]() {
+#endif
         emit error(webSocket.errorString());
     });
 

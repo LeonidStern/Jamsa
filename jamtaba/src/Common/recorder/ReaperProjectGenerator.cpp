@@ -84,19 +84,6 @@ QString ReaperProjectGenerator::getAudioAbsolutePath(const QString &audioFileNam
     return jamDir.absoluteFilePath("audio/" + audioFileName);
 }
 
-QString ReaperProjectGenerator::getVideoAbsolutePath(const QString &videoFileName)
-{
-    QDir jamDir = QDir(this->rppPath);
-
-    if (!jamDir.exists("video") && !jamDir.mkdir("video")) {
-
-        qCritical() << "Could not create video directory in " << this->rppPath;
-
-        return QString();
-    }
-    return jamDir.absoluteFilePath("video/" + videoFileName);
-}
-
 QString ReaperProjectGenerator::buildTrackName(const QString &userName, quint8 channelIndex)
 {
     return userName + " (Channel " + QString::number(channelIndex+1) + ")";

@@ -74,7 +74,7 @@ void IntervalProgressDisplay::LinearPaintStrategy::drawPoint(qreal x, qreal y, q
         painter.setFont(font);
         QFontMetrics fontMetrics = painter.fontMetrics();
         QRect boundingRect = fontMetrics.tightBoundingRect(valueString);
-        qreal textX = x - fontMetrics.width(valueString)/2.0;
+        qreal textX = x - fontMetrics.horizontalAdvance(valueString)/2.0;
         qreal textY = y + boundingRect.height()/2.0;
         painter.setPen(Qt::black);
         painter.drawText(QPointF(textX, textY), valueString);

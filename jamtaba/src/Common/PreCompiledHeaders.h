@@ -24,7 +24,6 @@
 #include <QDebug>
 #include <QDataStream>
 #include <QDateTime>
-#include <QDesktopWidget>
 #include <QDesktopServices>
 #include <QDial>
 #include <QDialog>
@@ -70,7 +69,6 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPushButton>
-#include <QRegExp>
 #include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScopedPointer>

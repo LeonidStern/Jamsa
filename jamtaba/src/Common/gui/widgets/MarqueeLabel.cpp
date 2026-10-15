@@ -32,7 +32,7 @@ void MarqueeLabel::resetAnimationProperties()
     timeSinceLastAnimation = 0;
     lastUpdate = QDateTime::currentMSecsSinceEpoch();
     speedDecay = 1;
-    textX = needAnimation() ? 0 : width()/2 -  fontMetrics().width(text())/2; // draw text in center if the text is small
+    textX = needAnimation() ? 0 : width()/2 -  fontMetrics().horizontalAdvance(text())/2; // draw text in center if the text is small
 }
 
 void MarqueeLabel::reset()
@@ -55,7 +55,7 @@ bool MarqueeLabel::needAnimation() const
 
 int MarqueeLabel::getTextLenght() const
 {
-    return fontMetrics().width(text() + " ");
+    return fontMetrics().horizontalAdvance(text() + " ");
 }
 
 void MarqueeLabel::updateMarquee()
@@ -106,9 +106,9 @@ QRectF MarqueeLabel::getSelectedTextRect() const
         return QRectF();
 
     QFontMetrics metrics = fontMetrics();
-    int textWidth = metrics.width(selectedText());
+    int textWidth = metrics.horizontalAdvance(selectedText());
     QString firstLetters = text().left(selectionStart());
-    int startPosition = metrics.width(firstLetters);
+    int startPosition = metrics.horizontalAdvance(firstLetters);
 
     return QRectF(startPosition, textY - metrics.ascent(), textWidth, metrics.height());
 }
