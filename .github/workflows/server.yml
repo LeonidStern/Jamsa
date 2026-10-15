@@ -49,3 +49,38 @@ jobs:
         env:
           NINJAMSRV: ../server/ninjamsrv
         run: python3 -m unittest -v test_opus_e2e
+
+  # the CMake build, which also builds the server that JamTaba runs inside the plugin
+  cmake:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        if: runner.os != 'Linux'
+        run: cmake -S ninjam/server -B build -DCMAKE_BUILD_TYPE=Release -DNINJAM_SERVER_TESTS=ON
+      - name: Configure with AddressSanitizer and UBSan
+        if: runner.os == 'Linux'
+        run: >
+          cmake -S ninjam/server -B build -DCMAKE_BUILD_TYPE=Debug -DNINJAM_SERVER_TESTS=ON
+          "-DCMAKE_C_FLAGS=-fsanitize=address,undefined" "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined"
+          "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+      - name: Build the server and the built-in server's test runner
+        run: cmake --build build --config Release --target ninjamsrv ninjamsrv_embedded_runner
+      - name: Protocol tests, command line server
+        if: runner.os == 'Linux'
+        working-directory: ninjam/server/tests
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          NINJAMSRV: ${{ github.workspace }}/build/ninjamsrv
+        run: python3 -m unittest -v test_server
+      - name: Protocol tests, built-in server
+        if: runner.os == 'Linux'
+        working-directory: ninjam/server/tests
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          NINJAMSRV: ${{ github.workspace }}/build/ninjamsrv_embedded_runner
+        run: python3 -m unittest -v test_server

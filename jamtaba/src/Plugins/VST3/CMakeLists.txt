@@ -9,6 +9,8 @@ set(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SMTG_ENABLE_VST3_HOSTING_EXAMPLES ON CACHE BOOL "" FORCE) # builds the validator
 set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE)
 set(SMTG_CREATE_PLUGIN_LINK OFF CACHE BOOL "" FORCE) # don't symlink the build into the user's VST3 folder
+set(SMTG_CREATE_BUNDLE_FOR_WINDOWS OFF CACHE BOOL "" FORCE) # on Windows JamTaba.vst3 is a single file
+set(SMTG_RUN_VST_VALIDATOR OFF CACHE BOOL "" FORCE) # CI runs the validator as its own step
 
 FetchContent_Declare(vst3sdk
     GIT_REPOSITORY https://github.com/steinbergmedia/vst3sdk.git
@@ -47,4 +49,17 @@ if(SMTG_MAC)
         BUNDLE_IDENTIFIER com.github.leonidstern.jamtaba.vst3
         COMPANY_NAME "JamTaba"
     )
+endif()
+
+# With a static Qt (see jamtaba/ci/build-static-qt.sh) the plugin is a single file:
+# Qt's platform plugin is linked in, since there is no Qt folder to load it from.
+get_target_property(JAMTABA_QT_TYPE Qt6::Core TYPE)
+if(JAMTABA_QT_TYPE STREQUAL "STATIC_LIBRARY")
+    if(WIN32)
+        qt_import_plugins(JamTaba INCLUDE Qt6::QWindowsIntegrationPlugin)
+    elseif(APPLE)
+        qt_import_plugins(JamTaba INCLUDE Qt6::QCocoaIntegrationPlugin)
+    else()
+        qt_import_plugins(JamTaba INCLUDE Qt6::QXcbIntegrationPlugin)
+    endif()
 endif()

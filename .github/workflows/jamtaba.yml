@@ -1,0 +1,110 @@
+name: jamtaba
+
+# Builds the JamTaba VST3 plugin and checks it with Steinberg's validator.
+# Windows and macOS link a static Qt (built once by jamtaba/ci/build-static-qt.sh and
+# cached), so their JamTaba.vst3 is the one thing to install. Each build is kept as a
+# downloadable artifact.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  QT_VERSION: 6.8.3
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt, and GTK for the validator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build qt6-base-dev qt6-websockets-dev libgl-dev libgtkmm-3.0-dev libgtk-3-dev
+      - name: Configure
+        run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build the plugin and the validator
+        run: cmake --build build --target JamTaba validator
+      - name: Validate
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: build/bin/Release/validator build/VST3/Release/JamTaba.vst3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JamTaba-vst3-linux-x86_64
+          path: build/VST3/Release/JamTaba.vst3
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Ninja
+        run: choco install ninja --no-progress -y
+      - name: Restore static Qt
+        id: qt
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.workspace }}/qt-static
+          key: qt-${{ env.QT_VERSION }}-static-windows-msvc2022-${{ hashFiles('jamtaba/ci/build-static-qt.sh') }}
+      - name: Build static Qt
+        if: steps.qt.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          QT_BUILD_DIR: ${{ runner.temp }}/qt-build
+        run: jamtaba/ci/build-static-qt.sh "$QT_VERSION" "$(cygpath -m '${{ runner.workspace }}/qt-static')"
+      - name: Save static Qt
+        if: steps.qt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.workspace }}/qt-static
+          key: qt-${{ env.QT_VERSION }}-static-windows-msvc2022-${{ hashFiles('jamtaba/ci/build-static-qt.sh') }}
+      - name: Configure
+        run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ runner.workspace }}/qt-static"
+      - name: Build the plugin and the validator
+        run: cmake --build build --target JamTaba validator
+      - name: Validate
+        run: build/bin/Release/validator.exe build/VST3/Release/JamTaba.vst3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JamTaba-vst3-windows-x64
+          path: build/VST3/Release/JamTaba.vst3
+
+  macos:
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Restore static Qt
+        id: qt
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.workspace }}/qt-static
+          key: qt-${{ env.QT_VERSION }}-static-macos-universal-${{ hashFiles('jamtaba/ci/build-static-qt.sh') }}
+      - name: Build static Qt
+        if: steps.qt.outputs.cache-hit != 'true'
+        env:
+          QT_BUILD_DIR: ${{ runner.temp }}/qt-build
+        run: jamtaba/ci/build-static-qt.sh "$QT_VERSION" "${{ runner.workspace }}/qt-static" "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+      - name: Save static Qt
+        if: steps.qt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.workspace }}/qt-static
+          key: qt-${{ env.QT_VERSION }}-static-macos-universal-${{ hashFiles('jamtaba/ci/build-static-qt.sh') }}
+      - name: Configure
+        run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ runner.workspace }}/qt-static" "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+      - name: Build the plugin and the validator
+        run: cmake --build build --target JamTaba validator
+      - name: Validate
+        run: build/bin/Release/validator build/VST3/Release/JamTaba.vst3
+      - name: Pack the bundle
+        run: ditto -c -k --keepParent build/VST3/Release/JamTaba.vst3 JamTaba.vst3.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JamTaba-vst3-macos-universal
+          path: JamTaba.vst3.zip
