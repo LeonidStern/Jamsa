@@ -44,6 +44,12 @@ target_compile_features(JamTaba PRIVATE cxx_std_17)
 target_compile_definitions(JamTaba PRIVATE JAMTABA_VST3_VERSION="${JAMTABA_VST3_VERSION}")
 target_link_libraries(JamTaba PRIVATE sdk jamtaba_core)
 
+if(SMTG_LINUX)
+    # Export only the VST3 entry points, not the symbols of the libraries linked in
+    # (Qt, miniupnpc...), so they can't clash with another plugin's copies in the host.
+    target_link_options(JamTaba PRIVATE "LINKER:--exclude-libs,ALL")
+endif()
+
 if(SMTG_MAC)
     smtg_target_set_bundle(JamTaba
         BUNDLE_IDENTIFIER com.github.leonidstern.jamtaba.vst3
