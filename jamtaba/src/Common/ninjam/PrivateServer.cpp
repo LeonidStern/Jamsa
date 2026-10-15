@@ -31,7 +31,7 @@ const char *CONFIG =
         "DefaultBPM 120\n"
         "DefaultBPI 16\n"
         "SetVotingThreshold 1\n"
-        "SetVotingTimeout 60\n"
+        "SetVotingVoteTimeout 60\n"
         "AllowCodecs opus flac\n"
         "PortMapping yes\n";
 
