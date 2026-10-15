@@ -66,8 +66,16 @@ jobs:
         run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ runner.workspace }}/qt-static"
       - name: Build the plugin and the validator
         run: cmake --build build --target JamTaba validator -- -k 0 # show every compile error, not just the first
+      - name: List the DLLs the plugin needs (only Windows' own)
+        run: dumpbin /dependents build/VST3/JamTaba.vst3
+      # JamTaba.vst3 ships as one file. The validator also checks the layout of the folder
+      # form of a plugin, so it checks the same file placed in that layout.
       - name: Validate
-        run: build/bin/validator.exe build/VST3/JamTaba.vst3 # on Windows the SDK puts no Release folder in these paths
+        shell: bash
+        run: |
+          mkdir -p validate/JamTaba.vst3/Contents/x86_64-win
+          cp build/VST3/JamTaba.vst3 validate/JamTaba.vst3/Contents/x86_64-win/
+          build/bin/validator.exe validate/JamTaba.vst3
       - uses: actions/upload-artifact@v4
         with:
           name: JamTaba-vst3-windows-x64
