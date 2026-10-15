@@ -25,7 +25,7 @@ jobs:
       - name: Configure
         run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build the plugin and the validator
-        run: cmake --build build --target JamTaba validator
+        run: cmake --build build --target JamTaba validator -- -k 0 # show every compile error, not just the first
       - name: Validate
         env:
           QT_QPA_PLATFORM: offscreen
@@ -65,7 +65,7 @@ jobs:
       - name: Configure
         run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ runner.workspace }}/qt-static"
       - name: Build the plugin and the validator
-        run: cmake --build build --target JamTaba validator
+        run: cmake --build build --target JamTaba validator -- -k 0 # show every compile error, not just the first
       - name: Validate
         run: build/bin/Release/validator.exe build/VST3/Release/JamTaba.vst3
       - uses: actions/upload-artifact@v4
@@ -101,7 +101,7 @@ jobs:
       - name: Configure
         run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ runner.workspace }}/qt-static" "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
       - name: Build the plugin and the validator
-        run: cmake --build build --target JamTaba validator
+        run: cmake --build build --target JamTaba validator -- -k 0 # show every compile error, not just the first
       - name: Validate
         run: build/bin/Release/validator build/VST3/Release/JamTaba.vst3
       - name: Pack the bundle
