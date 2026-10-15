@@ -31,6 +31,10 @@ const qint8 CacheEntry::DEFAULT_INSTRUMENT_INDEX = -1;
 QRegularExpression CacheEntry::ipPattern(QRegularExpression::anchoredPattern("(?:\\d{1,3}\\.){3}(\\d{1,3}|x)"));
 
 
+// In the persistence namespace, so QMap's stream operators find them (argument-dependent
+// lookup) also when Qt is built in its own namespace.
+namespace persistence {
+
 QDataStream &operator<<(QDataStream &stream, const CacheEntry &entry)
 {
     return stream
@@ -68,6 +72,8 @@ QDataStream &operator>>(QDataStream &stream, CacheEntry &entry)
 
     return stream;
 }
+
+} // namespace persistence
 
 // +++++++++++++++++++++++++++++++++++++++
 
