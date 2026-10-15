@@ -15,10 +15,26 @@
 #include "pluginids.h"
 #include "version.h"
 
+#if SMTG_OS_LINUX
+#include <dlfcn.h>
+#include "public.sdk/source/main/moduleinit.h"
+#endif
+
 using namespace Steinberg;
 using namespace Steinberg::Vst;
 
 namespace {
+
+#if SMTG_OS_LINUX
+// VSTGUI draws text with Pango on Linux. Pango (1.50 and later) loads fontconfig's fonts on a
+// thread of its own ("[pango] fontconfig"), started with VSTGUI's font map. A host that unloads
+// the module before that thread is done (pluginval does, after a quick test, more often when the
+// machine is busy) unmaps the code the thread runs, and the host crashes. So libpangoft2, which
+// holds that code, stays loaded once the module is, with what it needs.
+static ModuleInitializer keepPangoLoaded([] {
+  dlopen("libpangoft2-1.0.so.0", RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);
+});
+#endif
 
 // On Linux, the SDK's VSTGUI glue asks the factory to replace VSTGUI's run loop with the host
 // context's each time the host calls setHostContext, which hosts may do on any thread, also

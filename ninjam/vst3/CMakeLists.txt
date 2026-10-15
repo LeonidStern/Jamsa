@@ -194,6 +194,8 @@ if(SMTG_LINUX)
     # Export only the VST3 entry points, not the symbols of the libraries linked in,
     # so they can't clash with another plug-in's copies in the host.
     target_link_options(NINJAM PRIVATE "LINKER:--exclude-libs,ALL")
+    # dlopen() keeps Pango loaded (see factory.cpp)
+    target_link_libraries(NINJAM PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 if(SMTG_MAC)
