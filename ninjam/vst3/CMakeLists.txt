@@ -24,6 +24,13 @@ cmake_minimum_required(VERSION 3.25)
 
 project(ninjam_vst3 VERSION 0.1.0 LANGUAGES C CXX)
 
+# VSTGUI's macOS sources are Objective-C++, and smtg_enable_vst3_sdk() below adds some
+# of them to targets in this directory, so the languages are enabled here (enabling them
+# only inside the SDK's folder leaves this one without the rules to compile them).
+if(APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
+
 option(NINJAM_VST3_TESTS "Build the plug-in's tests" OFF)
 option(NINJAM_VST3_EDITORHOST "Build the SDK's editorhost and other hosting examples" OFF)
 
