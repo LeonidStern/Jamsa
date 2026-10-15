@@ -15,7 +15,7 @@
   It loads NINJAM.vst3, plays a 997 Hz tone into it in real time, and drives
   it through its text command interface.
 
-  Usage: plugin_e2e_host path/to/NINJAM.vst3 [samplerate [blocksize [join host:port]]]
+  Usage: plugin_e2e_host path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two]]]
 
   Hosting (the default): the plug-in hosts a server and joins it, and a second
   NJClient ("peer", in this process) joins too and plays a 661 Hz tone. The
@@ -35,6 +35,17 @@
     PHASE vorbis END room=<codec> upload=<fourcc or -> peak=<the plug-in's output peak> warned=<0|1> others=<n>
     DONE
 
+  Two instances (two): as two tracks in a DAW, two instances of the plug-in in this
+  process, the second with its audio on a thread of its own. "alice" hosts a server;
+  "bob" can't host a second one in this process and is told to join, joins, and they
+  hear each other (alice plays 997 Hz, bob 661 Hz). Then alice stops her server, which
+  drops bob; bob hosts one, and alice joins it.
+    PORT <port>            alice's server is up
+    PHASE two BEGIN
+    PHASE two END a_hears_snr=<dB> b_hears_snr=<dB> b_host_refused=<0|1> b_got_chat=<0|1> a_users=<n> b_users=<n>
+    PHASE swap END b_dropped=<0|1> b_hosting=<0|1> port=<port> a_state=<state> a_users=<n>
+    DONE
+
   Errors start with "error:" and the exit code is not 0. With NINJAM_E2E_DEBUG set, each
   phase also prints the level of what each side heard, second by second.
 
@@ -48,8 +59,10 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -131,7 +144,7 @@ static bool stdin_has_line(std::string &line)
 class Host
 {
 public:
-  Host(int srate, int block) : m_srate(srate), m_block(block) {}
+  Host(int srate, int block, double freq = PLUGIN_FREQ) : m_srate(srate), m_block(block), m_freq(freq) {}
 
   bool load(const char *path)
   {
@@ -143,8 +156,21 @@ public:
       return false;
     }
     m_hostApp = owned(new HostApplication);
+    m_module->getFactory().setHostContext(m_hostApp);
+    return createInstance();
+  }
+
+  // another instance from the module that first.load() loaded, like a second track
+  bool loadAnother(const Host &first)
+  {
+    m_module = first.m_module;
+    m_hostApp = first.m_hostApp;
+    return createInstance();
+  }
+
+  bool createInstance()
+  {
     const auto &factory = m_module->getFactory();
-    factory.setHostContext(m_hostApp);
     for (auto &ci : factory.classInfos())
     {
       if (ci.category() != kVstAudioEffectClass || ci.name() != "NINJAM") continue;
@@ -153,7 +179,7 @@ public:
     }
     if (!m_component)
     {
-      printf("error: no NINJAM audio effect class in %s\n", path);
+      printf("error: no NINJAM audio effect class in the module\n");
       return false;
     }
     if (m_component->initialize(m_hostApp) != kResultOk)
@@ -227,7 +253,7 @@ public:
   {
     for (int i = 0; i < m_block; i ++)
     {
-      m_in0[i] = m_in1[i] = (float)(0.5 * sin(2*PI*PLUGIN_FREQ*(m_pos + i)/m_srate));
+      m_in0[i] = m_in1[i] = (float)(0.5 * sin(2*PI*m_freq*(m_pos + i)/m_srate));
       m_peerIn[i] = (float)(0.5 * sin(2*PI*PEER_FREQ*(m_pos + i)/m_srate));
     }
 
@@ -246,7 +272,11 @@ public:
     data.inputs = &inBus;
     data.outputs = &outBus;
     m_processor->process(data);
-    if (record) m_pluginHeard.insert(m_pluginHeard.end(), m_out0.begin(), m_out0.end());
+    if (record)
+    {
+      std::lock_guard<std::mutex> lock(m_heardMutex);
+      m_pluginHeard.insert(m_pluginHeard.end(), m_out0.begin(), m_out0.end());
+    }
 
     if (peer)
     {
@@ -282,10 +312,25 @@ public:
     return pred();
   }
 
+  // what the plug-in played (recorded with block(..., true), maybe on another thread)
+  std::vector<float> pluginHeard()
+  {
+    std::lock_guard<std::mutex> lock(m_heardMutex);
+    return m_pluginHeard;
+  }
+  void clearHeard()
+  {
+    std::lock_guard<std::mutex> lock(m_heardMutex);
+    m_pluginHeard.clear();
+    m_peerHeard.clear();
+  }
+
   int m_srate, m_block;
+  double m_freq; // of the tone played into the plug-in
   long m_pos = 0;
   double m_start = 0;
   std::vector<float> m_pluginHeard, m_peerHeard;
+  std::mutex m_heardMutex;
 
 private:
   VST3::Hosting::Module::Ptr m_module;
@@ -350,12 +395,116 @@ static int join_vorbis_room(Host &host, const std::string &server)
   return 0;
 }
 
+// plays an instance's audio on a thread of its own until destroyed, as a DAW may for a second track
+class AudioThread
+{
+public:
+  explicit AudioThread(Host &host) : m_host(host), m_thread([this]() { while (!m_stop) m_host.block(nullptr, m_record); }) {}
+  ~AudioThread()
+  {
+    m_stop = true;
+    m_thread.join();
+  }
+  void record(bool on) { m_record = on; }
+
+private:
+  Host &m_host;
+  std::atomic<bool> m_stop { false }, m_record { false };
+  std::thread m_thread; // last: starts when the rest is ready
+};
+
+static bool contains(const std::string &s, const std::string &what) { return s.find(what) != std::string::npos; }
+
+// two instances in this process (two tracks): one server between them, and they hear each other
+static int jam_two_instances(Host &a, Host &b)
+{
+  for (const char *c : { "name alice", "metronome off", "monitor off", "host on" })
+  {
+    const std::string r = a.command(c);
+    if (r != "ok") return fail(a, ("alice: command failed: " + std::string(c) + ": " + r).c_str());
+  }
+  for (const char *c : { "name bob", "metronome off", "monitor off" })
+  {
+    const std::string r = b.command(c);
+    if (r != "ok") return fail(b, ("bob: command failed: " + std::string(c) + ": " + r).c_str());
+  }
+
+  int result = 0;
+  {
+    AudioThread bAudio(b); // bob's audio, from now on
+    if (!a.runUntil(nullptr, 15.0, [&]() { auto s = a.status(); return s["state"] == "connected" && s["hosting"] == "1"; }))
+      return fail(a, "alice did not start her server and join it");
+    const std::string port = a.status()["port"];
+    printf("PORT %s\n", port.c_str());
+    a.command("chat !vote bpm 240");
+    a.command("chat !vote bpi 4");
+
+    // one server per process: bob is told to join alice's
+    b.command("host on");
+    const bool refused = a.runUntil(nullptr, 5.0, [&]() {
+      return contains(b.command("chatlog"), "already hosts a server (port " + port + ")");
+    }) && b.status()["hosting"] == "0";
+    b.command("connect localhost:" + port);
+    if (!a.runUntil(nullptr, 30.0, [&]() {
+          auto sa = a.status(), sb = b.status();
+          return sa["state"] == "connected" && sb["state"] == "connected" && atoi(sa["users"].c_str()) >= 1 &&
+                 atoi(sb["users"].c_str()) >= 1 && sa["bpi"] == "4" && sb["bpi"] == "4" && atof(sb["bpm"].c_str()) == 240.0;
+        }))
+      return fail(b, "bob did not join alice's server, or the tempo did not change");
+    a.command("chat hello from alice");
+
+    const int ilen = (int)lround(60.0 / 240 * 4 * a.m_srate);
+    if (!a.runUntil(nullptr, 10.0, [&]() { return atoi(a.status()["len"].c_str()) == ilen && atoi(b.status()["len"].c_str()) == ilen; }))
+      return fail(a, "the intervals did not get to 1 second");
+    const double interval = (double)ilen / a.m_srate;
+    a.run(nullptr, interval * 2.2);
+    printf("PHASE two BEGIN\n");
+    a.clearHeard();
+    b.clearHeard();
+    bAudio.record(true);
+    a.run(nullptr, interval * 4, true);
+    bAudio.record(false);
+
+    // the last two intervals each recorded
+    const std::vector<float> ah = a.pluginHeard(), bh = b.pluginHeard();
+    const size_t len = (size_t)ilen * 2;
+    const double aSnr = tone_snr(ah, ah.size() > len ? ah.size() - len : 0, ah.size(), b.m_freq, a.m_srate);
+    const double bSnr = tone_snr(bh, bh.size() > len ? bh.size() - len : 0, bh.size(), a.m_freq, b.m_srate);
+    const bool gotChat = contains(b.command("chatlog"), "hello from alice");
+    printf("users (alice): %s", a.command("users").c_str());
+    printf("users (bob): %s", b.command("users").c_str());
+    printf("PHASE two END a_hears_snr=%.1f b_hears_snr=%.1f b_host_refused=%d b_got_chat=%d a_users=%s b_users=%s\n", aSnr, bSnr,
+           refused ? 1 : 0, gotChat ? 1 : 0, a.status()["users"].c_str(), b.status()["users"].c_str());
+
+    // alice stops her server, which drops bob; now bob can host, and alice joins him
+    a.command("host off");
+    const bool dropped = a.runUntil(nullptr, 15.0, [&]() { return a.status()["hosting"] == "0" && b.status()["state"] != "connected"; });
+    b.command("host on");
+    a.runUntil(nullptr, 15.0, [&]() { auto s = b.status(); return s["state"] == "connected" && s["hosting"] == "1"; });
+    const std::string port2 = b.status()["port"];
+    a.command("connect localhost:" + port2);
+    a.runUntil(nullptr, 15.0, [&]() { auto s = a.status(); return s["state"] == "connected" && atoi(s["users"].c_str()) >= 1; });
+    auto sa = a.status();
+    printf("PHASE swap END b_dropped=%d b_hosting=%s port=%s a_state=%s a_users=%s\n", dropped ? 1 : 0, b.status()["hosting"].c_str(),
+           port2.c_str(), sa["state"].c_str(), sa["users"].c_str());
+
+    b.command("host off");
+    if (!a.runUntil(nullptr, 15.0, [&]() { return b.status()["hosting"] == "0" && a.status()["state"] != "connected"; }))
+      result = fail(b, "bob's server did not stop");
+  }
+  b.unload();
+  if (result) return result;
+  a.unload();
+  printf("DONE\n");
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2)
   {
-    fprintf(stderr, "usage: %s path/to/NINJAM.vst3 [samplerate [blocksize [join host:port]]]\n", argv[0]);
+    fprintf(stderr, "usage: %s path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two]]]\n", argv[0]);
     return 2;
   }
   const int srate = argc > 2 ? atoi(argv[2]) : 48000;
@@ -364,6 +513,12 @@ int main(int argc, char **argv)
   Host host(srate, blockSize);
   if (!host.load(argv[1])) return 1;
   if (argc > 5 && !strcmp(argv[4], "join")) return join_vorbis_room(host, argv[5]);
+  if (argc > 4 && !strcmp(argv[4], "two"))
+  {
+    Host second(srate, blockSize, PEER_FREQ);
+    if (!second.loadAnother(host)) return fail(host, "could not create a second instance");
+    return jam_two_instances(host, second);
+  }
 
   // the plug-in hosts a server and joins it
   for (const char *c : { "name plugin", "metronome off", "monitor off", "host on" })

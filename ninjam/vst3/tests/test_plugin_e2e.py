@@ -8,6 +8,11 @@ plug-in's Opus bitrate goes from 128 to 256 and 510 kbps, last with 16 second in
 script also joins the server at the protocol level: it checks that a client that only plays
 Vorbis is refused, and it watches the codec and size of every interval the plug-in uploads.
 
+test_two_instances: two instances of the plug-in in one process, as two tracks in a DAW. One
+hosts the server; the other can't host a second one in the same process, is told to join it,
+joins, and they hear each other and chat. Then the first stops its server, the second hosts
+one, and the first joins that.
+
 test_vorbis_room_plays_silence: the plug-in joins a server (NINJAMSRV, which may be one from
 before Opus) where clients that only know Vorbis play (ninjam/tests/njclient_e2e_vorbis). The
 plug-in can't send there, says so in its chat, and plays their Vorbis as silence.
@@ -212,6 +217,31 @@ class PluginEndToEndTest(unittest.TestCase):
             return sum(sizes[phase]) / len(sizes[phase])
         self.assertAlmostEqual(mean("opus256") / mean("opus"), 2.0, delta=0.3)
         self.assertAlmostEqual(mean("opus510") / mean("opus"), 510 / 128, delta=0.6)
+
+    def test_two_instances(self):
+        run = Run(["two"])
+        results = {}
+        try:
+            def on_line(line):
+                m = re.match(r"PHASE (\w+) END (.*)$", line)
+                if m:
+                    results[m.group(1)] = fields(m.group(2))
+            run.run_to_end(on_line, timeout=120)
+        finally:
+            run.close()
+
+        log = run.log()
+        self.assertEqual(run.proc.returncode, 0, log)
+        self.assertIn("DONE", run.output, log)
+        two, swap = results.get("two", {}), results.get("swap", {})
+        self.assertEqual(two.get("b_host_refused"), "1", "told to join the server already in this process\n" + log)
+        self.assertGreater(float(two["a_hears_snr"]), MIN_SNR["opus"], log)
+        self.assertGreater(float(two["b_hears_snr"]), MIN_SNR["opus"], log)
+        self.assertEqual(two.get("b_got_chat"), "1", log)
+        self.assertEqual((two.get("a_users"), two.get("b_users")), ("1", "1"), log)
+        self.assertEqual(swap.get("b_dropped"), "1", "the joined instance leaves when the server stops\n" + log)
+        self.assertEqual(swap.get("b_hosting"), "1", "the other instance can host once the first stopped\n" + log)
+        self.assertEqual((swap.get("a_state"), swap.get("a_users")), ("connected", "1"), log)
 
     @unittest.skipUnless(VORBIS_CLIENT and os.path.exists(test_server.SERVER),
                          "set NINJAMSRV and NJCLIENT_E2E_VORBIS (make -C ninjam/server, make -C ninjam/tests)")

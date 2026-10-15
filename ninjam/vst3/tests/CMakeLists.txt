@@ -2,7 +2,8 @@
 #
 #   plugin_unit_test   saved state, port mapping messages
 #   plugin_e2e         test_plugin_e2e.py: plugin_e2e_host loads NINJAM.vst3, which hosts a
-#                      server; a second client joins; audio both ways in Opus and FLAC
+#                      server; a second client joins; audio both ways in Opus and FLAC.
+#                      Also two instances in one process, playing together
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp
