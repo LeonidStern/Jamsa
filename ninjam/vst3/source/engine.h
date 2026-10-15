@@ -193,6 +193,8 @@ private:
   // network thread
   void doConnect(const std::string &server, const std::string &user);
   void doDisconnect(const char *why);
+  void clientConnect(const std::string &server, const std::string &login);
+  void clientDisconnect();
   void doSetHosting(bool on);
   void applyLocalSettings();
   void updateConnection();
@@ -206,6 +208,9 @@ private:
   static void chatCallback(void *user, NJClient *inst, const char **parms, int nparms);
 
   std::unique_ptr<NJClient> m_client;
+  // NJClient's Connect() and Disconnect() free what its AudioProc() uses, so they hold this,
+  // and process() skips the block (plays silence) when it can't get it
+  std::mutex m_audioMutex;
 
   std::thread m_thread;
   std::atomic<bool> m_quit { false };

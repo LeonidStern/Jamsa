@@ -256,7 +256,7 @@ void Engine::stop()
   m_running = false;
 
   // what the network thread would have done on its way out
-  m_client->Disconnect();
+  clientDisconnect();
   if (m_hosting) HostServer::instance().stop(this);
   m_hosting = false;
   JNL::close_socketlib();
@@ -283,6 +283,15 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames)
   const int srate = m_sampleRate.load(std::memory_order_relaxed);
   float *inL = numIn > 0 && in ? in[0] : nullptr;
   float *inR = numIn > 1 && in ? in[1] : inL;
+
+  std::unique_lock<std::mutex> audio(m_audioMutex, std::try_to_lock);
+  if (!audio.owns_lock())
+  {
+    // the network thread is connecting or disconnecting: a moment of silence
+    for (int c = 0; c < numOut; c ++)
+      if (out[c]) memset(out[c], 0, sizeof(float) * frames);
+    return;
+  }
 
   // NJClient clears its output before it reads its input, so it gets a copy of the input
   for (int done = 0; done < frames; )
@@ -609,7 +618,7 @@ void Engine::doConnect(const std::string &serverIn, const std::string &userIn)
   if (user.empty()) user = "guest";
   if (user.size() > 32) user.resize(32);
 
-  if (m_state == ConnState::Connecting || m_state == ConnState::Connected) m_client->Disconnect();
+  if (m_state == ConnState::Connecting || m_state == ConnState::Connected) clientDisconnect();
 
   m_server = server;
   m_appliedRemote.clear();
@@ -621,14 +630,26 @@ void Engine::doConnect(const std::string &serverIn, const std::string &userIn)
 
   // anonymous login, which most servers allow
   const std::string login = "anonymous:" + user;
+  clientConnect(server, login);
+}
+
+void Engine::clientConnect(const std::string &server, const std::string &login)
+{
+  std::lock_guard<std::mutex> audio(m_audioMutex);
   m_client->Connect(server.c_str(), login.c_str(), "");
+}
+
+void Engine::clientDisconnect()
+{
+  std::lock_guard<std::mutex> audio(m_audioMutex);
+  m_client->Disconnect();
 }
 
 void Engine::doDisconnect(const char *why)
 {
   if (m_state == ConnState::Connecting || m_state == ConnState::Connected)
   {
-    m_client->Disconnect();
+    clientDisconnect();
     addChat(ChatLine::System, "", why ? why : "Disconnected.");
   }
   m_state = ConnState::Disconnected;
@@ -658,7 +679,7 @@ void Engine::updateConnection()
   else if (st == NJClient::NJC_STATUS_INVALIDAUTH) text = m_server + " refused the login";
   else text = (m_state == ConnState::Connected ? "Lost the connection to " : "Could not connect to ") + m_server;
   if (!err.empty()) text += ": " + err;
-  m_client->Disconnect();
+  clientDisconnect();
   m_state = ConnState::Failed;
   m_statusText = text;
   addChat(ChatLine::Error, "", text);
