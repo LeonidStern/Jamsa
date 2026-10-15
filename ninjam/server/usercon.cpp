@@ -976,7 +976,8 @@ bool User_Connection::migrateToRoom(const char *p)
 
 User_Group::User_Group() : m_max_users(0), m_last_bpm(120), m_last_bpi(32), m_keepalive(0), 
   m_voting_threshold(110), m_voting_timeout(120),
-  m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_allow_codecs(CLIENT_CAP_CODEC_OPUS), m_is_lobby_mode(0)
+  m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_allow_codecs(CLIENT_CAP_CODEC_OPUS),
+  m_room_codec(CLIENT_CAP_CODEC_OPUS), m_room_codec_announced(-1), m_is_lobby_mode(0)
 
 {
   m_logfp = NULL;
@@ -1125,27 +1126,134 @@ int User_Group::Run()
     return wantsleep;
 }
 
-void User_Group::SendCodecMask()
+static const char *codec_name(int codec)
 {
-  int mask = m_allow_codecs & CLIENT_CAP_CODECS;
-  int x;
-  for (x = 0; x < m_users.GetSize() && mask; x ++)
-  {
-    User_Connection *u = m_users.Get(x);
-    if (u->m_auth_state > 0) mask &= u->m_clientcaps;
-  }
+  if (codec == CLIENT_CAP_CODEC_OPUS) return "Opus";
+  if (codec == CLIENT_CAP_CODEC_FLAC) return "FLAC";
+  return "Vorbis";
+}
 
+// a chat line from the server, as the voting system sends
+static Net_Message *server_chat(const char *text)
+{
+  mpb_chat_message newmsg;
+  newmsg.parms[0]="MSG";
+  newmsg.parms[1]="";
+  newmsg.parms[2]=text;
+  return newmsg.build();
+}
+
+static const char *display_name(User_Connection *u)
+{
+  return u && !(u->m_auth_privs & PRIV_HIDDEN) ? u->m_username.Get() : "someone";
+}
+
+int User_Group::RoomCodec(User_Connection **cant_decode)
+{
+  int all = m_allow_codecs & CLIENT_CAP_CODECS;
+  User_Connection *who = NULL;
+  int x;
   for (x = 0; x < m_users.GetSize(); x ++)
   {
     User_Connection *u = m_users.Get(x);
-    if (u->m_auth_state > 0 && (u->m_clientcaps & CLIENT_CAP_CODECS) && u->m_codec_mask_sent != mask)
+    if (u->m_auth_state <= 0) continue;
+    all &= u->m_clientcaps;
+    if (!who && m_room_codec && !(u->m_clientcaps & m_room_codec)) who = u;
+  }
+  if (cant_decode) *cant_decode = who;
+
+  if (!m_room_codec || (all & m_room_codec)) return m_room_codec;
+  if (all & CLIENT_CAP_CODEC_OPUS) return CLIENT_CAP_CODEC_OPUS;
+  if (all & CLIENT_CAP_CODEC_FLAC) return CLIENT_CAP_CODEC_FLAC;
+  return 0;
+}
+
+void User_Group::SendCodecMask()
+{
+  // the mask holds just the room's codec, so every client uploads that one
+  User_Connection *cant_decode;
+  const int codec = RoomCodec(&cant_decode);
+
+  int x, n = 0;
+  for (x = 0; x < m_users.GetSize(); x ++)
+  {
+    User_Connection *u = m_users.Get(x);
+    if (u->m_auth_state <= 0) continue;
+    n++;
+    if ((u->m_clientcaps & CLIENT_CAP_CODECS) && u->m_codec_mask_sent != codec)
     {
       mpb_server_codec_mask cm;
-      cm.codecs = mask;
+      cm.codecs = codec;
       u->Send(cm.build());
-      u->m_codec_mask_sent = mask;
+      u->m_codec_mask_sent = codec;
     }
   }
+
+  // tell the room when its codec changes without anyone asking, such as when
+  // someone joins whose client can't play the chosen one
+  if (!n) m_room_codec_announced = -1;
+  else if (m_room_codec_announced < 0) m_room_codec_announced = codec;
+  else if (codec != m_room_codec_announced)
+  {
+    m_room_codec_announced = codec;
+    char buf[512];
+    if (codec == m_room_codec)
+      snprintf(buf,sizeof(buf),"[server] room audio is back to %s",codec_name(codec));
+    else if (cant_decode)
+      snprintf(buf,sizeof(buf),"[server] room audio is now %s, because %s's client can't play %s",
+        codec_name(codec),display_name(cant_decode),codec_name(m_room_codec));
+    else
+      snprintf(buf,sizeof(buf),"[server] room audio is now %s",codec_name(codec));
+    Broadcast(server_chat(buf));
+  }
+}
+
+void User_Group::onCodecCommand(User_Connection *con, const char *arg)
+{
+  char buf[512];
+  int choice = -1;
+  if (!strcasecmp(arg,"opus")) choice = CLIENT_CAP_CODEC_OPUS;
+  else if (!strcasecmp(arg,"flac")) choice = CLIENT_CAP_CODEC_FLAC;
+  else if (!strcasecmp(arg,"vorbis")) choice = 0;
+
+  if (choice < 0)
+  {
+    User_Connection *cant_decode;
+    const int codec = RoomCodec(&cant_decode);
+    if (codec != m_room_codec && cant_decode)
+      snprintf(buf,sizeof(buf),"[server] room audio is %s (%s was chosen, but %s's client can't play it). Change it with !codec opus, !codec flac or !codec vorbis",
+        codec_name(codec),codec_name(m_room_codec),display_name(cant_decode));
+    else
+      snprintf(buf,sizeof(buf),"[server] room audio is %s. Change it with !codec opus, !codec flac or !codec vorbis",codec_name(codec));
+    con->Send(server_chat(buf));
+    return;
+  }
+  if (!(con->m_auth_privs & PRIV_VOTE))
+  {
+    con->Send(server_chat("[server] you don't have permission to change the room's audio"));
+    return;
+  }
+  if (choice && !(m_allow_codecs & choice))
+  {
+    snprintf(buf,sizeof(buf),"[server] this server doesn't allow %s",codec_name(choice));
+    con->Send(server_chat(buf));
+    return;
+  }
+
+  m_room_codec = choice;
+  User_Connection *cant_decode;
+  const int codec = RoomCodec(&cant_decode);
+  if (codec == choice)
+    snprintf(buf,sizeof(buf),"[server] %s switched the room's audio to %s",display_name(con),codec_name(choice));
+  else if (cant_decode)
+    snprintf(buf,sizeof(buf),"[server] %s chose %s, but %s's client can't play it, so the room uses %s until they leave",
+      display_name(con),codec_name(choice),display_name(cant_decode),codec_name(codec));
+  else
+    snprintf(buf,sizeof(buf),"[server] %s chose %s, but the room uses %s",display_name(con),codec_name(choice),codec_name(codec));
+  Broadcast(server_chat(buf));
+
+  m_room_codec_announced = codec;
+  SendCodecMask();
 }
 
 void User_Group::NotifyUserLeft(User_Connection *p)
@@ -1399,12 +1507,22 @@ void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
         }
       }
     }
+    else if (str_begins_tok(p,"!codec"))
+    {
+      p += 6;
+      while (*p == ' ' || *p == '\t') p++;
+      WDL_FastString arg(p);
+      while (arg.GetLength() && (arg.Get()[arg.GetLength()-1] == ' ' || arg.Get()[arg.GetLength()-1] == '\t'))
+        arg.SetLen(arg.GetLength()-1);
+      onCodecCommand(con,arg.Get());
+      return;
+    }
     else if (*p == '!')
     {
       mpb_chat_message newmsg;
       newmsg.parms[0]="PRIVMSG";
       newmsg.parms[1]="*";
-      newmsg.parms[2]="Unknown !command. Commands available: !vote, !topic";
+      newmsg.parms[2]="Unknown !command. Commands available: !vote, !topic, !codec";
       con->Send(newmsg.build());
       return;
     }
