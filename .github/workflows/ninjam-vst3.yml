@@ -136,8 +136,11 @@ jobs:
       - name: Steinberg validator (single file, and in the folder layout)
         shell: bash
         run: |
-          "$VALIDATOR" -e "$PLUGIN" 2>&1 | tee validator.log
-          grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator.log
+          # As one file, the only check it may fail is the bundle check ("Not a bundle");
+          # in the folder layout below it must pass everything.
+          "$VALIDATOR" -e "$PLUGIN" 2>&1 | tee validator.log || true
+          grep -F "Invalid bundle structure: Not a bundle" validator.log
+          grep -E "Result: [0-9]+ tests passed, 1 tests failed" validator.log
           mkdir -p validate/NINJAM.vst3/Contents/x86_64-win
           cp "$PLUGIN" validate/NINJAM.vst3/Contents/x86_64-win/NINJAM.vst3
           "$VALIDATOR" -e validate/NINJAM.vst3 2>&1 | tee validator-folder.log
