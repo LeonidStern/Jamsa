@@ -62,6 +62,12 @@ if(NINJAM_PORTMAP)
 
     # the server includes <miniupnpc/miniupnpc.h>, as with the system package
     file(COPY ${miniupnp_SOURCE_DIR}/miniupnpc/include/ DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/portmap-include/miniupnpc)
+
+    # libnatpmp's folder holds a file named "version", which the C++ library's own
+    # #include <version> would pick up (it does on macOS), so that folder stays off
+    # the include path and its header is copied instead
+    set_target_properties(natpmp PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "")
+    file(COPY ${libnatpmp_SOURCE_DIR}/natpmp.h ${libnatpmp_SOURCE_DIR}/natpmp_declspec.h DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/portmap-include)
 endif()
 
 function(ninjamsrv_configure target)
