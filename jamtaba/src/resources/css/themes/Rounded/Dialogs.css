@@ -1,0 +1,84 @@
+/* Dialogs in Rounded theme */
+
+QMessageBox,
+QInputDialog,
+PluginScanDialog,
+MidiToolsDialog,
+PrivateServerWindow,
+#instrumentsMenu,
+ChordProgressionCreationDialog
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgb(250, 250, 250),
+        stop:1 rgba(180, 180, 180));
+
+    border-radius: 2px;
+}
+
+LooperWindow
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop: 0     rgb(180, 180, 180),
+        stop: 1.0   rgb(150, 150, 150));
+}
+
+PluginScanDialog
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgb(250, 250, 250),
+        stop:1 rgb(220, 220, 220));
+}
+
+PluginScanDialog QPlainTextEdit
+{
+    background: transparent;
+}
+
+PluginScanDialog #labelPluginText
+{
+    font-weight: bold;
+}
+
+PrivateServerDialog #comboBoxServers
+{
+    border: 1px solid rgba(0, 0, 0, 30);
+    padding: 1px 2px 1px 2px;
+    border-radius: 3px;
+    color: black;
+    background-color: #C5C5C5;
+}
+
+PrivateServerDialog #comboBoxServers::drop-down
+{
+    border: 0px;
+}
+
+PrivateServerDialog #comboBoxServers::down-arrow
+{
+    image:url(:/images/arrow-down.png);
+}
+
+PrivateServerDialog #comboBoxServers::down-arrow:disabled,
+PrivateServerDialog #comboBoxServers::down-arrow:hover
+{
+    image:url(:/images/arrow-down-lighter.png);
+}
+
+ChordProgressionCreationDialog QComboBox:focus
+{
+    border: 1px solid black;
+    border-radius: 2px;
+}
+
+BusyDialog
+{
+    border: 1px solid rgba(0, 0, 0, 30);
+    padding: 0px;
+    margin: 0px;
+    border-radius: 3px;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 rgb(255, 255, 255),
+            stop:0.1 rgb(240, 240, 240)
+            stop:0.9 rgba(200, 200, 200),
+            stop:1 rgba(180, 180, 180));
+}

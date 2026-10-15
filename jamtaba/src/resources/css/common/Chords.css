@@ -1,0 +1,29 @@
+/*
+    This file contain common stylesheet to chords widgets.
+*/
+
+
+/* ChordLabel is the widget used to show one chord. A chord progression is a sequence of chord labels
+--------------------------------------------------------------------------------------------------*/
+ChordLabel
+{
+    font-size: 13px;
+    border: 1px solid rgba(0, 0, 0, 30);
+    padding: 0px;
+    max-height: 17px;
+    margin: 0px;
+}
+
+ChordLabel[current="true"]
+{
+    color: black;
+    border: 1px solid rgba(0, 0, 0, 130);
+}
+
+/* chord panel buttons in top right corner */
+ChordsPanel QPushButton
+{
+    min-width: 16px;
+    min-height: 16px;
+    padding: 2px;
+}

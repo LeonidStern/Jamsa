@@ -1,0 +1,57 @@
+/* Dialogs in Flat theme
+-------------------------------------*/
+
+PluginScanDialog
+{
+    background-color: rgb(250, 250, 250);
+}
+
+LooperWindow,
+ChordProgressionCreationDialog
+{
+    background-color: rgb(160, 160, 160);
+}
+
+PluginScanDialog QPlainTextEdit
+{
+    background: transparent;
+}
+
+PluginScanDialog #labelPluginText
+{
+    font-weight: bold;
+}
+
+PrivateServerDialog #comboBoxServers
+{
+    color: rgb(80, 80, 80);
+}
+
+PrivateServerDialog #comboBoxServers:focus
+{
+    color: black;
+    border:1px solid gray;
+}
+
+BusyDialog
+{
+    border: 1px solid rgba(0, 0, 0, 30);
+    padding: 0px;
+    margin: 0px;
+    background-color: rgb(220, 220, 220);
+}
+
+PreferencesDialog QComboBox
+{
+    background-color: white;
+}
+
+ChordProgressionCreationDialog QComboBox:focus
+{
+    border: 1px solid black;
+}
+
+PreferencesDialog QComboBox QAbstractItemView
+{
+    selection-color: black;
+}

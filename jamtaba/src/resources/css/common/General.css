@@ -1,0 +1,208 @@
+/*
+    This file contain common stylesheet to all widgets.
+*/
+
+
+*{
+    font-family: "Verdana";
+    font-size: 11px;
+    outline: none;                  /* Removing rect border in selected tabs (Linux workaround) */
+}
+
+
+/* Stylesheet for buttons
+--------------------------------*/
+QPushButton
+{
+    border: 1px outset gray;
+    padding: 3px 6px 3px 6px;
+    font-size: 11px;
+    color: rgb(60, 60, 60);
+}
+
+QPushButton:focus
+{
+    outline: none;                  /* Remove the focus rect from buttons. The annoying focus appears only in VSt plugin*/
+}
+
+QPushButton:checked
+{
+    border-style: inset;
+    color: rgb(0,0,0);
+}
+
+QPushButton:disabled
+{
+    background: none;
+    color: rgba(0, 0, 0, 30);
+    border-color: rgba(0, 0, 0, 40);
+}
+
+/* Stylesheet for Scroll bars
+--------------------------------*/
+QScrollBar:vertical
+{
+    width: 12px;
+}
+
+QScrollBar:horizontal
+{
+    height: 12px;
+}
+
+
+/* QLineEdit stylesheet. This widget is used in chat text input, user name, channel name, user name dialog, etc.
+--------------------------------*/
+QLineEdit,
+#userNamePanel
+{
+    padding: 2px;
+    color: black;
+    border-radius: 1px;
+    border: 1px solid;
+}
+
+/* QPlainTextEdit stylesheet. If I remember correctly this widget is used only in black listed vst plugins.
+-----------------------------------------------------------------------------------------------------------*/
+QPlainTextEdit
+{
+    border: none;
+}
+
+
+/* QScrollArea stylesheet.
+--------------------------*/
+QScrollArea
+{
+    border: none;
+    background: transparent;        /* we are interested only in the scroll feature */
+}
+
+
+QScrollArea > QWidget > QWidget
+{
+    background: transparent;        /*removing the background in content (public rooms) widget */
+}
+
+QMenuBar::item:selected { /* hover effect for menu bar items */
+    border: 1px outset gray;
+    padding: 3px 6px 3px 6px;
+    font-size: 11px;
+}
+
+QMenuBar::item:pressed { /* 'button pressed' item style */
+
+    border: 1px inset gray;
+    background-color: rgba(0, 0, 0, 50);
+}
+
+/* fix to issue #500 */
+QMenu::item::disabled
+{
+    color: rgba(0, 0, 0, 120);
+}
+
+/* hover effect */
+QMenu::item::enabled:selected
+{
+    background-color: rgba(0, 0, 0, 30);
+}
+
+
+
+QSlider::groove:vertical
+{
+    width: 16px; /* important: use odd values to avoid a 1 pixel margin in dB meters */
+}
+
+QSlider::groove:horizontal
+{
+    height: 16px; /* important: use odd values to avoid a 1 pixel margin in dB meters */
+}
+
+QSlider::handle:vertical
+{
+    margin-left: -3px;
+    margin-right: -3px;
+    padding: 0px;
+    height: 9px;
+}
+
+PanSlider::handle:horizontal
+{
+    margin-top: -5px;
+    margin-bottom: -5px;
+    width: 9px;
+}
+
+AudioSlider::handle:horizontal
+{
+    margin-top: -2px;
+    margin-bottom: -2px;
+    padding: 0px;
+    width: 8px;
+}
+
+AudioSlider
+{
+    /* changing Audio Peak meter custom CSS properties */
+    qproperty-rmsColor: rgb(90, 90, 90);
+    qproperty-peakStartColor: green;
+    qproperty-peakEndColor: red;
+    qproperty-maxPeakColor: rgb(90, 90, 90);
+
+    qproperty-drawSegments: true; /* By default all themes will draw segments in peak meters */
+
+    qproperty-dBMarksColor: black;
+
+    background-color: transparent;
+    border: none;
+    font-size: 8px;
+}
+
+AudioSlider:horizontal
+{
+    min-height: 20px;
+}
+
+AudioSlider:vertical
+{
+    /*min-width: 22px;*/  /* important: this minimum width is setted programatically in AudioSlider::setShowMeterOnly*/
+}
+
+PanSlider::groove:horizontal
+{
+    height: 2px;
+}
+
+PanSlider::groove:vertical
+{
+    width: 2px;
+}
+
+#chatTabWidget QTabBar::tab:!selected
+{
+    background-color: rgba(255, 255, 255, 20);
+    border-left: 1px solid rgba(0, 0, 0, 30);
+    color: rgba(0, 0, 0, 120);
+}
+
+QTabBar::close-button {
+    image: url(':/images/discard.png');
+}
+
+QTabBar::close-button:hover {
+    background: rgba(255, 255, 255, 30);
+}
+
+WavePeakPanel
+{
+    qproperty-peaksColor: red;
+}
+
+ChatPanel QTreeWidget
+{
+    background-color: rgba(255, 255, 255, 5);
+    selection-color: black;
+    selection-background-color: rgba(255, 255, 255, 5);
+}

@@ -1,0 +1,34 @@
+
+#midiToolsButton
+{
+    background-color: #29715F;
+    border: 1px outset #1F5446;
+    color: #001E00;
+}
+
+TrackGroupView
+{
+    background-color: none;
+}
+
+BoostSpinBox QToolButton:enabled:hover
+{
+    background-color: rgba(0, 255, 255, 40);
+}
+
+/* disabled is used as checked, this need be improved */
+BoostSpinBox QToolButton:disabled
+{
+    background-color: rgba(0, 255, 255, 90);
+}
+
+QLabel#labelPanL,
+QLabel#labelPanR
+{
+    color: rgb(55, 89, 89);
+}
+
+TrackGroupView[unlighted="true"] #topPanel
+{
+    background-color: rgb(15, 29, 30);
+}

@@ -1,0 +1,168 @@
+
+
+BaseTrackView FxPanelItem             /* plugin slot */
+{
+    background-color: qlineargradient(x1:0, y1:0.6, x2:0, y2:1, stop:0 rgba(0, 0, 0, 30), stop:1 rgba(0, 0, 0, 50));
+    border-radius: 2px;
+    border: 1px outset rgb(100, 100, 100)
+}
+
+FxPanelItem[containPlugin="false"]
+{
+    background-image: url(':/images/arrow-down-lighter.png');
+    background-repeat: none;
+    background-position: right;
+}
+
+FxPanelItem[containPlugin="true"]
+{
+    background-image: none;
+}
+
+FxPanelItem QLabel                              /* plugin name label */
+{
+    qproperty-alignment: AlignLeft;
+    color: #D3D3D3;
+    margin: 0px;
+}
+
+FxPanelItem:hover
+{
+    background-color: qlineargradient(x1:0, y1:0.4, x2:0, y2:1, stop:0 rgba(0, 0, 0, 50), stop:1 rgba(0, 0, 0, 70));
+}
+
+FxPanelItem QPushButton                         /* plugin bypass button */
+{
+     max-width: 10px;
+     max-height: 10px;
+     margin: 0px;
+     padding: 0px;
+     border-radius: 2px;
+     border: 1px solid rgba(0, 0, 0, 80);
+     background-color: qlineargradient(x1:0, y1:0, x2:0, y2:0.95, stop:0 rgba(0, 0, 0, 120), stop:1 rgb(0, 0, 0, 50));
+}
+
+FxPanelItem QPushButton:hover
+{
+    border: 1px solid rgba(0, 0, 0);
+}
+
+FxPanelItem QPushButton:checked
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:0.95, stop:0 rgb(90, 255, 62), stop:1 rgb(0, 175, 0));
+}
+
+
+
+
+
+#xmitButton
+{
+    border-radius: 2px;
+}
+
+#xmitButton:checked
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:0.95, stop:0 rgba(90, 255, 62, 140), stop:1 rgb(0, 175, 0, 140));
+    border-color: rgb(50, 50, 50);
+}
+
+#xmitButton[preparing="true"],
+#voiceChatButton:checked[blinking="true"]
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:0.9, stop:0 rgb(255,255,0), stop:1 rgb(204,204,0));
+    color: rgb(20, 20, 20);
+}
+
+#voiceChatButton:checked[blinking="true"]
+{
+     border: 1px outset rgb(50, 50, 50);
+}
+
+#xmitButton:!checked
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:0.9, stop:0 rgba(255, 90, 62, 140), stop:1 rgba(175, 0, 0, 140));
+    border-color: rgb(50,50,50);
+    color: rgb(20, 20, 20);
+}
+
+#xmitButton:hover
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:0.95, stop:0 rgba(90, 255, 62, 170), stop:1 rgb(0, 175, 0, 170));
+}
+
+#xmitButton:hover:!checked
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:0.9, stop:0 rgba(255, 90, 62, 180), stop:1 rgba(175, 0, 0, 180));
+
+}
+
+#voiceChatButton:!checked
+{
+    background-color: qlineargradient(x1:0, y1:0.6, x2:0, y2:1, stop:0 rgba(0, 0, 0, 40), stop:1 rgba(0, 0, 0, 60));
+    border-radius: 2px;
+    border: 1px outset rgb(50, 50, 50);
+}
+
+TrackGroupView[unlighted="true"] #voiceChatButton:checked[blinking="true"] /* Voice chat button barely blinking when not transmitting */
+
+{
+    background-color: qlineargradient(x1:0, y1:0.6, x2:0, y2:1, stop:0 rgba(0, 0, 0, 30), stop:1 rgba(0, 0, 0, 50));
+    border-radius: 2px;
+    border: 1px outset rgb(50, 50, 50);
+}
+
+#voiceChatButton:hover
+{
+    background-color: qlineargradient(x1:0, y1:0.4, x2:0, y2:1, stop:0 rgba(100, 100, 100, 20), stop:1 rgba(100, 100, 100, 40));
+}
+
+LocalTrackView[highlighted="true"]
+{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgb(230, 230, 230), stop:1 rgb(140, 140, 140));
+}
+
+LocalTrackView #inputPanel          /* input selection */
+{
+    background-color: qlineargradient(x1:0, y1:0.6, x2:0, y2:1,
+    stop:0 rgba(0, 0, 0, 60),
+    stop:1 rgba(0, 0, 0, 90));
+    border-radius: 2px;
+}
+
+LocalTrackView #inputPanel:hover
+{
+    background-color: qlineargradient(x1:0, y1:0.4, x2:0, y2:1, stop:0 rgba(0, 0, 0, 20), stop:1 rgba(0, 0, 0, 40));
+}
+
+LocalTrackView #midiPeakMeter
+{
+    border-radius: 1px;
+}
+
+LocalTrackView[unlighted="false"] #buttonLooper:disabled
+{
+    border: none;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 white,
+        stop:0.2 rgba(255, 255, 255, 180),
+        stop:0.85 rgba(255, 255, 255, 180),
+        stop:1 rgba(255,255, 255, 40));
+}
+
+LocalTrackView[unlighted="true"] #buttonLooper:disabled
+{
+    background-color: rgba(0, 0, 0, 90);
+    border: none;
+}
+
+LocalTrackView[unlighted="true"] #buttonBoost:!checked
+{
+    background-color: rgba(0, 0, 0, 30);
+    border: none;
+}
+
+LocalTrackGroupView #groupNameField
+{
+    font-size: 10px;
+}

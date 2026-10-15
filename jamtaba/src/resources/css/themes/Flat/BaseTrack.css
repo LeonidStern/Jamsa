@@ -1,0 +1,162 @@
+/* Stylesheet for BaseTrack - Flat theme */
+
+
+/* Track buttons
+--------------------------------*/
+
+#soloButton,
+#muteButton,
+BoostSpinBox
+{
+    font-size: 9px;
+    border-color: rgb(110,110,110);
+    /*padding: 2px;*/
+    color: rgb(50,50,50);
+}
+
+#soloButton,
+#muteButton,
+BoostSpinBox
+{
+    background: rgb(235, 235, 235);
+}
+
+BoostSpinBox
+{
+    border-style: outset;
+    border-width: 1px;
+    /*max-width: 16px;*/
+}
+
+QPushButton#buttonStereoInversion:checked
+{
+    background-color: rgb(200, 200, 200);
+    color: rgba(0, 0, 0, 160);
+    border-radius: 0px;
+}
+
+#muteButton:hover
+{
+    color: black;
+}
+
+
+/* button colors when the track is NOT xmiting */
+BaseTrackView[unlighted="true"] #soloButton,
+BaseTrackView[unlighted="true"] #muteButton,
+BaseTrackView[unlighted="true"] QPushButton#buttonStereoInversion,
+BaseTrackView[unlighted="true"] BoostSpinBox
+{
+    background-color: rgba(0, 0, 0, 30);
+    border: none;
+}
+
+BaseTrackView[unlighted="true"] QPushButton#buttonStereoInversion:hover:checked
+{
+    background-color: rgb(200, 200, 200);
+}
+
+BaseTrackView[unlighted="true"] #soloButton:checked
+{
+    color: white;
+}
+
+#soloButton:checked
+{
+    background-color: rgb(90, 255, 62);
+    color: black;
+}
+
+#soloButton:hover:checked
+{
+    background-color: rgb(110, 255, 80);
+    border-color: rgb(45, 45, 45);
+}
+
+#muteButton:checked
+{
+    background-color: rgb(255, 0, 0);
+    color: white;
+
+}
+
+#muteButton:hover:checked
+{
+    background-color: rgb(255, 40, 40);
+    color: lightgray;
+    border-color: rgb(45, 45, 45);
+}
+
+BaseTrackView[unlighted="true"] #buttonStereoInversion:hover:checked
+{
+    background-color: rgba(0, 0, 0, 50);
+}
+
+BaseTrackView
+{
+    background: none;
+
+    border: none; /*1px solid rgb(61, 61, 61);*/
+    border-right: 1px solid rgba(0, 0, 0, 20);
+    border-left: 1px solid rgba(0, 0, 0, 20);
+    font-size: 8px;
+}
+
+
+
+/* Setting colors when the track is 'not transmiting'
+-----------------------------------------------------*/
+BaseTrackView[unlighted="true"] #panSlider::handle,         /* pan slider handle */
+BaseTrackView[unlighted="true"] QSlider::handle:vertical,    /* track fader handle */
+#panSlider::handle:disabled,
+QSlider::handle:vertical:disabled
+{
+    background: rgba(180, 180, 180, 200);
+}
+
+BaseTrackView[unlighted="true"],                            /* the track */
+TrackGroupView[unlighted="true"] > #topPanel                /* the track group top panel: used to show user name */
+{
+    background: rgba(255, 255, 255, 40);
+}
+/* -----------------------------------------*/
+
+
+#panSlider::handle
+{
+    width: 7px;
+}
+
+/* TrackGroup - used as container for subchannels
+---------------------------------------------------*/
+
+TrackGroupView
+{
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 rgb(240, 240, 240),
+            stop:1 rgb(160, 160, 160));
+}
+
+TrackGroupView #topPanel                                /* topPanel is used to show channel name */
+{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+    stop:0 rgb(253, 253, 253),
+    stop:1 rgb(240, 240, 240));
+
+    border-top-left-radius: 1px;
+    border-top-right-radius: 1px;
+}
+
+TrackGroupView #groupNameField                          /* the text field used to input channel name */
+{
+    margin-bottom: 0px;
+    margin-top: 0px;
+    font-size: 11px;
+    font-weight: normal;
+}
+
+TrackGroupView[unlighted="true"] #groupNameField        /* channel name text field when not xmiting */
+{
+    background: rgba(255, 255, 255, 20);
+    border: none;
+}

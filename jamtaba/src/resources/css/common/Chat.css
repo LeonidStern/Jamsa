@@ -1,0 +1,103 @@
+/*
+    This file contain common stylesheet to chat widgets: chat messages, chat panel, etc.
+*/
+
+
+/* Buttons used to auto translate and clear all chat messages
+--------------------------------------------------------------*/
+ChatPanel QPushButton:disabled
+{
+    border: none;
+    background: none;
+}
+
+#buttonAutoTranslate,
+#buttonClear,
+#buttonOnOff
+{
+    min-height: 20px;
+    max-height: 20px;
+    max-width: 20px;
+    padding: 0px;
+    margin: 0px;
+}
+
+#buttonClear
+{
+    background-image: url(:/images/broom.png);
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+#buttonAutoTranslate
+{
+    background-image: url(:/images/translate.png);
+    background-repeat: no-repeat;
+    background-position: center;
+    padding-left: 2px;
+    padding-right: 2px;
+}
+
+#topicLabel
+{
+    background-color: rgba(255, 255, 255, 20);
+    padding: 3px;
+}
+
+ChatPanel #toolButtonPlus,
+ChatPanel #toolButtonMinus
+{
+    border: none;
+}
+
+/* Stylesheet used in chat messages widget (ChatMessagePanel).
+------------------------------------------ */
+
+ChatMessagePanel #labelUserName /* chat message author */
+{
+    font-size: 10px;
+    font-weight: bold;
+    margin: 0px;
+}
+
+ChatMessagePanel #translateButton,
+ChatMessagePanel #blockButton
+{
+    background-color: transparent;
+}
+
+ChatMessagePanel #translateButton, /* the small T (translate) button in right side of chat messages */
+ChatMessagePanel #blockButton      /* the small B (block user in chat) button */
+{
+    height: 6px;
+    min-height: 6px;
+    padding: 2px;
+    font-size: 8px;
+    border: 1px solid rgba(0, 0, 0, 70);
+}
+
+ChatMessagePanel #labelMessage
+{
+    selection-background-color: rgb(51, 153, 255);
+    selection-color: white;
+    padding: 0px;
+    margin: 0px;
+    margin-top: -3px;
+}
+
+/* emoji buttons */
+EmojiWidget QToolButton
+{
+    background-color: rgba(255, 255, 255, 45);
+    border: none;
+    margin: 1px;
+}
+
+/* category buttons */
+EmojiWidget > QToolButton
+{
+    background-color: rgba(255, 255, 255, 30);
+    border: none;
+}
+
+

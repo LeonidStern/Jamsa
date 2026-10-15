@@ -1,0 +1,220 @@
+
+NinjamTrackView[horizontal="true"] QPushButton#lowCutButton:hover:checked,
+NinjamTrackView[horizontal="true"] QPushButton#receiveButton:hover:checked,
+NinjamTrackView QPushButton#lowCutButton:hover:checked,
+NinjamTrackView QPushButton#receiveButton:hover:checked
+{
+    background-color: rgb(200, 200, 200);
+    border-color: transparent;
+}
+
+NinjamTrackView[horizontal="true"]
+{
+    background: rgba(0, 0, 0, 5);
+}
+
+NinjamTrackView[horizontal="true"][unlighted="true"]
+{
+    background: rgba(255, 255, 255, 40);
+}
+
+NinjamTrackView[unlighted="true"][horizontal="true"] QSlider::handle:horizontal
+ {
+     background: rgba(180, 180, 180, 200);
+ }
+
+/* Tool buttons: track vertical/horizontal/grid, wide/narrow and server licence buttons
+------------------------------------------------------------------------------------*/
+
+#buttonVerticalLayout,
+#buttonHorizontalLayout,
+#buttonGridLayout,
+#wide,
+#narrow,
+#licenceButton,
+#chordsButton
+{
+    border: 1px solid rgb(150, 150, 150);
+    background-color: rgba(255, 255, 255, 10);
+}
+
+#buttonVerticalLayout:hover,
+#buttonHorizontalLayout:hover,
+#buttonGridLayout:hover,
+#wide:hover,
+#narrow:hover,
+#licenceButton:hover,
+#chordsButton:hover
+{
+    border: 1px solid rgba(0, 0, 0, 50);
+    background-color: rgba(255, 255, 255, 80);
+}
+
+#buttonVerticalLayout:checked,
+#buttonHorizontalLayout:checked,
+#buttonGridLayout:checked,
+#wide:checked,
+#narrow:checked
+{
+    background-color: rgba(0, 0, 0, 30);
+    border: 1px solid rgb(130, 130, 130);
+}
+
+
+NinjamRoomWindow QToolButton#buttonVerticalLayout:!checked {
+    border-right-color: none;
+}
+
+NinjamRoomWindow QToolButton#buttonHorizontalLayout:!checked {
+    border-left-color: none;
+    border-right-color: none;
+}
+
+NinjamRoomWindow QToolButton#buttonGridLayout:!checked {
+    border-left-color: none;
+}
+
+
+/* Ninjam tracks
+-----------------------------------------*/
+
+NinjamTrackView[unlighted="true"]           /* user is not xmiting */
+{
+    background: rgba(0, 0, 0, 20);
+}
+
+NinjamTrackView #lowCutButton:hover
+{
+    color: black;
+}
+
+NinjamTrackView #lowCutButton:!checked
+{
+    background-color: rgb(235, 235, 235);
+}
+
+NinjamTrackView #lowCutButton:checked,
+NinjamTrackView #receiveButton:checked
+{
+    background-color: rgb(205, 205, 205);
+}
+
+NinjamTrackView[unlighted="true"] #lowCutButton,
+NinjamTrackView[unlighted="true"] #receiveButton
+{
+    background-color: rgba(0, 0, 0, 30);
+    border: none;
+}
+
+NinjamTrackView #receiveButton:hover:!checked
+{
+    background-color: rgb(255, 40, 40);
+    border-color: rgba(0, 0, 0, 90);
+}
+
+NinjamTrackView  #channelName               /* channel name for ninjamers */
+{
+    border: none;
+    background-color: rgba(0, 0, 0, 6);
+    padding-top: 3px;
+    padding-bottom: 3px;
+    font-size: 10px;
+    color: rgba(0, 0, 0, 160);
+    max-width: 130px;
+}
+
+NinjamTrackGroupView > #topPanel                /* the track group top panel: used to show user name */
+ {
+     background: rgba(255, 255, 255, 180);
+ }
+
+
+/* NinjamPanel is the widget where the ninjam controls are showed (in bottom when we are connected in a server)
+----------------------------------------------------------------------------------------------------------------*/
+NinjamPanel
+{
+    background-color: rgba(0, 0, 0, 20);
+    border: 1px solid rgb(190, 190, 190);
+}
+
+MetronomePanel #soloButton,
+MetronomePanel #muteButton
+{
+    background-color: white;
+}
+
+NinjamPanel QComboBox
+{
+    background-color: rgba(0, 0, 0, 30);
+}
+
+#comboBpi-topLevel,
+#comboBpm-topLevel
+{
+    border: none;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop: 0.0 rgb(182, 182, 182),
+        stop: 0.1 rgb(224, 224, 224),
+        stop: 0.45 rgb(224, 224, 224),
+        stop: 0.6 rgb(182, 182, 182),
+        stop: 1.0 rgb(182, 182, 182));
+}
+
+
+NinjamTrackGroupView                        /* ninjam track group. If a ninjamer is using 2 channels they will appear grouped */
+{
+    border: 1px solid rgb(130, 130, 130);
+    background-color: rgb(200, 200, 200);  /* setting the background, necessary to show a nice video preview bg color */
+}
+
+IntervalProgressWindow                      /* The floating window showing the metronome/interval progress */
+{
+    background-color: rgb(206, 206, 206);
+}
+
+LooperWindow #buttonPlay:hover:checked
+{
+    background-color: rgb(0, 215, 0);
+}
+
+LooperWindow #buttonRec:hover:checked
+{
+    background-color: rgb(255, 40, 40);
+}
+
+
+LooperWindow #buttonRec[blinking="true"]:checked
+{
+    background-color: rgb(250, 250, 250);
+}
+
+LooperWindow QLabel,
+LooperWindow QGroupBox
+{
+    color: rgba(0, 0, 0, 140);;
+}
+
+LooperWindow QGroupBox
+{
+    border: 1px solid rgba(0, 0, 0, 30);
+}
+
+#widgetBottom QComboBox
+{
+    background-color: white;
+}
+
+#widgetBottom QComboBox QAbstractItemView
+{
+    selection-color: black;
+}
+
+#instrumentsMenu QToolButton
+{
+    border: none;
+}
+
+QWidget#instrumentsMenu QToolButton:hover
+{
+    border: 1px solid gray;
+}

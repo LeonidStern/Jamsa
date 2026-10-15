@@ -1,0 +1,110 @@
+/*
+    This file contain common stylesheet to all tracks: local tracks, ninjam tracks and track groups.
+*/
+
+/* Basic boost (-12, 0, +12) button stylesheet:
+--------------------------------------*/
+BoostSpinBox
+{
+    padding: 0px;
+    margin: 0px;
+}
+
+BoostSpinBox > QToolButton
+{
+    border: transparent;
+    margin: 0px;
+    padding: 1px;
+
+    max-width: 12px;
+    max-height: 12px;
+}
+
+NinjamTrackView[horizontal="false"] BoostSpinBox,
+LocalTrackView BoostSpinBox
+{
+    min-width: 18px;
+}
+
+NinjamTrackView[horizontal="true"] BoostSpinBox
+{
+    min-height: 18px;
+}
+
+#soloButton,
+#muteButton,
+#buttonStereoInversion,
+#buttonLooper,
+#lowCutButton,
+#receiveButton
+{
+    padding: 1px;
+    min-width: 16px;
+    min-height: 16px;
+    max-height: 16px;
+    max-width: 16px;
+    width: 16px;
+    height: 16px;
+}
+
+#soloButton,
+#muteButton
+{
+    font-size: 9px;
+    border-color: rgb(110,110,110);
+    color: rgb(50,50,50);
+}
+
+#soloButton:disabled,
+#muteButton:disabled
+{
+    color: rgba(0, 0, 0, 30);
+    border-color: rgba(0, 0, 0, 40);
+}
+
+/* button stereo inversion */
+QPushButton#buttonStereoInversion
+{
+    background-repeat: none;
+    background-position: center center;
+    background-color: rgb(235, 235, 235);
+}
+
+LocalTrackView[unlighted="true"] #buttonStereoInversion
+{
+    background-color: rgba(0, 0, 0, 30);
+}
+
+
+/* Pan slider and LR labels
+----------------------------*/
+#panSlider
+{
+    margin-left: 3px;
+    margin-right: 3px;
+}
+
+#labelPanR,
+#labelPanL
+{
+    color: rgba(0, 0, 0, 160);
+    font-size: 9px;
+}
+
+BaseMeter
+{
+    min-width: 15px;
+    min-height: 15px;
+    background-color: rgba(0, 0, 0, 20);
+}
+
+/* TrackGroupView is the 'container' for tracks/subchannels in local tracks or ninjam tracks.
+----------------------------------------------------------------------------------------------*/
+
+TrackGroupView
+{
+    border: none;
+    background-color: none;
+}
+
+
