@@ -4,7 +4,7 @@ CXXFLAGS = -O2 -g -Wall -Wno-reorder
 CLIENT_SRC = ../njclient.cpp ../mpb.cpp ../netmsg.cpp ../../WDL/jnetlib/asyncdns.cpp ../../WDL/jnetlib/connection.cpp \
   ../../WDL/jnetlib/listen.cpp ../../WDL/jnetlib/util.cpp ../../WDL/rng.cpp ../../WDL/sha.cpp ../../WDL/resample.cpp
 
-default: opus_codec_test flac_codec_test njclient_e2e
+default: opus_codec_test flac_codec_test njclient_e2e njclient_e2e_vorbis
 
 opus_codec_test: opus_codec_test.cpp ../opusencdec.h ../../WDL/resample.cpp
 	$(CXX) $(CXXFLAGS) -o $@ opus_codec_test.cpp ../../WDL/resample.cpp -lopus -logg -lm
@@ -16,5 +16,9 @@ flac_codec_test: flac_codec_test.cpp ../flacencdec.h
 njclient_e2e: njclient_e2e.cpp $(CLIENT_SRC) ../opusencdec.h ../flacencdec.h ../njclient.h
 	$(CXX) $(CXXFLAGS) -pthread -DNINJAM_OPUS -DNINJAM_FLAC -o $@ njclient_e2e.cpp $(CLIENT_SRC) -lopus -lFLAC -lvorbisenc -lvorbis -logg -lm
 
+# the same with Vorbis only, like clients from before Opus (used by ../vst3/tests/test_plugin_e2e.py)
+njclient_e2e_vorbis: njclient_e2e.cpp $(CLIENT_SRC) ../njclient.h
+	$(CXX) $(CXXFLAGS) -pthread -o $@ njclient_e2e.cpp $(CLIENT_SRC) -lvorbisenc -lvorbis -logg -lm
+
 clean:
-	-rm -f opus_codec_test flac_codec_test njclient_e2e
+	-rm -f opus_codec_test flac_codec_test njclient_e2e njclient_e2e_vorbis
