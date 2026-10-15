@@ -34,7 +34,9 @@
 
 #include "../WDL/win32_utf8.h"
 
+#define MAKE_NJ_FOURCC(A,B,C,D) ((A) | ((B)<<8) | ((C)<<16) | ((D)<<24))
 #define NJ_ENCODER_FMT_TYPE MAKE_NJ_FOURCC('O','G','G','v')
+#define NJ_OPUS_FMT_TYPE MAKE_NJ_FOURCC('O','P','U','S')
 
 #ifdef REANINJAM
 #define WDL_VORBIS_INTERFACE_ONLY
@@ -82,11 +84,32 @@
   #define CreateNJDecoder() ((I_NJDecoder *)new VorbisDecoder)
 #endif
 
+// NINJAM_OPUS builds in Opus (needs libopus): the client then tells the server it can
+// decode Opus, and sends Opus while the server says everyone in the room can decode it
+#ifdef NINJAM_OPUS
+#include "opusencdec.h"
+#endif
+
+static I_NJEncoder *CreateEncoderForType(unsigned int fourcc, int srate, int nch, int bitrate, int serno)
+{
+#ifdef NINJAM_OPUS
+  if (fourcc == NJ_OPUS_FMT_TYPE) return new NJOpusEncoder(srate,nch,bitrate,serno);
+#endif
+  return CreateNJEncoder(srate,nch,bitrate,serno);
+}
+
+static I_NJDecoder *CreateDecoderForType(unsigned int fourcc)
+{
+#ifdef NINJAM_OPUS
+  if (fourcc == NJ_OPUS_FMT_TYPE) return new NJOpusDecoder;
+#endif
+  return CreateNJDecoder();
+}
+
 
 #define SESSION_CHUNK_SIZE 2.0
 #define LL_CHUNK_SIZE 2.0
 
-#define MAKE_NJ_FOURCC(A,B,C,D) ((A) | ((B)<<8) | ((C)<<16) | ((D)<<24))
 
 class DecodeMediaBuffer
 {
@@ -436,6 +459,7 @@ public:
 
 #ifndef NJCLIENT_NO_XMIT_SUPPORT
   I_NJEncoder  *m_enc;
+  unsigned int m_enc_fourcc; // codec of m_enc, chosen at the start of each interval
   int m_enc_bitrate_used;
   int m_enc_nch_used;
   Net_Message *m_enc_header_needsend;
@@ -580,6 +604,8 @@ NJClient::NJClient()
 #endif
 
   config_autosubscribe=1;
+  config_send_opus=true;
+  m_codec_mask=0;
   config_savelocalaudio=0;
   config_metronome=0.5f;
   config_metronome_pan=0.0f;
@@ -902,6 +928,7 @@ void NJClient::Connect(const char *host, const char *user, const char *pass)
   m_netcon->attach(c);
 
   m_status=0;
+  m_codec_mask=0; // Vorbis until the server says otherwise
 }
 
 int NJClient::GetStatus()
@@ -1060,6 +1087,10 @@ int NJClient::Run() // nonzero if sleep ok
               }
               m_netcon->SetKeepAlive(m_connection_keepalive);
 
+#ifdef NINJAM_OPUS
+              repl.client_caps|=CLIENT_CAP_CODEC_OPUS; // we can decode Opus
+#endif
+
               WDL_SHA1 tmp;
               tmp.add(m_user.Get(),strlen(m_user.Get()));
               tmp.add(":",1);
@@ -1107,6 +1138,12 @@ int NJClient::Run() // nonzero if sleep ok
                 m_netcon->Kill();
               }
             }
+          }
+        break;
+        case MESSAGE_SERVER_CODEC_MASK:
+          {
+            mpb_server_codec_mask cm;
+            if (!cm.parse(msg)) m_codec_mask=cm.codecs;
           }
         break;
         case MESSAGE_SERVER_CONFIG_CHANGE_NOTIFY:
@@ -1499,9 +1536,25 @@ int NJClient::Run() // nonzero if sleep ok
       else if (p)
       {
         // encode data
+        if (lc->m_need_header)
+        {
+          // the codec can only change at the start of an interval
+          unsigned int fourcc=NJ_ENCODER_FMT_TYPE;
+#ifdef NINJAM_OPUS
+          if (config_send_opus && (m_codec_mask & CLIENT_CAP_CODEC_OPUS)) fourcc=NJ_OPUS_FMT_TYPE;
+#endif
+          if (lc->m_enc && lc->m_enc_fourcc != fourcc)
+          {
+            delete lc->m_enc;
+            lc->m_enc=0;
+          }
+          lc->m_enc_fourcc=fourcc;
+        }
         if (!lc->m_enc)
         {
-          lc->m_enc = CreateNJEncoder(m_srate,lc->m_enc_nch_used=block_nch,lc->m_enc_bitrate_used = lc->bitrate+(block_nch>1?lc->bitrate/3:0),WDL_RNG_int32());
+          // Vorbis gets a third more for stereo; Opus codes stereo efficiently and uses the setting as is
+          const int br = lc->m_enc_fourcc == NJ_OPUS_FMT_TYPE ? lc->bitrate : lc->bitrate+(block_nch>1?lc->bitrate/3:0);
+          lc->m_enc = CreateEncoderForType(lc->m_enc_fourcc,m_srate,lc->m_enc_nch_used=block_nch,lc->m_enc_bitrate_used = br,WDL_RNG_int32());
         }
 
         if (lc->m_need_header)
@@ -1514,7 +1567,7 @@ int NJClient::Run() // nonzero if sleep ok
             if (!(lc->flags&4)) writeLog("local %s %d%s\n",guidstr,lc->channel_idx,(lc->flags&2)?"v":"");
             if (config_savelocalaudio>0)
             {
-              lc->m_curwritefile.Open(this,NJ_ENCODER_FMT_TYPE,false);
+              lc->m_curwritefile.Open(this,lc->m_enc_fourcc,false);
               if (lc->m_wavewritefile) delete lc->m_wavewritefile;
               lc->m_wavewritefile=0;
               if (config_savelocalaudio>1)
@@ -1538,7 +1591,7 @@ int NJClient::Run() // nonzero if sleep ok
             mpb_client_upload_interval_begin cuib;
             cuib.chidx=lc->channel_idx;
             memcpy(cuib.guid,lc->m_curwritefile.guid,sizeof(cuib.guid));
-            cuib.fourcc=NJ_ENCODER_FMT_TYPE;
+            cuib.fourcc=lc->m_enc_fourcc;
             cuib.estsize=0;
             delete lc->m_enc_header_needsend;
             lc->m_enc_header_needsend=cuib.build();
@@ -1712,9 +1765,14 @@ DecodeState *NJClient::start_decode(unsigned char *guid, int chanflags, unsigned
   memcpy(newstate->guid,guid,sizeof(newstate->guid));
 
 
-  // todo: make plug-in system to allow encoders to add types allowed
-  // todo: with a preference for 'fourcc' if specified
-  unsigned int types[]={MAKE_NJ_FOURCC('O','G','G','v')}; // only types we understand
+  // types we understand
+  unsigned int types[]={
+    NJ_ENCODER_FMT_TYPE,
+#ifdef NINJAM_OPUS
+    NJ_OPUS_FMT_TYPE,
+#endif
+  };
+  unsigned int found_type = fourcc;
 
   if (!newstate->decode_buf)
   {
@@ -1731,12 +1789,13 @@ DecodeState *NJClient::start_decode(unsigned char *guid, int chanflags, unsigned
       type_to_string(types[x],tmp);
       s.Append(tmp);
       newstate->decode_fp=fopenUTF8(s.Get(),"rb");
+      if (newstate->decode_fp) found_type=types[x];
     }
   }
 
   if (newstate->decode_fp||newstate->decode_buf)
   {
-    newstate->decode_codec= CreateNJDecoder();
+    newstate->decode_codec= CreateDecoderForType(found_type);
     // run some decoding
 
     if (newstate->decode_codec)
@@ -3070,7 +3129,7 @@ next_again:
 
 
 
-RemoteDownload::RemoteDownload() : chidx(-1), playtime(0), m_fp(0), m_decbuf(0)
+RemoteDownload::RemoteDownload() : chidx(-1), playtime(0), m_fourcc(0), m_fp(0), m_decbuf(0)
 {
   memset(&guid,0,sizeof(guid));
   time(&last_time);
@@ -3099,6 +3158,7 @@ void RemoteDownload::Open(NJClient *parent, unsigned int fourcc, bool forceToDis
   m_parent=parent;
   Close();
   m_fp=0;
+  m_fourcc=fourcc;
   m_decbuf=new DecodeMediaBuffer;
   if (!m_decbuf || !parent || parent->config_savelocalaudio>0 || forceToDisk)
   {
@@ -3112,7 +3172,6 @@ void RemoteDownload::Open(NJClient *parent, unsigned int fourcc, bool forceToDis
     s.Append(".");
     s.Append(buf);
 
-    m_fourcc=fourcc;
     m_fp=fopenUTF8(s.Get(),"wb");
   }
 }
@@ -3183,6 +3242,7 @@ Local_Channel::Local_Channel() : channel_idx(0), src_channel(0), volume(1.0f), p
                 muted(false), solo(false), broadcasting(false),
 #ifndef NJCLIENT_NO_XMIT_SUPPORT
                 m_enc(NULL),
+                m_enc_fourcc(NJ_ENCODER_FMT_TYPE),
                 m_enc_bitrate_used(0),
                 m_enc_nch_used(0),
                 m_enc_header_needsend(NULL),

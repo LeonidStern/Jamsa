@@ -39,6 +39,13 @@ else
   LFLAGS += -lvorbis -lvorbisenc -logg
 endif
 
+# OPUS=1 builds in Opus support (needs libopus): sends Opus when everyone in the room can decode it
+ifdef OPUS
+  CFLAGS += -DNINJAM_OPUS
+  OBJS += ../../WDL/resample.o
+  LFLAGS += -lopus
+endif
+
 CXXFLAGS = $(CFLAGS)
 
 default: cninjam

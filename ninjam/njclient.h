@@ -120,6 +120,7 @@ public:
   float config_mastervolume,config_masterpan; // master volume
   bool  config_mastermute;
   int   config_debug_level;
+  bool  config_send_opus; // in builds with NINJAM_OPUS: send Opus when everyone in the room can decode it
   int   config_play_prebuffer; // -1 means play instantly, 0 means play when full file is there, otherwise refers to how many
                                // bytes of compressed source to have before play. the default value is 4096.
   int config_remote_autochan; // 1=auto-assign by channel, 2=auto-assign by user
@@ -232,6 +233,7 @@ protected:
   int m_status;
   int m_max_localch;
   int m_connection_keepalive;
+  int m_codec_mask; // codecs (CLIENT_CAP_CODEC_*) the server says everyone in the room can decode
   FILE *m_logFile;
 #ifndef NJCLIENT_NO_XMIT_SUPPORT
   FILE *m_oggWrite;

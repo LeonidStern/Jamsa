@@ -31,3 +31,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: make -C ninjam/server -j"$(sysctl -n hw.ncpu)" MAC=1
+
+  client-opus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install codec libraries
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev libogg-dev libvorbis-dev
+      - name: Build the server and the client tests
+        run: |
+          make -C ninjam/server -j"$(nproc)"
+          make -C ninjam/tests -j"$(nproc)"
+      - name: Opus encoder/decoder round trip
+        run: ninjam/tests/opus_codec_test
+      - name: Two clients through the server
+        working-directory: ninjam/tests
+        env:
+          NINJAMSRV: ../server/ninjamsrv
+        run: python3 -m unittest -v test_opus_e2e
