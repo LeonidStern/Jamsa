@@ -11,8 +11,7 @@ const quint16 PrivateServerWindow::PREFERRED_PORT = 2049;
 
 PrivateServerWindow::PrivateServerWindow(QWidget *parent) :
     QDialog(parent),
-    ui(new Ui::PrivateServerWindow),
-    networkUsageTimerID(0)
+    ui(new Ui::PrivateServerWindow)
 {
     ui->setupUi(this);
     
@@ -50,8 +49,11 @@ quint16 PrivateServerWindow::getServerPort() const
 
 QString PrivateServerWindow::getServerExternalIP() const
 {
-    // the external IP was discovered with UPnP, which was removed
-    return QString();
+    if (!serverIsRunning())
+        return QString();
+
+    // "ip:port", known once the router forwards the port
+    return server->getPublicAddress().section(':', 0, 0);
 }
 
 PrivateServerWindow::~PrivateServerWindow()
@@ -73,6 +75,10 @@ void PrivateServerWindow::setupServer()
     connect(server.data(), &PrivateServer::errorStartingServer, [=](const QString &errorMessage){
         appendTextInLog(errorMessage);
     });
+
+    connect(server.data(), &PrivateServer::serverMessage, this, &PrivateServerWindow::appendTextInLog);
+
+    connect(server.data(), &PrivateServer::publicAddressChanged, this, &PrivateServerWindow::showPublicAddress);
 
     connect(server.data(), &PrivateServer::incommingConnection, [=](const QString &ip){
         appendTextInLog(tr("Incomming connection from %1").arg(ip));
@@ -120,17 +126,10 @@ void PrivateServerWindow::serverStarted()
 
     ui->listWidget->clear();
 
-    if (networkUsageTimerID)
-        killTimer(networkUsageTimerID);
-
-    networkUsageTimerID = startTimer(3000);
-
-    // the external IP was discovered with UPnP, which was removed, so only the port is shown
     ui->labelPortValue->setText(QString::number(server->getPort()));
 
     setServerDetailsVisibility(true);
-    ui->labelIP->setVisible(false);
-    ui->labelIPValue->setVisible(false);
+    showPublicAddress(server->getPublicAddress());
 
     QString title = tr("Your Private Server");
     QString text = tr("Connect with private server ...");
@@ -154,9 +153,14 @@ void PrivateServerWindow::serverStopped()
     setServerDetailsVisibility(false);
 
     ui->listWidget->clear();
+}
 
-    if (networkUsageTimerID)
-        killTimer(networkUsageTimerID);
+void PrivateServerWindow::showPublicAddress(const QString &address)
+{
+    // the IP to give to people outside your network; the router reports it once it forwards the port
+    QString ip = address.section(':', 0, 0);
+    ui->labelIPValue->setText(ip.isEmpty() ? tr("waiting for the router") : ip);
+    ui->labelIPValue->setTextInteractionFlags(Qt::TextSelectableByMouse);
 }
 
 void PrivateServerWindow::setServerDetailsVisibility(bool visible)
@@ -166,10 +170,11 @@ void PrivateServerWindow::setServerDetailsVisibility(bool visible)
     ui->labelIPValue->setVisible(visible);
     ui->labelPortValue->setVisible(visible);
 
-    ui->labelDownload->setVisible(visible);
-    ui->labelDownloadValue->setVisible(visible);
-    ui->labelUpload->setVisible(visible);
-    ui->labelUploadValue->setVisible(visible);
+    // the built-in server doesn't measure its traffic
+    ui->labelDownload->setVisible(false);
+    ui->labelDownloadValue->setVisible(false);
+    ui->labelUpload->setVisible(false);
+    ui->labelUploadValue->setVisible(false);
 }
 
 void PrivateServerWindow::startServer()
@@ -192,17 +197,6 @@ void PrivateServerWindow::stopServer()
 
     if (server->isStarted())
         server->shutdown();
-}
-
-void PrivateServerWindow::timerEvent(QTimerEvent *)
-{
-    if (!server)
-        return;
-
-    quint64 download = server->getDownloadTransferRate() / 1024 * 8; // Kbps
-    quint64 upload = server->getUploadTransferRate() / 1024 * 8;
-    ui->labelDownloadValue->setText(QString::number(download));
-    ui->labelUploadValue->setText(QString::number(upload));
 }
 
 void PrivateServerWindow::changeEvent(QEvent *ev)

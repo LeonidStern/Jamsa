@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.24)
 
 project(jamtaba VERSION 2.1.16 LANGUAGES C CXX) # version as in src/Common/Configurator.h
 
@@ -115,7 +115,7 @@ set(JT_COMMON_SOURCES
     loginserver/MainChat.cpp loginserver/MainChat.h
 
     ninjam/Ninjam.cpp ninjam/Ninjam.h
-    ninjam/PrivateServer.cpp ninjam/PrivateServer.h # stub, to be backed by the ninjamsrv program
+    ninjam/PrivateServer.cpp ninjam/PrivateServer.h # hosts the built-in ninjamsrv
     ninjam/client/Types.h
     ninjam/client/ServerInfo.cpp ninjam/client/ServerInfo.h
     ninjam/client/Service.cpp ninjam/client/Service.h
@@ -238,6 +238,10 @@ set(JT_MINIMP3_SOURCES
     ${JT_COMMON}/minimp3/libc.h
 )
 
+# The NINJAM server from this repository, built in so the plugin can host a private
+# server (ninjam/PrivateServer.cpp). It runs on a background thread in the plugin.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../ninjam/server ${CMAKE_CURRENT_BINARY_DIR}/ninjamsrv EXCLUDE_FROM_ALL)
+
 add_library(jamtaba_core STATIC
     ${JT_COMMON_SOURCES}
     ${JT_PLUGIN_SOURCES}
@@ -300,6 +304,8 @@ target_link_libraries(jamtaba_core
         vorbisfile
         vorbis
         ogg
+    PRIVATE
+        ninjamsrv_embedded
 )
 
 if(APPLE)

@@ -4,15 +4,16 @@
 #include <QObject>
 #include <QStringList>
 
+class QTimer;
+
 namespace ninjam {
 
 /**
-    The NINJAM server hosted from the "Private Server" window.
+    The NINJAM server hosted from the "Private Server" window: the server from this
+    repository (ninjam/server), built into JamTaba and run on a background thread.
 
-    The API only offers what the window needs (start on a port, stop, running state and
-    status/error/user notifications), so it can be backed by an external server process.
-
-    For now this is a stub: start() always fails with a "not available yet" error.
+    It asks the router to forward its port (UPnP or NAT-PMP), lets anyone join without
+    an account, and lets the room switch to Opus or FLAC. Only one can run at a time.
  */
 class PrivateServer : public QObject
 {
@@ -23,6 +24,7 @@ public:
     ~PrivateServer() override;
 
     // Asynchronous: serverStarted() or errorStartingServer() is emitted later.
+    // If the port is taken, the next few ports are tried.
     void start(quint16 port);
 
     // Stops a running server; serverStopped() is emitted when it is stopped.
@@ -31,6 +33,10 @@ public:
     bool isStarted() const;
 
     quint16 getPort() const; // 0 when the server is not running
+
+    // "ip:port" that people outside the local network can connect to, once the router
+    // forwards the port; empty until then
+    QString getPublicAddress() const;
 
     QStringList getConnectedUsersNames() const;
 
@@ -46,10 +52,21 @@ signals:
     void userEntered(const QString &userName);
     void userLeave(const QString &userName);
 
+    // what the host should know: whether the router forwards the port, and errors
+    void serverMessage(const QString &text);
+    void publicAddressChanged(const QString &address);
+
 private:
+    static void onServerLog(void *ctx, const char *text); // called on the server's threads
+    void handleServerLog(const QString &line);
+    void updateConnectedUsers();
+    QString writeConfig(quint16 port) const;
+
     bool started;
     quint16 port;
+    QString publicAddress;
     QStringList connectedUsers;
+    QTimer *usersTimer;
 };
 
 } // namespace

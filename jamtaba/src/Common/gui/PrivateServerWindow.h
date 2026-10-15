@@ -27,7 +27,6 @@ signals:
     void userConnectingInPrivateServer(QString server, quint16 port);
 
 protected:
-    void timerEvent(QTimerEvent *) override;
     void changeEvent(QEvent *) override;
 
 private slots:
@@ -36,6 +35,7 @@ private slots:
 
     void serverStarted();
     void serverStopped();
+    void showPublicAddress(const QString &address);
 
 private:
     Ui::PrivateServerWindow *ui;
@@ -48,8 +48,6 @@ private:
     void appendTextInLog(const QString &text);
 
     QScopedPointer<ninjam::PrivateServer> server;
-
-    int networkUsageTimerID;
 
     static const quint16 PREFERRED_PORT;
 };
