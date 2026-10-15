@@ -39,6 +39,45 @@
 #define NJ_OPUS_FMT_TYPE MAKE_NJ_FOURCC('O','P','U','S')
 #define NJ_FLAC_FMT_TYPE MAKE_NJ_FOURCC('F','L','A','C')
 
+// NINJAM_NO_VORBIS leaves Vorbis out (no libvorbis): such a client sends Opus or FLAC
+// only, so it sends nothing where the room can't play either, and plays Vorbis
+// intervals as silence. It needs NINJAM_OPUS.
+#ifdef NINJAM_NO_VORBIS
+#ifndef NINJAM_OPUS
+#error NINJAM_NO_VORBIS needs NINJAM_OPUS
+#endif
+// the codec interfaces, as WDL/vorbisencdec.h declares them (which needs the Vorbis headers)
+class I_NJDecoder
+{
+public:
+  virtual ~I_NJDecoder(){}
+  virtual int GetSampleRate()=0;
+  virtual int GetNumChannels()=0;
+  virtual void *DecodeGetSrcBuffer(int srclen)=0;
+  virtual void DecodeWrote(int srclen)=0;
+  virtual void Reset()=0;
+  virtual int Available()=0;
+  virtual float *Get()=0;
+  virtual void Skip(int amt)=0;
+  virtual int GenerateLappingSamples()=0;
+};
+
+class I_NJEncoder
+{
+public:
+  virtual ~I_NJEncoder(){}
+  virtual void Encode(float *in, int inlen, int advance=1, int spacing=1)=0; // length in sample (PAIRS)
+  virtual int isError()=0;
+  virtual int Available()=0;
+  virtual void *Get()=0;
+  virtual void Advance(int)=0;
+  virtual void Compact()=0;
+  virtual void reinit(int bla=0)=0;
+};
+  #define CreateNJEncoder(srate,ch,br,id) ((I_NJEncoder *)NULL)
+  #define CreateNJDecoder() ((I_NJDecoder *)NULL)
+#else
+
 #ifdef REANINJAM
 #define WDL_VORBIS_INTERFACE_ONLY
 #endif
@@ -84,6 +123,8 @@
   #define CreateNJEncoder(srate,ch,br,id) ((I_NJEncoder *)new VorbisEncoder(srate,ch,br,id))
   #define CreateNJDecoder() ((I_NJDecoder *)new VorbisDecoder)
 #endif
+
+#endif // !NINJAM_NO_VORBIS
 
 // NINJAM_OPUS builds in Opus (needs libopus): the client then tells the server it can
 // decode Opus, and sends Opus while the server says everyone in the room can decode it
@@ -466,6 +507,7 @@ public:
 
   double decode_peak_vol[2];
   bool m_need_header;
+  bool m_skip_interval; // nothing is sent this interval: no codec the room can play
   int out_chan_index;
   int flags;
 
@@ -955,7 +997,11 @@ unsigned int NJClient::GetUploadCodec() const
 #ifdef NINJAM_OPUS
   if (config_send_opus && (m_codec_mask & CLIENT_CAP_CODEC_OPUS)) return NJ_OPUS_FMT_TYPE;
 #endif
+#ifdef NINJAM_NO_VORBIS
+  return 0; // the room plays neither (or the server sent no mask): send nothing
+#else
   return NJ_ENCODER_FMT_TYPE; // Vorbis, also when the server sent no mask (older servers)
+#endif
 }
 
 int NJClient::GetStatus()
@@ -1576,6 +1622,15 @@ int NJClient::Run() // nonzero if sleep ok
             lc->m_enc=0;
           }
           lc->m_enc_fourcc=fourcc;
+          lc->m_skip_interval=!fourcc;
+          if (!fourcc) lc->m_need_header=false; // decided for this interval
+        }
+        if (lc->m_skip_interval)
+        {
+          // no codec to send this interval with (see GetUploadCodec)
+          lc->m_bq.DisposeBlock(p);
+          p=0;
+          continue;
         }
         if (!lc->m_enc)
         {
@@ -1794,7 +1849,9 @@ DecodeState *NJClient::start_decode(unsigned char *guid, int chanflags, unsigned
 
   // types we understand
   unsigned int types[]={
+#ifndef NINJAM_NO_VORBIS
     NJ_ENCODER_FMT_TYPE,
+#endif
 #ifdef NINJAM_OPUS
     NJ_OPUS_FMT_TYPE,
 #endif
@@ -3279,7 +3336,7 @@ Local_Channel::Local_Channel() : channel_idx(0), src_channel(0), volume(1.0f), p
                 m_enc_header_needsend(NULL),
 #endif
                 bcast_active(false), cbf(NULL), cbf_inst(NULL),
-                bitrate(64), m_need_header(true), out_chan_index(0), flags(0),
+                bitrate(64), m_need_header(true), m_skip_interval(false), out_chan_index(0), flags(0),
                 m_curwritefile_starttime(0.0),
                 m_curwritefile_writelen(0.0),
                 m_curwritefile_curbuflen(0.0),

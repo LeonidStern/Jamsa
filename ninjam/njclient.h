@@ -133,9 +133,13 @@ public:
   int GetStatus();
 
   // the codec mask the server sent (CLIENT_CAP_CODEC_* bits; 0 = Vorbis, also when it sent none),
-  // and the codec (fourcc, such as 'OGGv', 'OPUS', 'FLAC') this client uploads the next interval with
+  // and the codec (fourcc, such as 'OGGv', 'OPUS', 'FLAC') this client uploads the next interval with;
+  // 0 in builds with NINJAM_NO_VORBIS when the room plays neither Opus nor FLAC (nothing is sent)
   int GetCodecMask() const { return m_codec_mask; }
   unsigned int GetUploadCodec() const;
+  // the tempo the server set last; GetActualBPM() and GetBPI() follow at the next interval, in AudioProc()
+  int GetServerBPM() const { return m_bpm; }
+  int GetServerBPI() const { return m_bpi; }
 
   void SetWorkDir(char *path);
   const char *GetWorkDir() { return m_workdir.Get(); }
