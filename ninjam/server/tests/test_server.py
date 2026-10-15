@@ -209,6 +209,22 @@ class ArchiveTests(ServerTest):
 
 
 class StartupTests(unittest.TestCase):
+    @unittest.skipUnless(os.geteuid() == 0, "needs root to bind a port below 1024")
+    def test_can_use_low_port_with_setuid(self):
+        port = 1000 + os.getpid() % 23
+        s = Server(extra_config="SetUID 65534\n", port=port)
+        try:
+            s.wait_ready()
+            with open("/proc/%d/status" % s.proc.pid) as f:
+                uid_line = [l for l in f if l.startswith("Uid:")][0]
+            self.assertEqual(uid_line.split()[1], "65534")
+            c = Client(port)
+            self.assertTrue(c.login("anonymous:low")[0])
+            c.close()
+        finally:
+            s.stop()
+            s.log.close()
+
     def test_exits_with_error_when_port_is_taken(self):
         blocker = socket.socket()
         blocker.bind(("0.0.0.0", 0))

@@ -35,6 +35,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <pwd.h>
+#include <grp.h>
 #endif
 #include <signal.h>
 #include <stdarg.h>
@@ -943,12 +946,6 @@ int main(int argc, char **argv)
   WDL_RNG_addentropy(&v,sizeof(v));
 #else
 
-  if (g_set_uid != -1) 
-  {
-    if (setuid(g_set_uid))
-      printf("warning: setuid(%d) failed\n",g_set_uid);
-  }
-
   time_t v=time(NULL);
   WDL_RNG_addentropy(&v,sizeof(v));
   int pid=getpid();
@@ -998,6 +995,28 @@ int main(int argc, char **argv)
       if (g_logfp) fclose(g_logfp);
       return 1;
     }
+
+#ifndef _WIN32
+    // drop root only after the port is open, so ports below 1024 (e.g. 443 on restrictive networks) work with SetUID
+    if (g_set_uid != -1)
+    {
+      struct passwd *pw = getpwuid(g_set_uid);
+      if (pw)
+      {
+        if (initgroups(pw->pw_name,pw->pw_gid) || setgid(pw->pw_gid))
+          logText("warning: could not switch to the groups of uid %d\n",g_set_uid);
+      }
+      else if (setgroups(0,NULL))
+        logText("warning: could not drop supplementary groups\n");
+
+      if (setuid(g_set_uid))
+      {
+        logText("Error: setuid(%d) failed, refusing to keep running as root\n",g_set_uid);
+        if (g_logfp) fclose(g_logfp);
+        return 1;
+      }
+    }
+#endif
 
     m_group->CreateUserLookup=myCreateUserLookup;
 
