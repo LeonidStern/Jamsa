@@ -55,6 +55,7 @@ signals:
     // what the host should know: whether the router forwards the port, and errors
     void serverMessage(const QString &text);
     void publicAddressChanged(const QString &address);
+    void portMappingFailed(); // people outside the local network can't connect; serverMessage() says why
 
 private:
     static void onServerLog(void *ctx, const char *text); // called on the server's threads

@@ -80,6 +80,10 @@ void PrivateServerWindow::setupServer()
 
     connect(server.data(), &PrivateServer::publicAddressChanged, this, &PrivateServerWindow::showPublicAddress);
 
+    connect(server.data(), &PrivateServer::portMappingFailed, [=](){
+        ui->labelIPValue->setText(tr("only reachable on your network, see the log"));
+    });
+
     connect(server.data(), &PrivateServer::incommingConnection, [=](const QString &ip){
         appendTextInLog(tr("Incomming connection from %1").arg(ip));
     });

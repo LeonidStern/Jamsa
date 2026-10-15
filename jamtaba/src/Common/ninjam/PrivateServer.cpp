@@ -156,6 +156,11 @@ void PrivateServer::handleServerLog(const QString &line)
             publicAddress.clear();
             emit publicAddressChanged(publicAddress);
         }
+        else if (!line.contains("asking the router")) {
+            publicAddress.clear();
+            emit publicAddressChanged(publicAddress);
+            emit portMappingFailed();
+        }
 
         emit serverMessage(line.mid(QString("[portmap]").size()).trimmed());
     }
