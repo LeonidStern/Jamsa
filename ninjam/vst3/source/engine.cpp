@@ -285,6 +285,7 @@ void Engine::setupProcessing(double sampleRate, int maxBlockSize)
   m_bufR.assign(m_maxBlock, 0.0f);
   m_spare.assign(m_maxBlock, 0.0f);
   m_barSync.reset();
+  m_click.setSampleRate(m_sampleRate);
 }
 
 void Engine::process(float **in, int numIn, float **out, int numOut, int frames, const HostTiming *timing)
@@ -328,9 +329,15 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
   m_barFixes.store(m_barSync.corrections(), std::memory_order_relaxed);
 
   // NJClient clears its output before it reads its input, so it gets a copy of the input
+  const float click = m_clickVolume.load(std::memory_order_relaxed);
   for (int done = 0; done < frames; )
   {
-    const int n = std::min(frames - done, m_maxBlock);
+    int n = std::min(frames - done, m_maxBlock);
+    // a piece doesn't go over the end of the interval playing, so the click knows which
+    // interval (and tempo) each sample is in
+    int pos = 0, length = 0;
+    m_client->GetPosition(&pos, &length);
+    if (m_client->IsIntervalRunning() && pos < length) n = std::min(n, length - pos);
     for (int i = 0; i < n; i ++)
     {
       m_bufL[i] = inL ? inL[done + i] * gain : 0.0f;
@@ -339,6 +346,15 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
     float *ins[2] = { m_bufL.data(), m_bufR.data() };
     float *outs[2] = { out[0] + done, numOut > 1 && out[1] ? out[1] + done : m_spare.data() };
     m_client->AudioProc(ins, 2, outs, 2, n, srate);
+
+    // the metronome, on the beats of the interval these samples played in
+    if (m_client->IsIntervalRunning())
+    {
+      m_client->GetPosition(&pos, &length);
+      m_click.render(outs[0], numOut > 1 && out[1] ? outs[1] : nullptr, n, pos - n, m_client->GetUsualIntervalLength(),
+                     m_client->GetBPI(), click);
+    }
+    else m_click.reset();
     done += n;
   }
 }
@@ -641,8 +657,10 @@ void Engine::applyLocalSettings()
 {
   const Settings s = getSettings();
   m_inputGain = s.inputVolume;
-  m_client->config_metronome = s.metronomeVolume;
-  m_client->config_metronome_mute = s.metronomeMute;
+  // the plug-in plays its own metronome (click.h)
+  m_client->config_metronome = 0.0f;
+  m_client->config_metronome_mute = true;
+  m_clickVolume = s.metronomeMute ? 0.0f : s.metronomeVolume;
   m_client->SetLocalChannelMonitoring(0, true, 1.0f, true, 0.0f, true, !s.monitor, false, false);
 
   // NJClient starts a new encoder at the next interval when the bitrate changes

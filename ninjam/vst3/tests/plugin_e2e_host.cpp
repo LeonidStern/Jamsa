@@ -61,6 +61,7 @@
     PORT <port>
     SYNC join room_bpm=<bpm> tempovotes=<n>
     SYNC phase <name> n=<accents> max_ms=<ms from a host beat that is a multiple of BPI> gap_err=<samples> fixes=<n> bars=<state>
+                     accent_hz=<the accents' pitch> beat_hz=<the other beats'> beats=<other beats>
     SYNC follow room_bpm=<bpm> tempovotes=<n>
     NOTE other room_bpm=<bpm> tempovotes=<n> text=<the note>
     SYNC loop fixes_before=<n>             (then SYNC phase loop ...: measured as if the host never looped)
@@ -580,10 +581,10 @@ static int jam_two_instances(Host &a, Host &b)
   return 0;
 }
 
-// The metronome's accents (the first beat of each interval) in what the plug-in played since
-// clearHeard(): the first sample that isn't silent after 50 ms of silence, with a peak of at
-// least 0.4 in the next 10 ms (the other beats are quieter). Nothing else plays.
-static std::vector<long> metronome_accents(const std::vector<float> &x, int srate)
+// The metronome's beats in what the plug-in played since clearHeard(): the first sample that
+// isn't silent after 50 ms of silence (nothing else plays). The accents (the first beat of each
+// interval) peak at 0.4 or more in their first 10 ms, the other beats lower.
+static std::vector<long> metronome_beats(const std::vector<float> &x, int srate, bool accents)
 {
   std::vector<long> found;
   long quietSince = 0;
@@ -595,9 +596,19 @@ static std::vector<long> metronome_accents(const std::vector<float> &x, int srat
     if (!onset || i == 0) continue;
     float peak = 0;
     for (size_t j = i; j < std::min(x.size(), i + srate / 100); j ++) peak = std::max(peak, fabsf(x[j]));
-    if (peak >= 0.4f) found.push_back((long)i);
+    if (peak >= 0.1f && (peak >= 0.4f) == accents) found.push_back((long)i);
   }
   return found;
+}
+
+// the pitch of the click at x[i]: zero crossings in its first 20 ms
+static double click_hz(const std::vector<float> &x, long i, int srate)
+{
+  const long n = srate / 50;
+  int crossings = 0;
+  for (long j = i + 1; j < std::min<long>((long)x.size(), i + n); j ++)
+    if ((x[j - 1] < 0) != (x[j] < 0) && x[j] != 0 && x[j - 1] != 0) crossings++;
+  return crossings / 2.0 / 0.02;
 }
 
 // How far each accent since clearHeard() is from a host beat that is a multiple of bpi (as if
@@ -613,7 +624,10 @@ static void measure_sync(Host &host, const char *name, bool playing)
   }
   auto s = host.status();
   const int bpi = atoi(s["bpi"].c_str()), len = atoi(s["len"].c_str());
-  const std::vector<long> acc = metronome_accents(x, host.m_srate);
+  const std::vector<long> acc = metronome_beats(x, host.m_srate, true), beats = metronome_beats(x, host.m_srate, false);
+  double accentHz = 0, beatHz = 0;
+  for (long i : acc) accentHz += click_hz(x, i, host.m_srate) / acc.size();
+  for (long i : beats) beatHz += click_hz(x, i, host.m_srate) / beats.size();
   double worst = 0;
   long gapErr = 0;
   std::string list;
@@ -633,8 +647,8 @@ static void measure_sync(Host &host, const char *name, bool playing)
   }
   if (playing) printf("accents (ms from a host beat that is a multiple of %d): %s\n", bpi, list.c_str());
   if (playing)
-    printf("SYNC phase %s n=%d max_ms=%.3f gap_err=%ld fixes=%s bars=%s\n", name, (int)acc.size(), worst, gapErr, s["barfixes"].c_str(),
-           s["bars"].c_str());
+    printf("SYNC phase %s n=%d max_ms=%.3f gap_err=%ld fixes=%s bars=%s accent_hz=%.0f beat_hz=%.0f beats=%d\n", name, (int)acc.size(), worst,
+           gapErr, s["barfixes"].c_str(), s["bars"].c_str(), accentHz, beatHz, (int)beats.size());
   else
     printf("SYNC %s n=%d gap_err=%ld fixes=%s bars=%s\n", name, (int)acc.size(), gapErr, s["barfixes"].c_str(), s["bars"].c_str());
 }

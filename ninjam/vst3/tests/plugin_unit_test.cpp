@@ -11,9 +11,9 @@
 /*
 
   Tests for the parts of the plug-in that need no network or host: the saved
-  state, reading the built-in server's port mapping messages, and following
-  the host: lining the intervals up with its bars, voting for its tempo, and
-  the editor's note on its tempo.
+  state, reading the built-in server's port mapping messages, following the
+  host (lining the intervals up with its bars, voting for its tempo, the
+  editor's note on its tempo), and the metronome's click.
 
 */
 
@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "click.h"
 #include "engine.h"
 #include "hostserver.h"
 #include "hostsync.h"
@@ -441,6 +442,155 @@ static void test_names()
   CHECK_EQ(Engine::remoteKey("Alice@1.2.3.x", 2), "alice/2");
 }
 
+// The click, rendered as the engine does: in blocks of any size that stop at the end of each
+// interval. `lengths` are how long the intervals are (one may be shorter or longer than usual,
+// as when it lines up with the host's bars); `onsets` gets where each beat should start.
+static std::vector<float> render_clicks(double sr, const std::vector<int> &lengths, int usual, int bpi, float volume,
+                                        std::vector<long> &onsets, std::vector<bool> &accents)
+{
+  long total = 0;
+  for (int l : lengths) total += l;
+  std::vector<float> left(total, 0.0f), right(total, 0.0f);
+  Click click;
+  click.setSampleRate(sr);
+  unsigned seed = 12345;
+  long t = 0;
+  for (size_t iv = 0; iv < lengths.size(); iv ++)
+  {
+    for (int k = 0; k < bpi; k ++)
+    {
+      const long p = (long)llround((double)k * usual / bpi);
+      if (p < lengths[iv])
+      {
+        onsets.push_back(t + p);
+        accents.push_back(k == 0);
+      }
+    }
+    for (int pos = 0; pos < lengths[iv]; )
+    {
+      seed = seed * 1103515245u + 12345u;
+      const int n = std::min(1 + (int)((seed >> 16) % 700), lengths[iv] - pos);
+      click.render(&left[t], &right[t], n, pos, usual, bpi, volume);
+      pos += n;
+      t += n;
+    }
+  }
+  CHECK(left == right);
+  return left;
+}
+
+// how much of x[from, to) is at hz (Goertzel), per sample
+static double tone_power(const std::vector<float> &x, long from, long to, double hz, double sr)
+{
+  const double w = 2 * 3.14159265358979 * hz / sr, c = 2 * cos(w);
+  double s1 = 0, s2 = 0;
+  for (long i = from; i < to; i ++)
+  {
+    const double s0 = x[i] + c * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  return (s1 * s1 + s2 * s2 - c * s1 * s2) / (double)(to - from);
+}
+
+static void test_click()
+{
+  // the click itself
+  CHECK_EQ(Click::sample(true, 0, 48000), 0.0);
+  CHECK_EQ(Click::sample(false, 0, 48000), 0.0);
+  CHECK_EQ(Click::sample(true, Click::length(48000), 48000), 0.0);
+  CHECK_EQ(Click::length(48000), 1920);
+  CHECK_EQ(Click::length(44100), 1764);
+  CHECK_EQ(Click::length(96000), 3840);
+
+  const float volume = 0.5f;
+  struct Heard { double peakMs, quietMs, energy, accentPeak, beatPeak; };
+  std::vector<Heard> heard;
+  for (double sr : { 44100.0, 48000.0, 96000.0 })
+  {
+    // 120 BPM, 4 beats: three intervals of 2 seconds, but the second ends 0.7 seconds
+    // early (it lines up with the host's bars), and the third 0.3 seconds late
+    const int usual = (int)(2.0 * sr), bpi = 4;
+    const std::vector<int> lengths = { usual, usual - (int)(0.7 * sr), usual + (int)(0.3 * sr) };
+    std::vector<long> onsets;
+    std::vector<bool> accents;
+    const std::vector<float> x = render_clicks(sr, lengths, usual, bpi, volume, onsets, accents);
+    CHECK_EQ(onsets.size(), (size_t)11); // 4 + 3 (the fourth beat of the short one never comes) + 4
+    const int len = Click::length(sr);
+    const double slope = 2 * 3.14159265358979 * Click::ACCENT_HZ / sr; // how fast a full-level sine at 1500 Hz can change
+
+    // each click starts on its beat, from silence, and ends in silence: nothing sounds anywhere else
+    std::vector<bool> inClick(x.size(), false);
+    Heard h = { 0, 0, 0, 0, 1 };
+    for (size_t b = 0; b < onsets.size(); b ++)
+    {
+      const long p = onsets[b];
+      for (long i = p; i < std::min<long>(p + len, (long)x.size()); i ++) inClick[i] = true;
+      CHECK(p == 0 || x[p - 1] == 0.0f); // silence before
+      CHECK_EQ(x[p], 0.0f);              // the attack starts at 0 on the beat's sample
+      CHECK(x[p + 1] != 0.0f);           // and sounds from the next one
+      CHECK(fabsf(x[p + 1]) < 0.001f * volume && fabsf(x[p + 2]) < 0.004f * volume); // no step at the start
+      CHECK(fabsf(x[p + len - 1]) < 1e-4f * volume);                                  // nor at the end
+      CHECK(p + len >= (long)x.size() || x[p + len] == 0.0f);
+      double worstStep = 0, peak = 0;
+      long peakAt = p;
+      for (long i = p; i < p + len; i ++)
+      {
+        worstStep = std::max(worstStep, (double)fabsf(x[i + 1] - x[i]));
+        if (fabsf(x[i]) > peak) { peak = fabsf(x[i]); peakAt = i; }
+      }
+      CHECK(worstStep <= volume * slope * 1.02); // no step anywhere: only the sine's own slope
+
+      // beat 1 of each interval is the accent: 1500 Hz and louder; the others 1000 Hz at 60%
+      const double hi = tone_power(x, p, p + len, Click::ACCENT_HZ, sr), lo = tone_power(x, p, p + len, Click::BEAT_HZ, sr);
+      if (accents[b])
+      {
+        CHECK(hi > lo * 20);
+        CHECK(peak > 0.9 * volume && peak <= volume);
+        h.accentPeak = peak;
+        h.peakMs = (peakAt - p) * 1000.0 / sr;
+        long quiet = p;
+        for (long i = p; i < p + len; i ++)
+          if (fabsf(x[i]) > peak * 0.001) quiet = i;
+        h.quietMs = (quiet - p) * 1000.0 / sr;
+        h.energy = 0;
+        for (long i = p; i < p + len; i ++) h.energy += x[i] * (double)x[i] / sr;
+      }
+      else
+      {
+        CHECK(lo > hi * 20);
+        CHECK(peak > 0.54 * volume && peak <= 0.6 * volume);
+        h.beatPeak = std::min(h.beatPeak, peak);
+      }
+    }
+    for (size_t i = 0; i < x.size(); i ++)
+      if (!inClick[i] && x[i] != 0.0f)
+      {
+        CHECK(!"a sound outside the clicks");
+        break;
+      }
+    printf("click at %.0f Hz: accent peak %.3f at %.2f ms, -60 dB at %.1f ms, energy %.3g; other beats peak %.3f\n", sr, h.accentPeak,
+           h.peakMs, h.quietMs, h.energy, h.beatPeak);
+    heard.push_back(h);
+
+    // muted (volume 0): nothing
+    std::vector<long> o2;
+    std::vector<bool> a2;
+    const std::vector<float> silent = render_clicks(sr, { usual }, usual, bpi, 0.0f, o2, a2);
+    CHECK(std::all_of(silent.begin(), silent.end(), [](float v) { return v == 0.0f; }));
+  }
+
+  // it sounds the same at 44.1, 48 and 96 kHz
+  for (const Heard &h : heard)
+  {
+    CHECK(fabs(h.peakMs - heard[1].peakMs) < 0.35);   // within half a period of 1500 Hz
+    CHECK(fabs(h.quietMs - heard[1].quietMs) < 0.35);
+    CHECK(fabs(h.energy / heard[1].energy - 1) < 0.01);
+    CHECK(fabs(h.accentPeak - heard[1].accentPeak) < 0.01);
+  }
+  CHECK(heard[1].quietMs > 30 && heard[1].quietMs < 40); // -60 dB in 30 to 40 ms
+}
+
 int main()
 {
   test_state();
@@ -450,6 +600,7 @@ int main()
   test_bar_sync();
   test_tempo_follower();
   test_host_note();
+  test_click();
 
   // the same in a locale that writes 95,5
   const char *loc = nullptr;

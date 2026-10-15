@@ -1,6 +1,7 @@
 # Tests for the plug-in (configure with -DNINJAM_VST3_TESTS=ON), run with ctest:
 #
-#   plugin_unit_test   saved state, port mapping messages, following the host's tempo and bars
+#   plugin_unit_test   saved state, port mapping messages, following the host's tempo and bars,
+#                      the metronome's click
 #   plugin_e2e         test_plugin_e2e.py: plugin_e2e_host loads NINJAM.vst3, which hosts a
 #                      server; a second client joins; audio both ways in Opus and FLAC.
 #                      Also two instances in one process, playing together, and a host whose
@@ -8,6 +9,7 @@
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp
+    ../source/click.cpp
     ../source/engine.cpp
     ../source/hostserver.cpp
     ../source/hostsync.cpp

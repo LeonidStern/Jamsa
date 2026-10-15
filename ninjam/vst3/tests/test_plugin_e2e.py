@@ -17,7 +17,8 @@ and the first joins that.
 test_host_sync: the host leads. The test host passes a tempo and a transport (ProcessContext) as
 Ableton does. The room follows the host's tempo when the plug-in joins and when the host's tempo
 is dragged (one vote each); each interval starts on a host beat that is a multiple of BPI
-(measured from the metronome's accent), also after a tempo change, in a loop (where the
+(measured from the metronome's accent, which must be the plug-in's own click: 1500 Hz, and
+1000 Hz on the other beats), also after a tempo change, in a loop (where the
 intervals keep their line) and after the playhead moves; a stopped host leaves them alone. When
 someone else changes the room the plug-in doesn't vote back, and shows a note; with following
 off it votes nothing, and turned on again it votes once.
@@ -293,6 +294,10 @@ class PluginEndToEndTest(unittest.TestCase):
             self.assertLess(float(phase["max_ms"]), MAX_HOST_PHASE_MS, name + "\n" + log)
             self.assertEqual(phase["gap_err"], "0", name + "\n" + log)
             self.assertEqual(phase["bars"], "aligned", name + "\n" + log)
+            # the plug-in's own click: beat 1 at 1500 Hz, the other beats (three an interval) at 1000 Hz
+            self.assertAlmostEqual(float(phase["accent_hz"]), 1500, delta=50, msg=name + "\n" + log)
+            self.assertAlmostEqual(float(phase["beat_hz"]), 1000, delta=50, msg=name + "\n" + log)
+            self.assertGreaterEqual(int(phase["beats"]), 3 * (n - 1), name + "\n" + log)
         # one fix to line up when the host started, after the tempo change, into the loop, and after the move;
         # none for the loops themselves
         fixes = [int(lines["SYNC phase " + name]["fixes"]) for name in ("100bpm", "110bpm", "loop", "moved")]

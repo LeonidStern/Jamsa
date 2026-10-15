@@ -25,7 +25,8 @@
   The audio path is: input * input volume -> NJClient (sent as our channel,
   and monitored if monitoring is on) -> output = the other players + metronome
   (+ our input when monitoring). process() is where to add more processing
-  later, such as a looper.
+  later, such as a looper. The metronome is the plug-in's own (click.h), on the
+  beats of NJClient's intervals; NJClient's is muted.
 
   Following the host (hostsync.h): while "Follow Ableton's tempo" is on,
   process() lines the intervals up with the host's bars, and the network
@@ -48,6 +49,7 @@
 #include <thread>
 #include <vector>
 
+#include "click.h"
 #include "hostsync.h"
 
 class NJClient;
@@ -261,6 +263,8 @@ private:
 
   // audio thread
   std::atomic<float> m_inputGain { 1.0f };
+  std::atomic<float> m_clickVolume { 0.5f }; // 0 when muted
+  Click m_click;
   std::atomic<int> m_sampleRate { 48000 };
   std::atomic<unsigned int> m_processCalls { 0 };
   int m_maxBlock = 0;
