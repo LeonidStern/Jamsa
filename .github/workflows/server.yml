@@ -10,15 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install port mapping libraries
+        run: sudo apt-get update && sudo apt-get install -y libminiupnpc-dev libnatpmp-dev
       - name: Build with AddressSanitizer and UBSan
-        run: make -C ninjam/server -j"$(nproc)" CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wno-reorder -pthread"
+        run: make -C ninjam/server -j"$(nproc)" PORTMAP=1 CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wno-reorder -pthread"
       - name: Protocol tests
         working-directory: ninjam/server/tests
         env:
           ASAN_OPTIONS: detect_leaks=0
           NINJAMSRV: ../ninjamsrv
         run: python3 -m unittest -v test_server
-      - name: Release build
+      - name: Release build, without port mapping
         run: |
           make -C ninjam/server clean
           make -C ninjam/server -j"$(nproc)"
