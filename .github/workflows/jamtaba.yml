@@ -47,23 +47,25 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.workspace }}/qt-static
-          key: qt-${{ env.QT_VERSION }}-static-windows-msvc2022-opengl-${{ hashFiles('jamtaba/ci/build-static-qt.sh') }}
+          key: qt-${{ env.QT_VERSION }}-static-windows-msvc2022-opengl-mt-${{ hashFiles('jamtaba/ci/build-static-qt.sh') }}
       - name: Build static Qt
         if: steps.qt.outputs.cache-hit != 'true'
         shell: bash
         env:
           QT_BUILD_DIR: ${{ runner.temp }}/qt-build
         # Qt 6.8's Windows platform plugin doesn't compile without OpenGL, so it stays on
-        # here (it only loads opengl32.dll, which every Windows has).
-        run: jamtaba/ci/build-static-qt.sh "$QT_VERSION" "$(cygpath -m '${{ runner.workspace }}/qt-static')" -DFEATURE_opengl=ON
+        # here (it only loads opengl32.dll, which every Windows has). The C++ runtime is
+        # linked in (/MT), so the plugin doesn't depend on which Visual C++ runtime is installed.
+        run: jamtaba/ci/build-static-qt.sh "$QT_VERSION" "$(cygpath -m '${{ runner.workspace }}/qt-static')" -DFEATURE_opengl=ON -DFEATURE_static_runtime=ON
       - name: Save static Qt
         if: steps.qt.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.workspace }}/qt-static
-          key: qt-${{ env.QT_VERSION }}-static-windows-msvc2022-opengl-${{ hashFiles('jamtaba/ci/build-static-qt.sh') }}
+          key: qt-${{ env.QT_VERSION }}-static-windows-msvc2022-opengl-mt-${{ hashFiles('jamtaba/ci/build-static-qt.sh') }}
       - name: Configure
-        run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ runner.workspace }}/qt-static"
+        # /MT everywhere, like the Qt above (CMP0091 so Ogg and Vorbis, which ask for an old CMake, follow it too)
+        run: cmake -S jamtaba -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ runner.workspace }}/qt-static" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DSMTG_USE_STATIC_CRT=ON
       - name: Build the plugin and the validator
         run: cmake --build build --target JamTaba validator -- -k 0 # show every compile error, not just the first
       - name: List the DLLs the plugin needs (only Windows' own)
