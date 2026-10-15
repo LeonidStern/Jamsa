@@ -206,7 +206,7 @@ public:
   std::string command(const std::string &line);
 
   static std::string remoteKey(const std::string &user, int channel); // user without @address
-  static std::string displayName(const std::string &user);
+  static std::string displayName(const std::string &user); // "alice@1.2.3.4" is "alice", "alice@1.2.3.4.2" "alice.2"
 
 private:
   void threadProc();

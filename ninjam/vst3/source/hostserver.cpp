@@ -34,13 +34,14 @@ static const size_t MAX_MESSAGES = 200;
 
 // Anyone can join without an account, any player can change BPM and BPI (a single
 // vote passes) or switch the room to Opus or FLAC (!codec), and the server asks the
-// router to forward its port.
+// router to forward its port. Two players with one name from one address (two
+// instances in a DAW that both keep the default name) both stay: the second is name.2.
 static const char *CONFIG =
     "# Written by the NINJAM plug-in each time it starts its server.\n"
     "Port %d\n"
     "MaxUsers 8\n"
     "MaxChannels 32 32\n"
-    "AnonymousUsers yes\n"
+    "AnonymousUsers multi\n"
     "AnonymousUsersCanChat yes\n"
     "AnonymousMaskIP no\n"
     "DefaultBPM 120\n"

@@ -431,6 +431,13 @@ static void test_names()
 {
   CHECK_EQ(Engine::displayName("alice@1.2.3.x"), "alice");
   CHECK_EQ(Engine::displayName("bob"), "bob");
+  // the second of two players with one name ("AnonymousUsers multi")
+  CHECK_EQ(Engine::displayName("guest@127.0.0.1.2"), "guest.2");
+  CHECK_EQ(Engine::displayName("guest@1.2.3.x.16"), "guest.16");
+  CHECK_EQ(Engine::displayName("guest@127.0.0.1"), "guest");
+  CHECK_EQ(Engine::displayName("guest@::ffff:127.0.0.1.3"), "guest.3");
+  CHECK_EQ(Engine::displayName("guest@::ffff:127.0.0.1"), "guest");
+  CHECK_EQ(Engine::remoteKey("Guest@127.0.0.1.2", 0), "guest.2/0");
   CHECK_EQ(Engine::remoteKey("Alice@1.2.3.x", 2), "alice/2");
 }
 

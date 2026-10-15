@@ -36,13 +36,16 @@
     DONE
 
   Two instances (two): as two tracks in a DAW, two instances of the plug-in in this
-  process, the second with its audio on a thread of its own. "alice" hosts a server;
-  "bob" can't host a second one in this process and is told to join, joins, and they
-  hear each other (alice plays 997 Hz, bob 661 Hz). Then alice stops her server, which
-  drops bob; bob hosts one, and alice joins it.
+  process, the second with its audio on a thread of its own, both with the default name
+  (so the server sees one name twice, from one address). "alice" hosts a server; "bob"
+  can't host a second one in this process and is told to join, joins as the name's
+  second player, and they hear each other (alice plays 997 Hz, bob 661 Hz) and stay in.
+  Then alice stops her server, which drops bob; bob hosts one, and alice joins it.
     PORT <port>            alice's server is up
     PHASE two BEGIN
     PHASE two END a_hears_snr=<dB> b_hears_snr=<dB> b_host_refused=<0|1> b_got_chat=<0|1> a_users=<n> b_users=<n>
+                  a_name=<alice's name> b_name=<bob's> a_sees=<who alice hears, as shown> b_sees=<who bob hears>
+                  a_state=<state> b_state=<state> (at the end)
     PHASE swap END b_dropped=<0|1> b_hosting=<0|1> port=<port> a_state=<state> a_users=<n>
     DONE
 
@@ -488,12 +491,13 @@ static bool contains(const std::string &s, const std::string &what) { return s.f
 // two instances in this process (two tracks): one server between them, and they hear each other
 static int jam_two_instances(Host &a, Host &b)
 {
-  for (const char *c : { "name alice", "metronome off", "monitor off", "host on" })
+  // both keep the default name
+  for (const char *c : { "metronome off", "monitor off", "host on" })
   {
     const std::string r = a.command(c);
     if (r != "ok") return fail(a, ("alice: command failed: " + std::string(c) + ": " + r).c_str());
   }
-  for (const char *c : { "name bob", "metronome off", "monitor off" })
+  for (const char *c : { "metronome off", "monitor off" })
   {
     const std::string r = b.command(c);
     if (r != "ok") return fail(b, ("bob: command failed: " + std::string(c) + ": " + r).c_str());
@@ -543,8 +547,15 @@ static int jam_two_instances(Host &a, Host &b)
     const bool gotChat = contains(b.command("chatlog"), "hello from alice");
     printf("users (alice): %s", a.command("users").c_str());
     printf("users (bob): %s", b.command("users").c_str());
-    printf("PHASE two END a_hears_snr=%.1f b_hears_snr=%.1f b_host_refused=%d b_got_chat=%d a_users=%s b_users=%s\n", aSnr, bSnr,
-           refused ? 1 : 0, gotChat ? 1 : 0, a.status()["users"].c_str(), b.status()["users"].c_str());
+    auto shown = [](const std::string &users) {
+      const size_t at = users.find("shown=");
+      return at == std::string::npos ? std::string("-") : users.substr(at + 6, users.find('\n', at) - at - 6);
+    };
+    auto sa = a.status(), sb = b.status();
+    printf("PHASE two END a_hears_snr=%.1f b_hears_snr=%.1f b_host_refused=%d b_got_chat=%d a_users=%s b_users=%s a_name=%s b_name=%s "
+           "a_sees=%s b_sees=%s a_state=%s b_state=%s\n",
+           aSnr, bSnr, refused ? 1 : 0, gotChat ? 1 : 0, sa["users"].c_str(), sb["users"].c_str(), sa["user"].c_str(), sb["user"].c_str(),
+           shown(a.command("users")).c_str(), shown(b.command("users")).c_str(), sa["state"].c_str(), sb["state"].c_str());
 
     // alice stops her server, which drops bob; now bob can host, and alice joins him
     a.command("host off");
@@ -554,7 +565,7 @@ static int jam_two_instances(Host &a, Host &b)
     const std::string port2 = b.status()["port"];
     a.command("connect localhost:" + port2);
     a.runUntil(nullptr, 15.0, [&]() { auto s = a.status(); return s["state"] == "connected" && atoi(s["users"].c_str()) >= 1; });
-    auto sa = a.status();
+    sa = a.status();
     printf("PHASE swap END b_dropped=%d b_hosting=%s port=%s a_state=%s a_users=%s\n", dropped ? 1 : 0, b.status()["hosting"].c_str(),
            port2.c_str(), sa["state"].c_str(), sa["users"].c_str());
 

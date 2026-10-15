@@ -210,7 +210,15 @@ bool Settings::deserialize(const std::string &data)
 std::string Engine::displayName(const std::string &user)
 {
   const size_t at = user.find('@');
-  return at == std::string::npos ? user : user.substr(0, at);
+  if (at == std::string::npos) return user;
+  // A server that lets one name in more than once ("AnonymousUsers multi") calls the second
+  // "name@1.2.3.4.2": keep the ".2", so the two can be told apart.
+  const size_t colon = user.rfind(':'), from = colon != std::string::npos && colon > at ? colon + 1 : at + 1;
+  const size_t dot = user.rfind('.');
+  if (std::count(user.begin() + from, user.end(), '.') == 4 && dot + 1 < user.size() && dot + 4 > user.size() &&
+      std::all_of(user.begin() + dot + 1, user.end(), [](char c) { return c >= '0' && c <= '9'; }))
+    return user.substr(0, at) + user.substr(dot);
+  return user.substr(0, at);
 }
 
 std::string Engine::remoteKey(const std::string &user, int channel)
@@ -1134,8 +1142,8 @@ std::string Engine::command(const std::string &lineIn)
       for (auto &c : u.channels)
       {
         char buf[256];
-        snprintf(buf, sizeof(buf), "%s/%d %s vol=%.3f pan=%.3f mute=%d solo=%d peak=%.4f\n", u.name.c_str(), c.index, c.name.c_str(),
-                 c.volume, c.pan, c.mute ? 1 : 0, c.solo ? 1 : 0, std::max(c.peak[0], c.peak[1]));
+        snprintf(buf, sizeof(buf), "%s/%d %s vol=%.3f pan=%.3f mute=%d solo=%d peak=%.4f shown=%s\n", u.name.c_str(), c.index,
+                 c.name.c_str(), c.volume, c.pan, c.mute ? 1 : 0, c.solo ? 1 : 0, std::max(c.peak[0], c.peak[1]), u.displayName.c_str());
         out += buf;
       }
     return out;
