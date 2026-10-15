@@ -1,14 +1,16 @@
 # Tests for the plug-in (configure with -DNINJAM_VST3_TESTS=ON), run with ctest:
 #
-#   plugin_unit_test   saved state, port mapping messages
+#   plugin_unit_test   saved state, port mapping messages, following the host's tempo and bars
 #   plugin_e2e         test_plugin_e2e.py: plugin_e2e_host loads NINJAM.vst3, which hosts a
 #                      server; a second client joins; audio both ways in Opus and FLAC.
-#                      Also two instances in one process, playing together
+#                      Also two instances in one process, playing together, and a host whose
+#                      tempo the room follows and whose bars the intervals start on
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp
     ../source/engine.cpp
     ../source/hostserver.cpp
+    ../source/hostsync.cpp
 )
 target_compile_features(plugin_unit_test PRIVATE cxx_std_17)
 target_link_libraries(plugin_unit_test PRIVATE ninjam_client ninjamsrv_embedded)
@@ -38,7 +40,7 @@ if(NOT WIN32)
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         )
         set_tests_properties(plugin_e2e PROPERTIES
-            TIMEOUT 300
+            TIMEOUT 600
             ENVIRONMENT "NINJAM_VST3_PLUGIN=$<TARGET_PROPERTY:NINJAM,SMTG_PLUGIN_PACKAGE_PATH>;NINJAM_VST3_E2E_HOST=$<TARGET_FILE:plugin_e2e_host>"
         )
     endif()

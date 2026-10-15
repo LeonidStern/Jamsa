@@ -15,7 +15,7 @@
   It loads NINJAM.vst3, plays a 997 Hz tone into it in real time, and drives
   it through its text command interface.
 
-  Usage: plugin_e2e_host path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two]]]
+  Usage: plugin_e2e_host path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two | sync]]]
 
   Hosting (the default): the plug-in hosts a server and joins it, and a second
   NJClient ("peer", in this process) joins too and plays a 661 Hz tone. The
@@ -46,6 +46,27 @@
     PHASE swap END b_dropped=<0|1> b_hosting=<0|1> port=<port> a_state=<state> a_users=<n>
     DONE
 
+  The host leads (sync): this host passes a tempo and a transport (ProcessContext), as Ableton
+  does, and the plug-in follows it ("Follow Ableton's tempo", on by default). The host is at
+  100 BPM; the plug-in hosts a room (120 BPM) and votes it to 100 once it's in; the room votes 4
+  beats. The host plays from the middle of bar 3: each interval must start on a host beat that
+  is a multiple of 4 (the metronome's accent). The host's tempo is dragged to 110: one vote, and
+  the intervals line up again. Someone votes the room to 90: no vote back, and a note says the
+  tempos differ. At 90, the host loops 6 beats (intervals don't move), its playhead moves (they
+  line up again), and it stops (they play on). With following off, the host at 120 votes
+  nothing; turned on again, it votes 120.
+    PORT <port>
+    SYNC join room_bpm=<bpm> tempovotes=<n>
+    SYNC phase <name> n=<accents> max_ms=<ms from a host beat that is a multiple of BPI> gap_err=<samples> fixes=<n> bars=<state>
+    SYNC follow room_bpm=<bpm> tempovotes=<n>
+    NOTE other room_bpm=<bpm> tempovotes=<n> text=<the note>
+    SYNC loop fixes_before=<n>             (then SYNC phase loop ...: measured as if the host never looped)
+    SYNC stopped n=<accents> gap_err=<samples> fixes=<n> bars=<state>
+    NOTE off room_bpm=<bpm> tempovotes=<n> bars=<state> text=<the note, with following off>
+    SYNC refollow room_bpm=<bpm> tempovotes=<n>
+    NOTE same text=<empty when the tempos agree>
+    DONE
+
   Errors start with "error:" and the exit code is not 0. With NINJAM_E2E_DEBUG set, each
   phase also prints the level of what each side heard, second by second.
 
@@ -72,6 +93,7 @@
 #include "pluginterfaces/base/funknownimpl.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
+#include "pluginterfaces/vst/ivstprocesscontext.h"
 
 #include "njclient.h"
 #include "pluginids.h"
@@ -265,6 +287,37 @@ public:
     outBus.channelBuffers32 = outs;
     ProcessData data {};
     data.processMode = kRealtime;
+    ProcessContext context {};
+    const Transport played = m_transport; // the host's transport for this block
+    if (played.on)
+    {
+      // the host's tempo and transport, as a DAW passes them
+      context.sampleRate = m_srate;
+      context.continousTimeSamples = m_pos;
+      context.state = ProcessContext::kContTimeValid | ProcessContext::kProjectTimeMusicValid;
+      context.projectTimeMusic = played.ppq;
+      if (played.tempo > 0)
+      {
+        context.tempo = played.tempo;
+        context.state |= ProcessContext::kTempoValid;
+      }
+      if (played.playing) context.state |= ProcessContext::kPlaying;
+      if (played.cycle)
+      {
+        context.cycleStartMusic = played.cycleStart;
+        context.cycleEndMusic = played.cycleEnd;
+        context.state |= ProcessContext::kCycleActive | ProcessContext::kCycleValid;
+      }
+      data.processContext = &context;
+      if (played.playing)
+      {
+        const double beats = m_block / (double)m_srate * played.tempo / 60.0;
+        m_transport.ppq += beats;
+        m_transport.line += beats;
+        // the loop goes back at the end of a block (the next block starts in the loop)
+        if (played.cycle && m_transport.ppq >= played.cycleEnd) m_transport.ppq -= played.cycleEnd - played.cycleStart;
+      }
+    }
     data.symbolicSampleSize = kSample32;
     data.numSamples = m_block;
     data.numInputs = 1;
@@ -276,6 +329,7 @@ public:
     {
       std::lock_guard<std::mutex> lock(m_heardMutex);
       m_pluginHeard.insert(m_pluginHeard.end(), m_out0.begin(), m_out0.end());
+      m_heardTransport.push_back(played);
     }
 
     if (peer)
@@ -323,7 +377,23 @@ public:
     std::lock_guard<std::mutex> lock(m_heardMutex);
     m_pluginHeard.clear();
     m_peerHeard.clear();
+    m_heardTransport.clear();
   }
+
+  // the host's transport (sync), changed on the thread that plays the blocks
+  struct Transport
+  {
+    bool on = false; // pass a ProcessContext
+    double tempo = 0;
+    bool playing = false;
+    double ppq = 0;  // at the next block
+    double line = 0; // the same, as if the host never looped since it last moved
+    bool cycle = false;
+    double cycleStart = 0, cycleEnd = 0;
+  };
+  Transport m_transport;
+  void locate(double ppq) { m_transport.ppq = m_transport.line = ppq; }
+  std::vector<Transport> m_heardTransport; // for each block of m_pluginHeard
 
   int m_srate, m_block;
   double m_freq; // of the tone played into the plug-in
@@ -499,12 +569,178 @@ static int jam_two_instances(Host &a, Host &b)
   return 0;
 }
 
+// The metronome's accents (the first beat of each interval) in what the plug-in played since
+// clearHeard(): the first sample that isn't silent after 50 ms of silence, with a peak of at
+// least 0.4 in the next 10 ms (the other beats are quieter). Nothing else plays.
+static std::vector<long> metronome_accents(const std::vector<float> &x, int srate)
+{
+  std::vector<long> found;
+  long quietSince = 0;
+  for (size_t i = 0; i < x.size(); i ++)
+  {
+    if (fabsf(x[i]) < 1e-6f) continue;
+    const bool onset = (long)i - quietSince >= srate / 20;
+    quietSince = (long)i + 1;
+    if (!onset || i == 0) continue;
+    float peak = 0;
+    for (size_t j = i; j < std::min(x.size(), i + srate / 100); j ++) peak = std::max(peak, fabsf(x[j]));
+    if (peak >= 0.4f) found.push_back((long)i);
+  }
+  return found;
+}
+
+// How far each accent since clearHeard() is from a host beat that is a multiple of bpi (as if
+// the host never looped), and how far the gaps between accents are from the usual interval.
+static void measure_sync(Host &host, const char *name, bool playing)
+{
+  std::vector<float> x;
+  std::vector<Host::Transport> tr;
+  {
+    std::lock_guard<std::mutex> lock(host.m_heardMutex);
+    x = host.m_pluginHeard;
+    tr = host.m_heardTransport;
+  }
+  auto s = host.status();
+  const int bpi = atoi(s["bpi"].c_str()), len = atoi(s["len"].c_str());
+  const std::vector<long> acc = metronome_accents(x, host.m_srate);
+  double worst = 0;
+  long gapErr = 0;
+  std::string list;
+  for (size_t k = 0; k < acc.size(); k ++)
+  {
+    if (k > 0) gapErr = std::max(gapErr, labs(acc[k] - acc[k - 1] - len));
+    if (!playing) continue;
+    const Host::Transport &t = tr[acc[k] / host.m_block];
+    const double beat = t.line + (acc[k] % host.m_block) / (double)host.m_srate * t.tempo / 60.0;
+    double off = fmod(beat, bpi);
+    if (off > bpi / 2.0) off -= bpi;
+    const double ms = off * 60000.0 / t.tempo;
+    worst = std::max(worst, fabs(ms));
+    char b[32];
+    snprintf(b, sizeof(b), "%s%.3f", list.empty() ? "" : ",", ms);
+    list += b;
+  }
+  if (playing) printf("accents (ms from a host beat that is a multiple of %d): %s\n", bpi, list.c_str());
+  if (playing)
+    printf("SYNC phase %s n=%d max_ms=%.3f gap_err=%ld fixes=%s bars=%s\n", name, (int)acc.size(), worst, gapErr, s["barfixes"].c_str(),
+           s["bars"].c_str());
+  else
+    printf("SYNC %s n=%d gap_err=%ld fixes=%s bars=%s\n", name, (int)acc.size(), gapErr, s["barfixes"].c_str(), s["bars"].c_str());
+}
+
+// the host leads: the room follows its tempo, and the intervals its bars
+static int host_sync(Host &host)
+{
+  Host::Transport &t = host.m_transport;
+  t.on = true;
+  t.tempo = 100;
+  auto len_at = [&](int bpm, int bpi) { return (int)(60.0 / bpm * bpi * host.m_srate); };
+  auto len_is = [&](int bpm) { return atoi(host.status()["len"].c_str()) == len_at(bpm, 4); };
+  auto bars_are = [&](const char *state) { return host.status()["bars"] == state; };
+  // records `intervals` intervals once the plug-in says they're in line
+  auto record = [&](const char *name, int intervals) {
+    host.run(nullptr, 0.1); // the plug-in sees the host's last change
+    if (!host.runUntil(nullptr, 20.0, [&]() { return bars_are("aligned"); })) return false;
+    host.clearHeard();
+    host.run(nullptr, atoi(host.status()["len"].c_str()) / (double)host.m_srate * intervals + 0.2, true);
+    measure_sync(host, name, true);
+    return true;
+  };
+
+  for (const char *c : { "name plugin", "metronome on", "monitor off", "host on" })
+  {
+    const std::string r = host.command(c);
+    if (r != "ok") return fail(host, ("command failed: " + std::string(c) + ": " + r).c_str());
+  }
+  if (!host.runUntil(nullptr, 15.0, [&]() { auto s = host.status(); return s["state"] == "connected" && s["hosting"] == "1"; }))
+    return fail(host, "the plug-in did not start its server and join it");
+  printf("PORT %s\n", host.status()["port"].c_str());
+
+  // in the room (120 BPM), the plug-in votes it to the host's 100
+  if (!host.runUntil(nullptr, 15.0, [&]() { return atof(host.status()["bpm"].c_str()) == 100.0; }))
+    return fail(host, "the room did not follow the host's tempo when the plug-in joined");
+  host.command("chat !vote bpi 4");
+  if (!host.runUntil(nullptr, 15.0, [&]() { return len_is(100); })) return fail(host, "the room did not get to 4 beats");
+  auto s = host.status();
+  printf("SYNC join room_bpm=%s tempovotes=%s\n", s["bpm"].c_str(), s["tempovotes"].c_str());
+
+  // the host plays from the middle of bar 3
+  host.locate(9.37);
+  t.playing = true;
+  if (!record("100bpm", 4)) return fail(host, "the intervals did not line up with the host's bars at 100 BPM");
+
+  // the host's tempo is dragged to 110: one vote, and the bars line up again
+  for (double bpm : { 104.0, 106.5, 108.0, 110.0 })
+  {
+    t.tempo = bpm;
+    host.run(nullptr, 0.15);
+  }
+  if (!host.runUntil(nullptr, 20.0, [&]() { return len_is(110); })) return fail(host, "the room did not follow the host's tempo to 110");
+  s = host.status();
+  printf("SYNC follow room_bpm=%s tempovotes=%s\n", s["bpm"].c_str(), s["tempovotes"].c_str());
+  if (!record("110bpm", 3)) return fail(host, "the intervals did not line up with the host's bars at 110 BPM");
+
+  // someone else votes the room to 90: the plug-in doesn't vote back, and says the tempos differ
+  host.command("chat !vote bpm 90");
+  if (!host.runUntil(nullptr, 20.0, [&]() { return len_is(90); })) return fail(host, "the room did not go to 90");
+  host.run(nullptr, 2.0);
+  if (!host.runUntil(nullptr, 10.0, [&]() { return !host.command("syncnote").empty(); })) return fail(host, "no note on the tempos");
+  s = host.status();
+  printf("NOTE other room_bpm=%s tempovotes=%s text=%s\n", s["bpm"].c_str(), s["tempovotes"].c_str(), host.command("syncnote").c_str());
+
+  // the player sets the host to the room's 90; it loops 6 beats: the intervals play on as before
+  t.tempo = 90;
+  t.cycle = true;
+  t.cycleStart = 8;
+  t.cycleEnd = 14;
+  host.locate(8);
+  host.run(nullptr, 0.1);
+  if (!host.runUntil(nullptr, 20.0, [&]() { return bars_are("aligned"); })) return fail(host, "the intervals did not line up in the loop");
+  printf("SYNC loop fixes_before=%s\n", host.status()["barfixes"].c_str());
+  host.clearHeard();
+  host.run(nullptr, 4 * (6 * 60.0 / 90), true); // four times round the loop
+  measure_sync(host, "loop", true);
+
+  // the playhead moves: in line again
+  t.cycle = false;
+  host.locate(101.5);
+  if (!record("moved", 3)) return fail(host, "the intervals did not line up after the playhead moved");
+
+  // stopped: the intervals play on
+  t.playing = false;
+  host.run(nullptr, 0.2);
+  host.clearHeard();
+  host.run(nullptr, len_at(90, 4) / (double)host.m_srate * 3 + 0.2, true);
+  measure_sync(host, "stopped", false);
+
+  // following off: the host at 120 votes nothing; on again, it votes 120
+  host.command("follow off");
+  t.tempo = 120;
+  host.run(nullptr, 2.0);
+  if (!host.runUntil(nullptr, 10.0, [&]() { return !host.command("syncnote").empty(); })) return fail(host, "no note with following off");
+  s = host.status();
+  printf("NOTE off room_bpm=%s tempovotes=%s bars=%s text=%s\n", s["bpm"].c_str(), s["tempovotes"].c_str(), s["bars"].c_str(),
+         host.command("syncnote").c_str());
+  host.command("follow on");
+  if (!host.runUntil(nullptr, 20.0, [&]() { return len_is(120); })) return fail(host, "following again did not vote the room to 120");
+  s = host.status();
+  printf("SYNC refollow room_bpm=%s tempovotes=%s\n", s["bpm"].c_str(), s["tempovotes"].c_str());
+  host.run(nullptr, 0.5);
+  printf("NOTE same text=%s\n", host.command("syncnote").c_str());
+
+  host.command("host off");
+  host.runUntil(nullptr, 10.0, [&]() { return host.status()["hosting"] == "0"; });
+  host.unload();
+  printf("DONE\n");
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2)
   {
-    fprintf(stderr, "usage: %s path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two]]]\n", argv[0]);
+    fprintf(stderr, "usage: %s path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two | sync]]]\n", argv[0]);
     return 2;
   }
   const int srate = argc > 2 ? atoi(argv[2]) : 48000;
@@ -513,6 +749,7 @@ int main(int argc, char **argv)
   Host host(srate, blockSize);
   if (!host.load(argv[1])) return 1;
   if (argc > 5 && !strcmp(argv[4], "join")) return join_vorbis_room(host, argv[5]);
+  if (argc > 4 && !strcmp(argv[4], "sync")) return host_sync(host);
   if (argc > 4 && !strcmp(argv[4], "two"))
   {
     Host second(srate, blockSize, PEER_FREQ);
