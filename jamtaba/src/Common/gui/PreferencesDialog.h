@@ -7,9 +7,11 @@
 #include "persistence/Settings.h"
 #include "recorder/JamRecorder.h"
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class PreferencesDialog;
 }
+QT_END_NAMESPACE
 
 // This class is the base class for StandalonePreferencesDialog and VstPreferencesDialog
 

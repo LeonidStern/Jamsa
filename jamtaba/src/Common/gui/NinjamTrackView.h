@@ -13,7 +13,9 @@ namespace controller {
 class MainController;
 }
 
+QT_BEGIN_NAMESPACE
 class QLabel;
+QT_END_NAMESPACE
 class InstrumentsButton;
 
 class NinjamTrackView : public BaseTrackView

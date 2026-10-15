@@ -4,9 +4,11 @@
 #include <QDialog>
 #include <QScopedPointer>
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class PrivateServerWindow;
 }
+QT_END_NAMESPACE
 
 namespace ninjam {
     class PrivateServer;

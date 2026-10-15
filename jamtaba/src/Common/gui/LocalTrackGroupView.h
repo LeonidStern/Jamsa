@@ -5,7 +5,9 @@
 #include "LocalTrackView.h"
 
 class MainWindow;
+QT_BEGIN_NAMESPACE
 class QPushButton;
+QT_END_NAMESPACE
 class BlinkableButton;
 class InstrumentsButton;
 

@@ -6,7 +6,9 @@
 #include <QNetworkReply>
 #include "ninjam/client/ServerInfo.h"
 
+QT_BEGIN_NAMESPACE
 class QTimer;
+QT_END_NAMESPACE
 
 namespace login {
 

@@ -11,7 +11,9 @@
 
 class MainWindow;
 class JamTabaVST3View;
+QT_BEGIN_NAMESPACE
 class QWidget;
+QT_END_NAMESPACE
 
 namespace Steinberg {
 namespace Linux {

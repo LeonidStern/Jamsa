@@ -5,9 +5,11 @@
 #include "ChordProgression.h"
 #include "ChordLabel.h"
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class ChordsPanel;
 }
+QT_END_NAMESPACE
 
 class ChordsPanel : public QWidget
 {

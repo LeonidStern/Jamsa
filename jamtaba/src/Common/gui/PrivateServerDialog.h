@@ -7,9 +7,11 @@ namespace controller {
 class MainController;
 }
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class PrivateServerDialog;
 }
+QT_END_NAMESPACE
 
 class PrivateServerDialog : public QDialog
 {

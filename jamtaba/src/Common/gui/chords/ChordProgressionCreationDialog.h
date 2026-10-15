@@ -6,9 +6,11 @@
 #include <QGridLayout>
 #include "ChordProgression.h"
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class ChordProgressionCreationDialog;
 }
+QT_END_NAMESPACE
 
 class ChordProgressionCreationDialog : public QDialog
 {

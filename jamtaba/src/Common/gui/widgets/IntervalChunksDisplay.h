@@ -3,7 +3,9 @@
 
 #include <QProgressBar>
 
+QT_BEGIN_NAMESPACE
 class QPaintEvent;
+QT_END_NAMESPACE
 
 class IntervalChunksDisplay : public QProgressBar
 {

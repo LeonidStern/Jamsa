@@ -85,8 +85,6 @@ private:
 
     static void logHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg);
 
-    static void terminateHandler();
-    static void signalHandler(int signal);
 
     static QString getDebugColor(const QMessageLogContext &context);
 

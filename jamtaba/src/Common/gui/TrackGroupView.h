@@ -6,12 +6,16 @@
 #include <QBoxLayout>
 #include <QGridLayout>
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class TrackGroupView;
 }
+QT_END_NAMESPACE
 
 class BaseTrackView;
+QT_BEGIN_NAMESPACE
 class QMenu;
+QT_END_NAMESPACE
 
 class TrackGroupView : public QFrame
 {

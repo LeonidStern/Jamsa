@@ -4,9 +4,13 @@
 #include "public.sdk/source/common/pluginview.h"
 #include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 
+#include <QtGlobal>
+
 class JamTabaVST3;
+QT_BEGIN_NAMESPACE
 class QWidget;
 class QWindow;
+QT_END_NAMESPACE
 
 /**
     The editor window the host opens. It embeds JamTaba's Qt main window into the

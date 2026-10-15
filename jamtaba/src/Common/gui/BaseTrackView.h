@@ -9,6 +9,7 @@
 #include <QToolButton>
 
 class AudioMeter;
+QT_BEGIN_NAMESPACE
 class QLabel;
 class QPushButton;
 class QGroupBox;
@@ -17,6 +18,7 @@ class QVBoxLayout;
 class QHBoxLayout;
 class QBoxLayout;
 class QGridLayout;
+QT_END_NAMESPACE
 class BoostSpinBox;
 
 namespace controller {

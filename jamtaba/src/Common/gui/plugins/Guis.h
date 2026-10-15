@@ -3,8 +3,10 @@
 
 #include <QWidget>
 
+QT_BEGIN_NAMESPACE
 class QSlider;
 class QLineEdit;
+QT_END_NAMESPACE
 
 namespace audio {
 class JamtabaDelay;

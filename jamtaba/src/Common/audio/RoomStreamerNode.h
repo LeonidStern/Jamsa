@@ -6,7 +6,9 @@
 #include <QNetworkAccessManager>
 #include "SamplesBufferResampler.h"
 
+QT_BEGIN_NAMESPACE
 class QIODevice;
+QT_END_NAMESPACE
 
 namespace audio {
 

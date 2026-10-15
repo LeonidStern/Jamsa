@@ -22,9 +22,11 @@ class NinjamController;
 class MainController;
 }
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class LooperWindow;
 }
+QT_END_NAMESPACE
 
 using audio::Looper;
 using audio::LooperLayer;

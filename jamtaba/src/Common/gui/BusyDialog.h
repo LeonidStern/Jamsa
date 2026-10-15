@@ -3,9 +3,11 @@
 
 #include <QDialog>
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class BusyDialog;
 }
+QT_END_NAMESPACE
 
 class BusyDialog : public QDialog
 {

@@ -6,9 +6,11 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class ChatMessagePanel;
 }
+QT_END_NAMESPACE
 
 class Emojifier;
 

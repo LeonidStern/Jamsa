@@ -19,9 +19,11 @@ class MainWindow;
 class NinjamTrackGroupView;
 class NinjamTrackView;
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
     class NinjamRoomWindow;
 }
+QT_END_NAMESPACE
 
 namespace controller {
     class NinjamController;

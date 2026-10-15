@@ -4,7 +4,9 @@
 #include "AudioNodeProcessor.h"
 #include "PluginDescriptor.h"
 
+QT_BEGIN_NAMESPACE
 class QDialog;
+QT_END_NAMESPACE
 
 namespace audio {
     class SamplesBuffer;

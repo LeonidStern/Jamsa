@@ -3,9 +3,11 @@
 
 #include <QWidget>
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class MetronomePanel;
 }
+QT_END_NAMESPACE
 
 class MetronomePanel : public QWidget
 {

@@ -11,9 +11,11 @@
 
 #include "gui/chords/ChordProgression.h"
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class ChatPanel;
 }
+QT_END_NAMESPACE
 
 namespace login {
 struct Location;

@@ -4,7 +4,9 @@
 #include <QTimer>
 #include <QObject>
 
+QT_BEGIN_NAMESPACE
 class QWidget;
+QT_END_NAMESPACE
 
 class Highligther : public QObject
 {

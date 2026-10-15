@@ -4,10 +4,12 @@
 #include <QFrame>
 #include <QScopedPointer>
 
+QT_BEGIN_NAMESPACE
 class QResizeEvent;
 class QPaintEvent;
 class QPainter;
 class QComboBox;
+QT_END_NAMESPACE
 
 class IntervalProgressDisplay : public QFrame
 {

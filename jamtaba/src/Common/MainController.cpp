@@ -607,9 +607,10 @@ void MainController::process(const audio::SamplesBuffer &in, audio::SamplesBuffe
     }
     catch (...)
     {
+        // JamTaba runs inside the host's process, so a failed block plays silence instead of aborting the host
         qCritical() << "Exception in MainController::process";
 
-        qFatal("Aborting in  MainController::process!");
+        out.zero();
     }
 }
 

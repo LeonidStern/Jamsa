@@ -8,7 +8,6 @@
 #include <QTime>
 #include <QRegularExpression>
 
-#include <csignal>
 
 #include "log/Logging.h"
 
@@ -182,19 +181,6 @@ QDir Configurator::getApplicationDataDir()
     return dir;
 }
 
-void Configurator::signalHandler(int signal)
-{
-    qCritical() << "Configurator::signalHandler signal:" << signal;
-
-    terminateHandler();
-
-    exit(signal);
-}
-
-void Configurator::terminateHandler()
-{
-}
-
 bool Configurator::setUp()
 {
     // the resources are compiled into a static library, so they must be registered explicitly
@@ -203,6 +189,9 @@ bool Configurator::setUp()
 
     initializeDirs(); // directories initialization is different in Standalone and VstPlugin. Check the files ConfiguratorStandalone.cpp and VstPlugin.cpp
 
+    if (!baseDir.exists())
+        baseDir.mkpath("."); // the log config and examples are copied here next, even on the first run
+
     lastLogFileContent = loadPreviousLogContent();
 
     exportLogIniFile(); // copy log config file from resources to user hard disk
@@ -210,15 +199,6 @@ bool Configurator::setUp()
     exportPrivateServersExampleFile();
 
     setupLogConfigFile();
-
-    std::set_terminate(Configurator::terminateHandler);
-
-    std::signal(SIGABRT, Configurator::signalHandler); // Abnormal termination of the program, such as a call to abort.
-    std::signal(SIGFPE, Configurator::signalHandler);  // An erroneous arithmetic operation, such as a divide by zero or an operation resulting in overflow.
-    std::signal(SIGILL, Configurator::signalHandler);  // Detection of an illegal instruction.
-    std::signal(SIGINT, Configurator::signalHandler);  // Receipt of an interactive attention signal.
-    std::signal(SIGSEGV, Configurator::signalHandler); // An invalid access to storage.
-    std::signal(SIGTERM, Configurator::signalHandler); // A termination request sent to the program.
 
     // themes dir is the same for Standalone and Vst plugin
     themesDir = QDir(getApplicationDataDir().absoluteFilePath(THEMES_FOLDER_NAME));

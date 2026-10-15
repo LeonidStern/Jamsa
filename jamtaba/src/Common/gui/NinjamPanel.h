@@ -6,16 +6,20 @@
 
 #include "intervalProgress/IntervalProgressWindow.h"
 
+QT_BEGIN_NAMESPACE
 class QComboBox;
 class QAbstractSlider;
 class QPushButton;
 class QObject;
 class QEvent;
+QT_END_NAMESPACE
 class TextEditorModifier;
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class NinjamPanel;
 }
+QT_END_NAMESPACE
 
 class NinjamPanel : public QFrame
 {

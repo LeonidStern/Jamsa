@@ -12,9 +12,11 @@
 
 class MapWidget;
 
+QT_BEGIN_NAMESPACE
 namespace Ui {
 class JamRoomViewPanel;
 }
+QT_END_NAMESPACE
 
 namespace geo {
 class Location;

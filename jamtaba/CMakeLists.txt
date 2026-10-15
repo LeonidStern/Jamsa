@@ -14,7 +14,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON) # jamtaba_core is linked into a shared p
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent WebSockets)
 
 # ---------------------------------------------------------------------------
-# Third party: Ogg and Vorbis, fetched and built as static libraries
+# Third party: Ogg, Vorbis, Opus and FLAC, fetched and built as static libraries
 # ---------------------------------------------------------------------------
 include(FetchContent)
 
@@ -28,6 +28,20 @@ FetchContent_Declare(vorbis
     GIT_REPOSITORY https://github.com/xiph/vorbis.git
     GIT_TAG v1.3.7
     GIT_SHALLOW TRUE
+)
+
+FetchContent_Declare(opus
+    GIT_REPOSITORY https://github.com/xiph/opus.git
+    GIT_TAG v1.5.2
+    GIT_SHALLOW TRUE
+    EXCLUDE_FROM_ALL
+)
+
+FetchContent_Declare(flac
+    GIT_REPOSITORY https://github.com/xiph/flac.git
+    GIT_TAG 1.5.0
+    GIT_SHALLOW TRUE
+    EXCLUDE_FROM_ALL
 )
 
 # A function keeps these settings out of the rest of the build (and out of src/Plugins/VST3).
@@ -48,6 +62,34 @@ function(jamtaba_fetch_xiph_libs)
     set(OGG_LIBRARY ogg CACHE STRING "Ogg library (fetched target)" FORCE)
 
     FetchContent_MakeAvailable(vorbis)
+
+    set(OPUS_BUILD_PROGRAMS OFF)
+    set(OPUS_BUILD_TESTING OFF)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF)
+    set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF)
+    # A universal macOS build compiles every file for arm64 and x86_64, so the SSE and NEON files can't be used.
+    list(LENGTH CMAKE_OSX_ARCHITECTURES osx_architectures)
+    if(osx_architectures GREATER 1)
+        set(OPUS_DISABLE_INTRINSICS ON)
+    endif()
+
+    FetchContent_MakeAvailable(opus)
+
+    # ninjam/opusencdec.h includes <opus/opus.h>, as with the system package
+    file(COPY ${opus_SOURCE_DIR}/include/ DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/opus-include/opus)
+
+    # only libFLAC; intervals are native FLAC, so no Ogg FLAC either
+    set(BUILD_CXXLIBS OFF)
+    set(BUILD_PROGRAMS OFF)
+    set(BUILD_EXAMPLES OFF)
+    set(BUILD_DOCS OFF)
+    set(INSTALL_MANPAGES OFF)
+    set(INSTALL_PKGCONFIG_MODULES OFF)
+    set(INSTALL_CMAKE_CONFIG_MODULE OFF)
+    set(WITH_OGG OFF)
+    set(ENABLE_MULTITHREADING OFF) # JamTaba already encodes in its own thread
+
+    FetchContent_MakeAvailable(flac)
 endfunction()
 
 jamtaba_fetch_xiph_libs()
@@ -87,9 +129,15 @@ set(JT_COMMON_SOURCES
     audio/core/Filters.cpp audio/core/Filters.h
     audio/core/PluginDescriptor.cpp audio/core/PluginDescriptor.h
     audio/Encoder.h
+    audio/Decoder.h
     audio/vorbis/Vorbis.h
     audio/vorbis/VorbisDecoder.cpp audio/vorbis/VorbisDecoder.h
     audio/vorbis/VorbisEncoder.cpp audio/vorbis/VorbisEncoder.h
+    audio/opus/NJOpus.h
+    audio/opus/OpusDecoder.cpp audio/opus/OpusDecoder.h
+    audio/opus/OpusEncoder.cpp audio/opus/OpusEncoder.h
+    audio/flac/FlacDecoder.cpp audio/flac/FlacDecoder.h
+    audio/flac/FlacEncoder.cpp audio/flac/FlacEncoder.h
     audio/RoomStreamerNode.cpp audio/RoomStreamerNode.h
     audio/NinjamTrackNode.cpp audio/NinjamTrackNode.h
     audio/MetronomeTrackNode.cpp audio/MetronomeTrackNode.h
@@ -238,6 +286,11 @@ set(JT_MINIMP3_SOURCES
     ${JT_COMMON}/minimp3/libc.h
 )
 
+# Opus intervals are encoded and decoded by njclient's own code (ninjam/opusencdec.h, header only),
+# which uses the WDL resampler to bring other sample rates to the 48 kHz of Opus.
+set(JT_NINJAM_CLIENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../ninjam)
+set(JT_WDL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../WDL/resample.cpp)
+
 # The NINJAM server from this repository, built in so the plugin can host a private
 # server (ninjam/PrivateServer.cpp). It runs on a background thread in the plugin.
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../ninjam/server ${CMAKE_CURRENT_BINARY_DIR}/ninjamsrv EXCLUDE_FROM_ALL)
@@ -246,6 +299,7 @@ add_library(jamtaba_core STATIC
     ${JT_COMMON_SOURCES}
     ${JT_PLUGIN_SOURCES}
     ${JT_MINIMP3_SOURCES}
+    ${JT_WDL_SOURCES}
     ${JT_RESOURCES}/jamtaba.qrc # also holds the translations (translations/*.qm)
 )
 
@@ -258,7 +312,7 @@ set_target_properties(jamtaba_core PROPERTIES
 
 # The qmake build used PreCompiledHeaders.h for every C++ file, and the sources rely on it.
 target_precompile_headers(jamtaba_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${JT_COMMON}/PreCompiledHeaders.h>)
-set_source_files_properties(${JT_COMMON}/minimp3/minimp3.c PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+set_source_files_properties(${JT_COMMON}/minimp3/minimp3.c ${JT_WDL_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 if(APPLE)
     set_source_files_properties(${JT_COMMON}/gui/screensaver/MacScreensaverBlocker.mm PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
@@ -279,6 +333,8 @@ target_include_directories(jamtaba_core
         ${JT_AUTOGEN_INCLUDE_DIR}
     PRIVATE
         ${JT_COMMON}/minimp3
+        ${JT_NINJAM_CLIENT_DIR} # opusencdec.h
+        ${CMAKE_CURRENT_BINARY_DIR}/opus-include # <opus/opus.h>
 )
 
 target_compile_definitions(jamtaba_core
@@ -303,6 +359,8 @@ target_link_libraries(jamtaba_core
         vorbisenc
         vorbisfile
         vorbis
+        opus
+        FLAC
         ogg
     PRIVATE
         ninjamsrv_embedded

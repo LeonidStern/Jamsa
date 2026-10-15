@@ -4,7 +4,9 @@
 #include "ChordsProgressionParser.h"
 #include "ChordProgression.h"
 
+QT_BEGIN_NAMESPACE
 class QString;
+QT_END_NAMESPACE
 
 // parse chord progression received as chat message
 class ChatChordsProgressionParser : public ChordsProgressionParser

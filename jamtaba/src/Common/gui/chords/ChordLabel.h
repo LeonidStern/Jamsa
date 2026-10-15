@@ -4,7 +4,9 @@
 #include <QTextEdit>
 #include "ChordProgression.h"
 
+QT_BEGIN_NAMESPACE
 class QPaintEvent;
+QT_END_NAMESPACE
 
 class ChordLabel : public QTextEdit
 {
