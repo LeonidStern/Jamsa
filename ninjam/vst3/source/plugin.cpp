@@ -16,7 +16,9 @@
 
 #include "base/source/fstreamer.h"
 #include "pluginterfaces/base/ibstream.h"
+#include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "public.sdk/source/vst/utility/stringconvert.h"
 
 #include "editor.h"
 
@@ -31,6 +33,8 @@ static const int64 MAX_STATE_SIZE = 1 << 20;
 
 NinjamPlugin::NinjamPlugin()
 {
+  // following the host: its tempo, and where its bars are while it plays (or loops)
+  processContextRequirements.needTempo().needProjectTimeMusic().needTransportState().needCycleMusic();
 }
 
 NinjamPlugin::~NinjamPlugin()
@@ -47,6 +51,9 @@ tresult PLUGIN_API NinjamPlugin::initialize(FUnknown *context)
   addAudioOutput(STR16("Output"), SpeakerArr::kStereo);
 
   if (!m_engine) m_engine.reset(new Engine);
+  FUnknownPtr<IHostApplication> app(context);
+  String128 name = {};
+  if (app && app->getName(name) == kResultOk) m_engine->setHostName(StringConvert::convert(name));
   m_engine->start();
   return kResultOk;
 }
@@ -101,7 +108,20 @@ tresult PLUGIN_API NinjamPlugin::process(ProcessData &data)
     in = data.inputs[0].channelBuffers32;
     numIn = data.inputs[0].numChannels;
   }
-  m_engine->process(in, numIn, out.channelBuffers32, out.numChannels, data.numSamples);
+  Engine::HostTiming timing;
+  timing.offline = data.processMode == kOffline;
+  if (const ProcessContext *pc = data.processContext)
+  {
+    HostPosition &p = timing.position;
+    p.playing = (pc->state & ProcessContext::kPlaying) != 0;
+    if (pc->state & ProcessContext::kTempoValid) p.tempo = pc->tempo;
+    p.hasPosition = (pc->state & ProcessContext::kProjectTimeMusicValid) != 0;
+    p.ppq = pc->projectTimeMusic;
+    p.cycleActive = (pc->state & ProcessContext::kCycleActive) && (pc->state & ProcessContext::kCycleValid);
+    p.cycleStart = pc->cycleStartMusic;
+    p.cycleEnd = pc->cycleEndMusic;
+  }
+  m_engine->process(in, numIn, out.channelBuffers32, out.numChannels, data.numSamples, &timing);
   out.silenceFlags = 0;
   return kResultOk;
 }

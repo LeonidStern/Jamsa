@@ -176,6 +176,8 @@ smtg_add_vst3plugin(NINJAM
         source/engine.h
         source/hostserver.cpp
         source/hostserver.h
+        source/hostsync.cpp
+        source/hostsync.h
         source/editor.cpp
         source/editor.h
         source/views.cpp

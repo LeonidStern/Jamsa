@@ -85,6 +85,7 @@ private:
   void updateRows(const Snapshot &s);
   void updateChat();
   void updateHostBar(const Snapshot &s);
+  void updateFollow(const Snapshot &s);
   void updateLicense(const Snapshot &s);
   void syncSettings();
   void connectOrDisconnect();
@@ -109,7 +110,8 @@ private:
 
   VSTGUI::CViewContainer *m_mixer = nullptr;
   VSTGUI::CTextLabel *m_localHeader = nullptr, *m_metroHeader = nullptr, *m_playersHeader = nullptr;
-  VSTGUI::CTextButton *m_transmit = nullptr, *m_monitor = nullptr, *m_metroMute = nullptr;
+  VSTGUI::CTextButton *m_transmit = nullptr, *m_monitor = nullptr, *m_metroMute = nullptr, *m_follow = nullptr;
+  VSTGUI::CTextLabel *m_followStatus = nullptr, *m_syncNote = nullptr; // following the host; its tempo against the room's
   VSTGUI::CSlider *m_inputVolume = nullptr, *m_metroVolume = nullptr;
   VSTGUI::CTextLabel *m_inputVolumeLabel = nullptr, *m_metroVolumeLabel = nullptr, *m_codecLabel = nullptr;
   VSTGUI::CTextLabel *m_bitrateLabel = nullptr, *m_bitrateNote = nullptr;

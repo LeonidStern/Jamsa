@@ -54,6 +54,7 @@ enum Tags
   kTagAccept,
   kTagDecline,
   kTagBitrate,
+  kTagFollow,
   kTagRemote = 1000, // + row * 8 + field
 };
 enum { kRemoteVolume, kRemotePan, kRemoteMute, kRemoteSolo, kRemoteFields = 8 };
@@ -396,7 +397,7 @@ void NinjamEditor::buildViews()
   m_bitrateNote = makeLabel(z, "", m_small, Colors::dim());
   m_mixer->addView(m_bitrateNote);
 
-  m_metroHeader = makeLabel(z, "METRONOME", m_smallBold, Colors::dim());
+  m_metroHeader = makeLabel(z, "METRONOME AND TEMPO", m_smallBold, Colors::dim());
   m_mixer->addView(m_metroHeader);
   m_metroMute = makeButton(z, this, kTagMetroMute, "Mute", true, m_font);
   m_mixer->addView(m_metroMute);
@@ -405,6 +406,14 @@ void NinjamEditor::buildViews()
   m_metroVolume = makeSlider(z, this, kTagMetroVolume, false);
   m_metroVolume->setDefaultValue(gainToSlider(0.5f));
   m_mixer->addView(m_metroVolume);
+  m_follow = makeButton(z, this, kTagFollow, "Follow Ableton's tempo", true, m_font);
+  m_follow->setTooltipText("When you change Ableton's tempo, vote the room to it; and while Ableton plays, start the "
+                           "intervals on its bars (a multiple of BPI beats from bar 1)");
+  m_mixer->addView(m_follow);
+  m_followStatus = makeLabel(z, "", m_small, Colors::dim());
+  m_mixer->addView(m_followStatus);
+  m_syncNote = makeLabel(z, "", m_small, Colors::warn());
+  m_mixer->addView(m_syncNote);
 
   m_playersHeader = makeLabel(z, "PLAYERS", m_smallBold, Colors::dim());
   m_mixer->addView(m_playersHeader);
@@ -521,8 +530,13 @@ void NinjamEditor::layout()
     place(m_metroMute, CRect(ip, ry, ip + 96, ry + 26));
     place(m_metroVolumeLabel, CRect(volLabel.left, ry, volLabel.right, ry + 26));
     place(m_metroVolume, CRect(vol.left, ry + 4, vol.right, ry + 22));
+    ry += 32;
+    place(m_follow, CRect(ip, ry, ip + 180, ry + 26));
+    place(m_followStatus, CRect(ip + 180 + GAP, ry, mw - ip, ry + 26));
+    ry += 28;
+    place(m_syncNote, CRect(ip, ry, mw - ip, ry + 16));
 
-    ry += 38;
+    ry += 24;
     place(m_playersHeader, CRect(ip, ry, mw - ip, ry + 16));
     ry += 18;
     const CRect players(ip, ry + 16, mw - ip, std::max(ry + 16 + ROW_H, mh - ip));
@@ -644,6 +658,7 @@ void NinjamEditor::update()
   else setLabel(m_codecLabel, "you send " + codecFromFourcc(s.uploadCodec));
   setLabelColor(m_codecLabel, s.state == ConnState::Connected && !s.canSend ? Colors::warn() : Colors::dim());
   m_localMeter->setLevels(s.localPeak[0], s.localPeak[1]);
+  updateFollow(s);
 
   // FLAC is lossless: the bitrate is for Opus rooms
   const int bitrateState = s.state == ConnState::Connected && s.roomCodec == "FLAC" ? 1 : 0;
@@ -680,6 +695,34 @@ void NinjamEditor::update()
   }
 }
 
+void NinjamEditor::updateFollow(const Snapshot &s)
+{
+  const std::string &host = s.hostLabel;
+  std::string text;
+  CColor color = Colors::dim();
+  if (!s.followTempo) text = "Off";
+  else if (s.state != ConnState::Connected) text = "Starts when you're in a room";
+  else
+    switch (s.barState)
+    {
+      case BarSync::NoPosition: text = host + " doesn't say where its bars are"; break;
+      case BarSync::Stopped: text = "Lines up with " + host + "'s bars when it plays"; break;
+      case BarSync::OtherTempo:
+        text = "Bars line up when " + host + "'s tempo is the room's";
+        color = Colors::warn();
+        break;
+      case BarSync::Lining: text = "Lining up with " + host + "'s bars at the next interval"; break;
+      case BarSync::Aligned:
+        text = "Intervals start on " + host + "'s bars";
+        color = Colors::accent();
+        break;
+      default: text = s.audioRunning ? "" : "Waits for the audio"; break;
+    }
+  setLabel(m_followStatus, text, true);
+  setLabelColor(m_followStatus, color);
+  setLabel(m_syncNote, s.syncNote, true);
+}
+
 void NinjamEditor::syncSettings()
 {
   const Settings st = engine().getSettings();
@@ -688,6 +731,7 @@ void NinjamEditor::syncSettings()
   setControlValue(m_transmit, st.transmit ? 1.0f : 0.0f);
   setControlValue(m_monitor, st.monitor ? 1.0f : 0.0f);
   setControlValue(m_metroMute, st.metronomeMute ? 1.0f : 0.0f);
+  setControlValue(m_follow, st.followHostTempo ? 1.0f : 0.0f);
   setControlValue(m_inputVolume, gainToSlider(st.inputVolume));
   setControlValue(m_metroVolume, gainToSlider(st.metronomeVolume));
   for (int i = 0; i < Settings::NUM_OPUS_KBPS; i ++)
@@ -954,6 +998,7 @@ void NinjamEditor::valueChanged(CControl *control)
       if (v > 0.5f) connectOrDisconnect();
       return;
     case kTagTransmit: engine().setTransmit(v > 0.5f); return;
+    case kTagFollow: engine().setFollowHostTempo(v > 0.5f); return;
     case kTagMonitor: engine().setMonitor(v > 0.5f); return;
     case kTagBitrate:
       if (m_bitrate->getSelectedSegment() < (uint32_t)Settings::NUM_OPUS_KBPS)

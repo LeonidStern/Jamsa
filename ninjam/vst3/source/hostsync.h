@@ -1,0 +1,149 @@
+/*
+    NINJAM VST3 - hostsync.h
+    Copyright (C) 2026 and onward, NINJAM contributors
+
+    NINJAM is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+*/
+
+/*
+
+  The host leads ("Follow Ableton's tempo"), from what it tells the plug-in in
+  each block (VST3's ProcessContext). A plug-in can't set its host's tempo, so:
+
+  - tempo: when the host's tempo changes and stays for a second at a value
+    that rounds to another BPM than the room's, the plug-in votes the room to
+    it (!vote bpm N), once; and once when it joins a room. It doesn't vote
+    again when someone else changes the room, so two players don't fight; the
+    editor says when the host's tempo and the room's differ.
+
+  - bars: while the host plays, at the room's tempo, the plug-in lines its
+    intervals up with the host's bars: each interval starts where the host is
+    at a multiple of BPI beats from bar 1. NINJAM's interval phase is each
+    client's own, so the plug-in moves it: the interval playing then ends a
+    little sooner or later, and the next ones start in line. Nothing jumps
+    inside an interval. Loops in the host don't move the intervals (they keep
+    the line they had before the loop), a move of the playhead lines them up
+    again, and a stopped host leaves them alone.
+
+  BarSync runs on the audio thread (no locks, no allocations), the
+  TempoFollower on the network thread.
+
+*/
+
+#ifndef _NINJAM_VST3_HOSTSYNC_H_
+#define _NINJAM_VST3_HOSTSYNC_H_
+
+#include <string>
+
+namespace ninjam_vst3 {
+
+// what the host said about its transport for a block
+struct HostPosition
+{
+  bool playing = false;
+  bool hasPosition = false; // ppq is valid
+  double ppq = 0;           // quarter notes from the project's start (bar 1), at the block's first sample
+  double tempo = 0;         // quarter notes per minute, 0 when the host doesn't say
+  bool cycleActive = false; // the host loops from cycleStart to cycleEnd (quarter notes)
+  double cycleStart = 0, cycleEnd = 0;
+};
+
+namespace barmath {
+
+// where the host is in an interval of len samples and bpi beats, at ppq: samples from its start
+double hostIntervalPos(double ppq, int bpi, double len);
+
+// a difference of positions in an interval of len samples, wrapped into [-len/2, len/2)
+double wrapSamples(double samples, double len);
+
+// The interval playing now is at pos, and the host at target (both in an interval of the usual
+// length len): when should it end so the next one starts with the host's? In samples from now,
+// at least 1: the host's next interval start, or the one after, whichever makes the interval
+// playing now closer to the usual length.
+int intervalEnd(int pos, int len, double target);
+
+} // namespace barmath
+
+class BarSync
+{
+public:
+  enum State
+  {
+    Off,         // not following, or no intervals play
+    NoPosition,  // the host doesn't say where it is
+    Stopped,     // the host doesn't play
+    OtherTempo,  // the host's tempo isn't the room's: bars can't line up
+    Lining,      // the interval playing now ends early or late, so the next one is in line
+    Aligned,     // the intervals start on the host's bars
+  };
+  struct Interval
+  {
+    bool running = false; // NJClient plays intervals
+    int pos = 0;          // in the interval playing at the start of the block
+    int len = 0;          // the usual length (NJClient::GetUsualIntervalLength())
+    int bpi = 0;
+    double bpm = 0;
+    int count = 0;        // NJClient::GetLoopCount(): which interval plays
+  };
+
+  // One block: returns how many samples from now the interval playing now should end
+  // (NJClient::SetIntervalEnd()), or 0 to leave it.
+  int process(const HostPosition &host, int frames, double sampleRate, const Interval &iv);
+  void reset(); // forget the host's position (follow turned off or on, a new sample rate)
+
+  State state() const { return m_state; }
+  double errorMs() const { return m_errorMs; } // where the host's interval is, minus ours
+  int corrections() const { return m_corrections; }
+
+  static constexpr double TOLERANCE_MS = 1.0;  // closer than this is in line
+  static constexpr double SAME_TEMPO = 0.01;   // BPM: the host's tempo is the room's
+  static constexpr double SAME_PLACE = 0.01;   // quarter notes: the host plays on from where it was
+
+private:
+  State m_state = Off;
+  double m_errorMs = 0;
+  int m_corrections = 0;
+  bool m_wasPlaying = false;
+  double m_expectedPpq = 0; // where the host should be at the next block, if it plays on
+  double m_blockBeats = 0;  // how far the last block went (quarter notes)
+  double m_loopOffset = 0;  // quarter notes the host's loops went back, since it last started or moved
+  int m_fixedInterval = -1; // the interval whose end was moved (the next one starts in line)
+};
+
+// Votes the room to the host's tempo. Network thread.
+class TempoFollower
+{
+public:
+  // now: seconds; hostTempo: 0 when the host doesn't say; roomBpm: the room's BPM, 0 when
+  // not in a room. Returns the BPM to vote for (!vote bpm N), or 0.
+  int update(double now, double hostTempo, int roomBpm);
+  void arm(); // once more, when the host's tempo is known and still: on joining a room, on following again
+  bool waiting() const { return m_armed; } // a vote may come when the host's tempo is still
+  int votes() const { return m_votes; }
+
+  static constexpr double QUIET = 1.0;   // seconds the host's tempo stays before a vote
+  static constexpr double SAME = 0.005;  // BPM: the host's tempo didn't change
+  static constexpr int MIN_BPM = 40, MAX_BPM = 400; // what NINJAM servers take
+
+private:
+  double m_tempo = 0, m_since = 0;
+  bool m_armed = false;
+  int m_votes = 0;
+};
+
+// a tempo as the editor writes it: "120", "109.6", "120.25"
+std::string bpmText(double bpm);
+
+// What to call the host: "Ableton" for Live, else its name (or "The DAW")
+std::string shortHostName(const std::string &hostName);
+
+// The line the editor shows when the host's tempo isn't the room's, such as
+// "Ableton is at 120 BPM, the room at 95: set Ableton to 95", or "" when they agree.
+std::string hostTempoNote(const std::string &hostName, double hostTempo, int roomBpm, bool following);
+
+} // namespace ninjam_vst3
+
+#endif

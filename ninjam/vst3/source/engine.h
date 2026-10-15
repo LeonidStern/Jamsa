@@ -27,6 +27,10 @@
   (+ our input when monitoring). process() is where to add more processing
   later, such as a looper.
 
+  Following the host (hostsync.h): while "Follow Ableton's tempo" is on,
+  process() lines the intervals up with the host's bars, and the network
+  thread votes the room to the host's tempo when it changes.
+
 */
 
 #ifndef _NINJAM_VST3_ENGINE_H_
@@ -43,6 +47,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "hostsync.h"
 
 class NJClient;
 
@@ -97,6 +103,16 @@ struct Snapshot
   std::string licenseText;
 
   // the built-in server
+  // following the host (hostsync.h)
+  bool followTempo = true;   // the toggle
+  std::string hostLabel;     // "Ableton", or the host's name
+  double hostTempo = 0;      // 0 when the host doesn't say (or doesn't run the audio)
+  BarSync::State barState = BarSync::Off;
+  double barErrorMs = 0;     // where the host's interval is, minus ours
+  int barFixes = 0;          // intervals made shorter or longer to line up
+  int tempoVotes = 0;        // votes for the host's tempo
+  std::string syncNote;      // the host's tempo isn't the room's (see hostTempoNote)
+
   bool hosting = false;      // this instance hosts it
   bool hostBusy = false;     // starting or stopping
   int hostPort = 0;
@@ -125,6 +141,7 @@ struct Settings
   bool monitor = true;
   bool transmit = true;
   int opusKbps = DEFAULT_OPUS_KBPS; // what we send in Opus rooms; FLAC is lossless and ignores it
+  bool followHostTempo = true; // Follow Ableton's tempo (and line up with its bars)
   int editorWidth = 0, editorHeight = 0; // the editor's size, 0 for the default
 
   struct Remote
@@ -148,8 +165,13 @@ public:
   void stop();  // disconnects, stops hosting, joins the network thread
 
   // audio thread
+  struct HostTiming // from the host's ProcessContext
+  {
+    bool offline = false; // rendering faster than real time: the intervals are left alone
+    HostPosition position;
+  };
   void setupProcessing(double sampleRate, int maxBlockSize); // not while processing
-  void process(float **in, int numIn, float **out, int numOut, int frames);
+  void process(float **in, int numIn, float **out, int numOut, int frames, const HostTiming *timing = nullptr);
 
   // any thread
   void getSnapshot(Snapshot &out) const;
@@ -171,6 +193,8 @@ public:
   void setMetronome(float volume, bool mute);
   void setOpusKbps(int kbps); // one of Settings::OPUS_KBPS; it applies from the next interval
   void setEditorSize(int width, int height);
+  void setFollowHostTempo(bool on);
+  void setHostName(const std::string &name); // the host's name, for the editor
 
   enum RemoteField { RemoteVolume, RemotePan, RemoteMute, RemoteSolo };
   void setRemote(const std::string &user, int channel, RemoteField field, float value);
@@ -178,7 +202,7 @@ public:
   // Text commands, for tests and automation (see plugin.cpp); returns the reply:
   //   connect host:port [name], disconnect, name X, host on|off, chat text (sent as typed),
   //   license accept|decline, transmit on|off, monitor on|off, metronome on|off,
-  //   bitrate 64|96|128|160|256|510, status, users, chatlog
+  //   bitrate 64|96|128|160|256|510, follow on|off, status, users, chatlog, syncnote
   std::string command(const std::string &line);
 
   static std::string remoteKey(const std::string &user, int channel); // user without @address
@@ -201,6 +225,7 @@ private:
   void updateUsers(Snapshot &snap);
   void pollHosting(Snapshot &snap);
   void checkCanSend(bool canSend);
+  void followHostTempo();
   void publish();
   int findUser(const std::string &name) const;
 
@@ -229,6 +254,7 @@ private:
   mutable std::mutex m_settingsMutex;
   Settings m_settings;
   unsigned int m_settingsRevision = 0;
+  std::string m_hostName; // under m_settingsMutex
 
   std::atomic<int> m_licenseAnswer { 0 }; // 1 accept, -1 decline
   std::atomic<bool> m_licenseWaiting { false };
@@ -239,6 +265,11 @@ private:
   std::atomic<unsigned int> m_processCalls { 0 };
   int m_maxBlock = 0;
   std::vector<float> m_bufL, m_bufR, m_spare;
+  BarSync m_barSync;
+  std::atomic<bool> m_follow { true }, m_barReset { false };
+  // what the audio thread saw, for the network thread
+  std::atomic<double> m_hostTempo { 0 }, m_barErrorMs { 0 };
+  std::atomic<int> m_barState { BarSync::Off }, m_barFixes { 0 };
 
   // network thread only
   ConnState m_state = ConnState::Disconnected;
@@ -253,6 +284,8 @@ private:
   double m_lastPublish = 0;
   unsigned int m_seenProcessCalls = 0;
   double m_lastAudio = -10;
+  TempoFollower m_tempoFollower;
+  double m_noteSince = -1; // since when the host's tempo isn't the room's
 };
 
 } // namespace ninjam_vst3

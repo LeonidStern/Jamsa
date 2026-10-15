@@ -28,6 +28,7 @@ static const size_t MAX_CHAT_LINES = 1000;
 static const char *LOCAL_CHANNEL_NAME = "main";
 static const double LICENSE_WAIT_SECONDS = 60.0;
 static const double PUBLISH_INTERVAL = 0.03;
+static const double SYNC_NOTE_DELAY = 3.0; // the host's tempo differs this long before the note shows
 
 static double now_seconds()
 {
@@ -131,6 +132,7 @@ std::string Settings::serialize() const
   s += std::string("monitor=") + (monitor ? "1" : "0") + "\n";
   s += std::string("transmit=") + (transmit ? "1" : "0") + "\n";
   s += "opus_kbps=" + std::to_string(opusKbps) + "\n";
+  s += std::string("follow_host_tempo=") + (followHostTempo ? "1" : "0") + "\n";
   if (editorWidth > 0 && editorHeight > 0) s += "editor_size=" + std::to_string(editorWidth) + "x" + std::to_string(editorHeight) + "\n";
   for (auto &r : remote)
     s += "remote=" + escape(r.first) + "\t" + num(r.second.volume) + "\t" + num(r.second.pan) + "\t" + (r.second.mute ? "1" : "0") + "\n";
@@ -159,6 +161,7 @@ bool Settings::deserialize(const std::string &data)
     else if (key == "metronome_mute") s.metronomeMute = value == "1";
     else if (key == "monitor") s.monitor = value == "1";
     else if (key == "transmit") s.transmit = value == "1";
+    else if (key == "follow_host_tempo") s.followHostTempo = value == "1";
     else if (key == "opus_kbps")
     {
       char *end = nullptr;
@@ -273,9 +276,10 @@ void Engine::setupProcessing(double sampleRate, int maxBlockSize)
   m_bufL.assign(m_maxBlock, 0.0f);
   m_bufR.assign(m_maxBlock, 0.0f);
   m_spare.assign(m_maxBlock, 0.0f);
+  m_barSync.reset();
 }
 
-void Engine::process(float **in, int numIn, float **out, int numOut, int frames)
+void Engine::process(float **in, int numIn, float **out, int numOut, int frames, const HostTiming *timing)
 {
   if (frames <= 0 || numOut < 1 || !out || !out[0]) return;
   m_processCalls.fetch_add(1, std::memory_order_relaxed);
@@ -283,6 +287,7 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames)
   const int srate = m_sampleRate.load(std::memory_order_relaxed);
   float *inL = numIn > 0 && in ? in[0] : nullptr;
   float *inR = numIn > 1 && in ? in[1] : inL;
+  m_hostTempo.store(timing && timing->position.tempo > 0 ? timing->position.tempo : 0.0, std::memory_order_relaxed);
 
   std::unique_lock<std::mutex> audio(m_audioMutex, std::try_to_lock);
   if (!audio.owns_lock())
@@ -292,6 +297,27 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames)
       if (out[c]) memset(out[c], 0, sizeof(float) * frames);
     return;
   }
+
+  // the host's bars: the interval playing now may end a little early or late, so the next
+  // ones start on them
+  if (m_barReset.exchange(false, std::memory_order_acquire)) m_barSync.reset();
+  if (!m_follow.load(std::memory_order_relaxed) || !timing) m_barSync.reset();
+  else if (!timing->offline)
+  {
+    BarSync::Interval iv;
+    int length = 0;
+    iv.running = m_client->IsIntervalRunning();
+    m_client->GetPosition(&iv.pos, &length);
+    iv.len = m_client->GetUsualIntervalLength();
+    iv.bpi = m_client->GetBPI();
+    iv.bpm = m_client->GetActualBPM();
+    iv.count = m_client->GetLoopCount();
+    const int end = m_barSync.process(timing->position, frames, srate, iv);
+    if (end > 0) m_client->SetIntervalEnd(end);
+  }
+  m_barState.store(m_barSync.state(), std::memory_order_relaxed);
+  m_barErrorMs.store(m_barSync.errorMs(), std::memory_order_relaxed);
+  m_barFixes.store(m_barSync.corrections(), std::memory_order_relaxed);
 
   // NJClient clears its output before it reads its input, so it gets a copy of the input
   for (int done = 0; done < frames; )
@@ -341,6 +367,7 @@ void Engine::setSettings(const Settings &s)
     m_settingsRevision ++;
   }
   m_inputGain = s.inputVolume;
+  if (m_follow.exchange(s.followHostTempo) != s.followHostTempo) m_barReset = true;
   post([this]() {
     applyLocalSettings();
     m_appliedRemote.clear(); // channels already here get the loaded settings too
@@ -505,6 +532,24 @@ void Engine::setEditorSize(int width, int height)
   m_settings.editorHeight = height;
 }
 
+void Engine::setFollowHostTempo(bool on)
+{
+  {
+    std::lock_guard<std::mutex> lock(m_settingsMutex);
+    if (m_settings.followHostTempo == on) return;
+    m_settings.followHostTempo = on;
+  }
+  m_follow = on;
+  m_barReset = true;
+  if (on) post([this]() { m_tempoFollower.arm(); }); // a vote for the host's tempo, if the room's differs
+}
+
+void Engine::setHostName(const std::string &name)
+{
+  std::lock_guard<std::mutex> lock(m_settingsMutex);
+  m_hostName = name;
+}
+
 void Engine::setRemote(const std::string &user, int channel, RemoteField field, float value)
 {
   const std::string key = remoteKey(user, channel);
@@ -570,6 +615,7 @@ void Engine::threadProc()
       if (m_client->Run()) break; // nonzero: nothing more to do for now
 
     updateConnection();
+    followHostTempo();
 
     const double t = now_seconds();
     if (t - m_lastPublish >= PUBLISH_INTERVAL)
@@ -668,6 +714,7 @@ void Engine::updateConnection()
       m_connectedTime = now_seconds();
       m_statusText = "Connected to " + m_server + " as " + displayName(m_client->GetUser());
       addChat(ChatLine::System, "", m_statusText);
+      m_tempoFollower.arm(); // the room gets the host's tempo, if they differ
     }
     return;
   }
@@ -702,6 +749,28 @@ void Engine::checkCanSend(bool canSend)
     m_warnedCantSend = false;
     addChat(ChatLine::System, "", "The room plays " + codec_name(m_client->GetCodecMask()) + " now, so you're sending again.");
   }
+}
+
+// votes the room to the host's tempo when it changes (see TempoFollower)
+void Engine::followHostTempo()
+{
+  if (!getSettings().followHostTempo) return;
+  const double t = now_seconds();
+  // the host's tempo, while it runs the audio
+  const double tempo = t - m_lastAudio < 1.0 ? m_hostTempo.load(std::memory_order_relaxed) : 0.0;
+  const int room = m_state == ConnState::Connected ? m_client->GetServerBPM() : 0;
+  const int bpm = m_tempoFollower.update(t, tempo, room);
+  if (bpm <= 0) return;
+  char buf[256];
+  snprintf(buf, sizeof(buf), "!vote bpm %d", bpm);
+  m_client->ChatMessage_Send("MSG", buf);
+  std::string host;
+  {
+    std::lock_guard<std::mutex> lock(m_settingsMutex);
+    host = shortHostName(m_hostName);
+  }
+  snprintf(buf, sizeof(buf), "%s is at %s BPM, so you vote the room to %d (!vote bpm %d).", host.c_str(), bpmText(tempo).c_str(), bpm, bpm);
+  addChat(ChatLine::System, "", buf);
 }
 
 void Engine::doSetHosting(bool on)
@@ -870,6 +939,27 @@ void Engine::publish()
   snap.localPeak[0] = m_client->GetLocalChannelPeak(0, 0);
   snap.localPeak[1] = m_client->GetLocalChannelPeak(0, 1);
 
+  // following the host, and its tempo against the room's
+  std::string hostName;
+  {
+    std::lock_guard<std::mutex> lock(m_settingsMutex);
+    snap.followTempo = m_settings.followHostTempo;
+    hostName = m_hostName;
+  }
+  snap.hostLabel = shortHostName(hostName);
+  snap.hostTempo = snap.audioRunning ? m_hostTempo.load(std::memory_order_relaxed) : 0.0;
+  snap.barState = snap.followTempo && m_state == ConnState::Connected ? (BarSync::State)m_barState.load(std::memory_order_relaxed) : BarSync::Off;
+  snap.barErrorMs = m_barErrorMs.load(std::memory_order_relaxed);
+  snap.barFixes = m_barFixes.load(std::memory_order_relaxed);
+  snap.tempoVotes = m_tempoFollower.votes();
+  const int roomBpm = m_state == ConnState::Connected ? m_client->GetServerBPM() : 0;
+  // not while the room's tempo changes to the host's (at the next interval)
+  const bool differs = snap.hostTempo > 0 && roomBpm > 0 && fabs(snap.hostTempo - roomBpm) > BarSync::SAME_TEMPO &&
+                       fabs(snap.hostTempo - m_client->GetActualBPM()) > BarSync::SAME_TEMPO;
+  if (!differs) m_noteSince = -1;
+  else if (m_noteSince < 0) m_noteSince = t;
+  if (differs && t - m_noteSince >= SYNC_NOTE_DELAY) snap.syncNote = hostTempoNote(hostName, snap.hostTempo, roomBpm, snap.followTempo);
+
   pollHosting(snap);
 
   {
@@ -965,6 +1055,19 @@ static const char *state_name(ConnState s)
   }
 }
 
+static const char *bar_state_name(BarSync::State s)
+{
+  switch (s)
+  {
+    case BarSync::NoPosition: return "noposition";
+    case BarSync::Stopped: return "stopped";
+    case BarSync::OtherTempo: return "othertempo";
+    case BarSync::Lining: return "lining";
+    case BarSync::Aligned: return "aligned";
+    default: return "off";
+  }
+}
+
 std::string Engine::command(const std::string &lineIn)
 {
   const std::string line = trim(lineIn);
@@ -993,6 +1096,13 @@ std::string Engine::command(const std::string &lineIn)
     setOpusKbps(k);
     return "ok";
   }
+  if (verb == "follow") { setFollowHostTempo(arg == "on" || arg == "1"); return "ok"; }
+  if (verb == "syncnote")
+  {
+    Snapshot s;
+    getSnapshot(s);
+    return s.syncNote;
+  }
   if (verb == "metronome")
   {
     const Settings st = getSettings();
@@ -1003,13 +1113,16 @@ std::string Engine::command(const std::string &lineIn)
   {
     Snapshot s;
     getSnapshot(s);
-    char buf[512];
-    snprintf(buf, sizeof(buf), "state=%s server=%s user=%s bpm=%.1f bpi=%d pos=%d len=%d codec=%s upload=%s kbps=%d users=%d hosting=%d port=%d public=%s local=%s license=%d audio=%d",
-             state_name(s.state), s.server.c_str(), s.userName.c_str(), s.bpm, s.bpi, s.intervalPos, s.intervalLength,
-             s.roomCodec.empty() ? "-" : s.roomCodec.c_str(), s.uploadCodec.empty() ? "-" : s.uploadCodec.c_str(),
-             s.opusKbps, (int)s.users.size(), s.hosting ? 1 : 0, s.hostPort,
-             s.hostPublicAddress.empty() ? "-" : s.hostPublicAddress.c_str(),
-             s.hostLocalAddress.empty() ? "-" : s.hostLocalAddress.c_str(), s.licensePending ? 1 : 0, s.audioRunning ? 1 : 0);
+    char buf[1024];
+    const int n = snprintf(buf, sizeof(buf), "state=%s server=%s user=%s bpm=%.1f bpi=%d pos=%d len=%d codec=%s upload=%s kbps=%d users=%d hosting=%d port=%d public=%s local=%s license=%d audio=%d",
+                           state_name(s.state), s.server.c_str(), s.userName.c_str(), s.bpm, s.bpi, s.intervalPos, s.intervalLength,
+                           s.roomCodec.empty() ? "-" : s.roomCodec.c_str(), s.uploadCodec.empty() ? "-" : s.uploadCodec.c_str(),
+                           s.opusKbps, (int)s.users.size(), s.hosting ? 1 : 0, s.hostPort,
+                           s.hostPublicAddress.empty() ? "-" : s.hostPublicAddress.c_str(),
+                           s.hostLocalAddress.empty() ? "-" : s.hostLocalAddress.c_str(), s.licensePending ? 1 : 0, s.audioRunning ? 1 : 0);
+    if (n > 0 && n < (int)sizeof(buf))
+      snprintf(buf + n, sizeof(buf) - n, " follow=%d hosttempo=%.3f bars=%s barerr=%.3f barfixes=%d tempovotes=%d",
+               s.followTempo ? 1 : 0, s.hostTempo, bar_state_name(s.barState), s.barErrorMs, s.barFixes, s.tempoVotes);
     return buf;
   }
   if (verb == "users")
