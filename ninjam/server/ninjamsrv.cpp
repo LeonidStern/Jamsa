@@ -35,6 +35,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <pwd.h>
+#include <grp.h>
 #endif
 #include <signal.h>
 #include <stdarg.h>
@@ -44,6 +47,7 @@
 #include "../netmsg.h"
 #include "../mpb.h"
 #include "usercon.h"
+#include "portmap.h"
 
 #include "../../WDL/rng.h"
 #include "../../WDL/sha.h"
@@ -69,6 +73,9 @@ static void delGroup(User_Group *g) { delete g; }
 WDL_StringKeyedArray<User_Group *> g_private_groups(false,delGroup);
 
 JNL_Listen *m_listener;
+int m_listener_port;
+PortMapper g_portmapper;
+int m_portmap_port; // port the router is being asked to forward, 0 if none
 void onConfigChange(int argc, char **argv);
 void logText(const char *s, ...);
 
@@ -133,7 +140,11 @@ int g_config_maxch_user;
 WDL_String g_config_logpath;
 int g_config_log_sessionlen;
 
+int g_config_max_pending; // connections that have not logged in yet, server-wide
+int g_config_max_pending_per_ip; // same, per remote address
+
 int g_config_max_users; // these all must be copied to User_Group
+int g_config_portmap;
 int g_config_keepalive;
 WDL_FastString g_config_motdfile, g_config_private_lobby_motdfile;
 WDL_FastString g_config_default_topic;
@@ -353,8 +364,21 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
   {
     if (lp->getnumtokens() != 2 && lp->getnumtokens() != 3) return -1;
     
-    g_config_maxch_user=lp->gettoken_int(1);
-    g_config_maxch_anon=lp->gettoken_int(lp->getnumtokens()>2?2:1);
+    g_config_maxch_user=wdl_clamp(lp->gettoken_int(1),0,MAX_USER_CHANNELS);
+    g_config_maxch_anon=wdl_clamp(lp->gettoken_int(lp->getnumtokens()>2?2:1),0,MAX_USER_CHANNELS);
+  }
+  else if (!stricmp(t,"MaxPendingConnections"))
+  {
+    if (lp->getnumtokens() != 2 && lp->getnumtokens() != 3) return -1;
+    g_config_max_pending=lp->gettoken_int(1);
+    if (lp->getnumtokens() > 2) g_config_max_pending_per_ip=lp->gettoken_int(2);
+  }
+  else if (!stricmp(t,"PortMapping"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int x=lp->gettoken_enum(1,"no\0yes\0");
+    if (x < 0) return -2;
+    g_config_portmap=x;
   }
   else if (!stricmp(t,"SetKeepAlive"))
   {
@@ -592,6 +616,9 @@ static int ReadConfig(char *configfile, bool is_init=false)
   g_config_log_sessionlen=10; // ten minute default, tho the user will need to specify the path anyway
 
   g_config_max_users=0; // unlimited users
+  g_config_max_pending=64;
+  g_config_max_pending_per_ip=8;
+  g_config_portmap=0;
   g_config_motdfile.Set("");
 
   g_acllist.Resize(0);
@@ -677,7 +704,7 @@ int g_done;
 
 void sighandler(int sig)
 {
-  if (sig == SIGINT)
+  if (sig == SIGINT || sig == SIGTERM)
   {
     g_done=1;
   }
@@ -706,6 +733,22 @@ void enforceACL(User_Group *group)
 }
 
 
+// returns true if a new connection from addr would go over the limits on connections that haven't logged in yet
+static bool tooManyPending(unsigned int addr)
+{
+  if (g_config_max_pending <= 0 && g_config_max_pending_per_ip <= 0) return false;
+  int total=0, from_addr=0;
+  for (int x = 0; x < m_group->m_users.GetSize(); x ++)
+  {
+    User_Connection *c=m_group->m_users.Get(x);
+    if (c->m_auth_state > 0) continue;
+    total++;
+    if (c->m_netcon.GetConnection()->get_remote() == addr) from_addr++;
+  }
+  return (g_config_max_pending > 0 && total >= g_config_max_pending) ||
+         (g_config_max_pending_per_ip > 0 && from_addr >= g_config_max_pending_per_ip);
+}
+
 void usage()
 {
     printf("Usage: NINJAMserver config.cfg [options]\n"
@@ -725,11 +768,19 @@ void usage()
 
 void logText(const char *s, ...)
 {
+#ifndef _WIN32
+    FILE *outfp = g_logfp?g_logfp:stdout;
+    flockfile(outfp); // also called from the port mapping thread
+#endif
     if (g_logfp) 
     {      
       time_t tv;
       time(&tv);
+#ifdef _WIN32
       struct tm *t=localtime(&tv);
+#else
+      struct tm tmbuf, *t=localtime_r(&tv,&tmbuf);
+#endif
       fprintf(g_logfp,"[%04d/%02d/%02d %02d:%02d:%02d] ",t->tm_year+1900,t->tm_mon+1,t->tm_mday,t->tm_hour,t->tm_min,t->tm_sec);
     }
 
@@ -742,6 +793,9 @@ void logText(const char *s, ...)
     if (g_logfp) fflush(g_logfp);
 
     va_end(ap);
+#ifndef _WIN32
+    funlockfile(outfp);
+#endif
 }
 
 static void appendGroupUsers(User_Group *group, WDL_FastString &str, int linelen)
@@ -915,12 +969,6 @@ int main(int argc, char **argv)
   WDL_RNG_addentropy(&v,sizeof(v));
 #else
 
-  if (g_set_uid != -1) 
-  {
-    if (setuid(g_set_uid))
-      printf("warning: setuid(%d) failed\n",g_set_uid);
-  }
-
   time_t v=time(NULL);
   WDL_RNG_addentropy(&v,sizeof(v));
   int pid=getpid();
@@ -943,6 +991,7 @@ int main(int argc, char **argv)
   signal(SIGHUP,sighandler);
 #endif
   signal(SIGINT,sighandler);
+  signal(SIGTERM,sighandler);
 
 
   if (g_logfilename.Get()[0])
@@ -962,9 +1011,41 @@ int main(int argc, char **argv)
   {
     logText("Port: %d\n",g_config_port);    
     m_listener = new JNL_Listen(g_config_port);
+    m_listener_port = g_config_port;
     if (m_listener->is_error()) 
     {
-      logText("Error listening on port %d!\n",g_config_port);
+      logText("Error listening on port %d! Another program may already be using it (2049 is also the NFS port), "
+              "or you may need permission to use it. Set a different Port in the config or use -port.\n",g_config_port);
+      if (g_logfp) fclose(g_logfp);
+      return 1;
+    }
+
+#ifndef _WIN32
+    // drop root only after the port is open, so ports below 1024 (e.g. 443 on restrictive networks) work with SetUID
+    if (g_set_uid != -1)
+    {
+      struct passwd *pw = getpwuid(g_set_uid);
+      if (pw)
+      {
+        if (initgroups(pw->pw_name,pw->pw_gid) || setgid(pw->pw_gid))
+          logText("warning: could not switch to the groups of uid %d\n",g_set_uid);
+      }
+      else if (setgroups(0,NULL))
+        logText("warning: could not drop supplementary groups\n");
+
+      if (setuid(g_set_uid))
+      {
+        logText("Error: setuid(%d) failed, refusing to keep running as root\n",g_set_uid);
+        if (g_logfp) fclose(g_logfp);
+        return 1;
+      }
+    }
+#endif
+
+    if (g_config_portmap)
+    {
+      m_portmap_port=g_config_port;
+      g_portmapper.Start(m_portmap_port);
     }
 
     m_group->CreateUserLookup=myCreateUserLookup;
@@ -991,6 +1072,11 @@ int main(int argc, char **argv)
         if (flag == ACL_FLAG_DENY)
         {
           logText("Denying connection (via ACL)\n");
+          delete con;
+        }
+        else if (flag != ACL_FLAG_RESERVE && tooManyPending(con->get_remote()))
+        {
+          logText("Denying connection (too many connections waiting to log in)\n");
           delete con;
         }
         else
@@ -1290,6 +1376,8 @@ int main(int argc, char **argv)
 
   logText("Shutting down server\n");
 
+  g_portmapper.Stop();
+
   g_private_groups.DeleteAll();
   delete m_group;
   delete m_listener;
@@ -1349,7 +1437,29 @@ void onConfigChange(int argc, char **argv)
       }
   }
 
-  delete m_listener;
-  m_listener = new JNL_Listen(g_config_port);
+  if (g_config_port != m_listener_port)
+  {
+    JNL_Listen *nl = new JNL_Listen(g_config_port);
+    if (nl->is_error())
+    {
+      logText("Error listening on port %d, still listening on port %d\n",g_config_port,m_listener_port);
+      delete nl;
+      g_config_port = m_listener_port;
+    }
+    else
+    {
+      delete m_listener;
+      m_listener = nl;
+      m_listener_port = g_config_port;
+      logText("Now listening on port %d\n",g_config_port);
+    }
+  }
 
+  const int portmap_port = g_config_portmap ? m_listener_port : 0;
+  if (portmap_port != m_portmap_port)
+  {
+    if (portmap_port) g_portmapper.Start(portmap_port);
+    else g_portmapper.Stop();
+    m_portmap_port = portmap_port;
+  }
 }

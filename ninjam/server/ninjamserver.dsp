@@ -175,6 +175,10 @@ SOURCE=.\ninjamsrv.cpp
 # End Source File
 # Begin Source File
 
+SOURCE=.\portmap.cpp
+# End Source File
+# Begin Source File
+
 SOURCE=.\usercon.cpp
 # End Source File
 # End Group
@@ -225,6 +229,10 @@ SOURCE=..\mpb.h
 SOURCE=..\netmsg.h
 # End Source File
 # End Group
+# Begin Source File
+
+SOURCE=.\portmap.h
+# End Source File
 # Begin Source File
 
 SOURCE=.\projectmode.h

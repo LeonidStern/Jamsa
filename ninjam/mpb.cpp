@@ -497,7 +497,7 @@ int mpb_client_auth_user::parse(Net_Message *msg) // return 0 on success
   len -= sizeof(passhash);
 
   username=(char *)p;
-  while (*p && len>0)
+  while (len>0 && *p)
   {
     p++;
     len--;
@@ -627,11 +627,12 @@ int mpb_client_set_usermask::parse_get_rec(int offs, const char **username, unsi
   p+=offs;
 
   *username=(const char*)p;
-  while (*p && len > 0)
+  while (len > 0 && *p)
   {
     len--;
     p++;
   }
+  if (len < 1) return -1; // username not null terminated
   p++;
   len--;
 
@@ -717,20 +718,22 @@ int mpb_client_set_channel_info::parse_get_rec(int offs, const char **chname, sh
 {
   if (!m_intmsg) return 0;
   const unsigned char *p=(const unsigned char *)m_intmsg->get_data();
-  if (!p || m_intmsg->get_size() <= 2) return 0;
-  int len=m_intmsg->get_size()-offs;
+  if (!p || m_intmsg->get_size() <= 2 || offs < 0) return 0;
+  // offs is relative to the start of the records, which follow the 2 byte mpisize header
+  int len=m_intmsg->get_size()-2-offs;
 
   mpisize=(int)p[0] | (((int)p[1])<<8);
-  if (len < mpisize) return 0;
+  if (len < 1 + mpisize) return 0;
 
   p+=offs+2;
 
   *chname=(const char*)p;
-  while (*p && len > 0)
+  while (len > 0 && *p)
   {
     len--;
     p++;
   }
+  if (len < 1) return -1; // channel name not null terminated
   p++;
   len--;
 
@@ -867,6 +870,7 @@ int mpb_chat_message::parse(Net_Message *msg) // return 0 on success
   if (!p) return 2;
 
   const char *endp=(char*)msg->get_data()+msg->get_size();
+  if (endp[-1]) return 4; // every field, including the last, must be null terminated
 
   int x;
   memset(parms,0,sizeof(parms));
