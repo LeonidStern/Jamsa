@@ -37,6 +37,7 @@
 #define MAKE_NJ_FOURCC(A,B,C,D) ((A) | ((B)<<8) | ((C)<<16) | ((D)<<24))
 #define NJ_ENCODER_FMT_TYPE MAKE_NJ_FOURCC('O','G','G','v')
 #define NJ_OPUS_FMT_TYPE MAKE_NJ_FOURCC('O','P','U','S')
+#define NJ_FLAC_FMT_TYPE MAKE_NJ_FOURCC('F','L','A','C')
 
 #ifdef REANINJAM
 #define WDL_VORBIS_INTERFACE_ONLY
@@ -90,10 +91,18 @@
 #include "opusencdec.h"
 #endif
 
+// NINJAM_FLAC builds in FLAC (needs libFLAC) the same way
+#ifdef NINJAM_FLAC
+#include "flacencdec.h"
+#endif
+
 static I_NJEncoder *CreateEncoderForType(unsigned int fourcc, int srate, int nch, int bitrate, int serno)
 {
 #ifdef NINJAM_OPUS
   if (fourcc == NJ_OPUS_FMT_TYPE) return new NJOpusEncoder(srate,nch,bitrate,serno);
+#endif
+#ifdef NINJAM_FLAC
+  if (fourcc == NJ_FLAC_FMT_TYPE) return new NJFlacEncoder(srate,nch,bitrate,serno);
 #endif
   return CreateNJEncoder(srate,nch,bitrate,serno);
 }
@@ -102,6 +111,9 @@ static I_NJDecoder *CreateDecoderForType(unsigned int fourcc)
 {
 #ifdef NINJAM_OPUS
   if (fourcc == NJ_OPUS_FMT_TYPE) return new NJOpusDecoder;
+#endif
+#ifdef NINJAM_FLAC
+  if (fourcc == NJ_FLAC_FMT_TYPE) return new NJFlacDecoder;
 #endif
   return CreateNJDecoder();
 }
@@ -462,6 +474,7 @@ public:
   unsigned int m_enc_fourcc; // codec of m_enc, chosen at the start of each interval
   int m_enc_bitrate_used;
   int m_enc_nch_used;
+  int m_enc_srate_used;
   Net_Message *m_enc_header_needsend;
 #endif
 
@@ -605,6 +618,7 @@ NJClient::NJClient()
 
   config_autosubscribe=1;
   config_send_opus=true;
+  config_send_flac=true;
   m_codec_mask=0;
   config_savelocalaudio=0;
   config_metronome=0.5f;
@@ -931,6 +945,19 @@ void NJClient::Connect(const char *host, const char *user, const char *pass)
   m_codec_mask=0; // Vorbis until the server says otherwise
 }
 
+unsigned int NJClient::GetUploadCodec() const
+{
+  // ninjamsrv names one codec, the room's. If a mask ever holds more than one,
+  // FLAC goes first, then Opus, as JamTaba does, so every client picks the same
+#ifdef NINJAM_FLAC
+  if (config_send_flac && (m_codec_mask & CLIENT_CAP_CODEC_FLAC)) return NJ_FLAC_FMT_TYPE;
+#endif
+#ifdef NINJAM_OPUS
+  if (config_send_opus && (m_codec_mask & CLIENT_CAP_CODEC_OPUS)) return NJ_OPUS_FMT_TYPE;
+#endif
+  return NJ_ENCODER_FMT_TYPE; // Vorbis, also when the server sent no mask (older servers)
+}
+
 int NJClient::GetStatus()
 {
   if (!m_status || m_status == -1) return NJC_STATUS_PRECONNECT;
@@ -1089,6 +1116,9 @@ int NJClient::Run() // nonzero if sleep ok
 
 #ifdef NINJAM_OPUS
               repl.client_caps|=CLIENT_CAP_CODEC_OPUS; // we can decode Opus
+#endif
+#ifdef NINJAM_FLAC
+              repl.client_caps|=CLIENT_CAP_CODEC_FLAC; // we can decode FLAC
 #endif
 
               WDL_SHA1 tmp;
@@ -1539,11 +1569,8 @@ int NJClient::Run() // nonzero if sleep ok
         if (lc->m_need_header)
         {
           // the codec can only change at the start of an interval
-          unsigned int fourcc=NJ_ENCODER_FMT_TYPE;
-#ifdef NINJAM_OPUS
-          if (config_send_opus && (m_codec_mask & CLIENT_CAP_CODEC_OPUS)) fourcc=NJ_OPUS_FMT_TYPE;
-#endif
-          if (lc->m_enc && lc->m_enc_fourcc != fourcc)
+          const unsigned int fourcc=GetUploadCodec();
+          if (lc->m_enc && (lc->m_enc_fourcc != fourcc || lc->m_enc_srate_used != m_srate))
           {
             delete lc->m_enc;
             lc->m_enc=0;
@@ -1552,9 +1579,9 @@ int NJClient::Run() // nonzero if sleep ok
         }
         if (!lc->m_enc)
         {
-          // Vorbis gets a third more for stereo; Opus codes stereo efficiently and uses the setting as is
-          const int br = lc->m_enc_fourcc == NJ_OPUS_FMT_TYPE ? lc->bitrate : lc->bitrate+(block_nch>1?lc->bitrate/3:0);
-          lc->m_enc = CreateEncoderForType(lc->m_enc_fourcc,m_srate,lc->m_enc_nch_used=block_nch,lc->m_enc_bitrate_used = br,WDL_RNG_int32());
+          // Vorbis gets a third more for stereo; Opus codes stereo efficiently and uses the setting as is (FLAC ignores it)
+          const int br = lc->m_enc_fourcc != NJ_ENCODER_FMT_TYPE ? lc->bitrate : lc->bitrate+(block_nch>1?lc->bitrate/3:0);
+          lc->m_enc = CreateEncoderForType(lc->m_enc_fourcc,lc->m_enc_srate_used=m_srate,lc->m_enc_nch_used=block_nch,lc->m_enc_bitrate_used = br,WDL_RNG_int32());
         }
 
         if (lc->m_need_header)
@@ -1770,6 +1797,9 @@ DecodeState *NJClient::start_decode(unsigned char *guid, int chanflags, unsigned
     NJ_ENCODER_FMT_TYPE,
 #ifdef NINJAM_OPUS
     NJ_OPUS_FMT_TYPE,
+#endif
+#ifdef NINJAM_FLAC
+    NJ_FLAC_FMT_TYPE,
 #endif
   };
   unsigned int found_type = fourcc;
@@ -3245,6 +3275,7 @@ Local_Channel::Local_Channel() : channel_idx(0), src_channel(0), volume(1.0f), p
                 m_enc_fourcc(NJ_ENCODER_FMT_TYPE),
                 m_enc_bitrate_used(0),
                 m_enc_nch_used(0),
+                m_enc_srate_used(0),
                 m_enc_header_needsend(NULL),
 #endif
                 bcast_active(false), cbf(NULL), cbf_inst(NULL),

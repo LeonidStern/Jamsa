@@ -120,7 +120,8 @@ public:
   float config_mastervolume,config_masterpan; // master volume
   bool  config_mastermute;
   int   config_debug_level;
-  bool  config_send_opus; // in builds with NINJAM_OPUS: send Opus when everyone in the room can decode it
+  bool  config_send_opus; // in builds with NINJAM_OPUS: send Opus when the server's codec mask has it
+  bool  config_send_flac; // in builds with NINJAM_FLAC: send FLAC when the server's codec mask has it
   int   config_play_prebuffer; // -1 means play instantly, 0 means play when full file is there, otherwise refers to how many
                                // bytes of compressed source to have before play. the default value is 4096.
   int config_remote_autochan; // 1=auto-assign by channel, 2=auto-assign by user
@@ -130,6 +131,11 @@ public:
 
   enum { NJC_STATUS_DISCONNECTED=-3,NJC_STATUS_INVALIDAUTH=-2, NJC_STATUS_CANTCONNECT=-1, NJC_STATUS_OK=0, NJC_STATUS_PRECONNECT};
   int GetStatus();
+
+  // the codec mask the server sent (CLIENT_CAP_CODEC_* bits; 0 = Vorbis, also when it sent none),
+  // and the codec (fourcc, such as 'OGGv', 'OPUS', 'FLAC') this client uploads the next interval with
+  int GetCodecMask() const { return m_codec_mask; }
+  unsigned int GetUploadCodec() const;
 
   void SetWorkDir(char *path);
   const char *GetWorkDir() { return m_workdir.Get(); }
