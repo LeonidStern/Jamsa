@@ -1,8 +1,15 @@
-# CMake build for ninjamsrv, used for Windows and for the copy of the server that
-# ships inside the JamTaba plugin. The Makefile in this folder still works on
-# Linux and macOS.
+# CMake build for ninjamsrv, used for Windows and for the server that is built
+# into the JamTaba plugin. The Makefile in this folder still works on Linux and
+# macOS.
 #
 #   cmake -S ninjam/server -B build-server && cmake --build build-server
+#
+# Targets:
+#   ninjamsrv                   the command line server
+#   ninjamsrv_embedded          static library: the server on a background thread
+#                               inside another program (ninjamsrv_embedded.h)
+#   ninjamsrv_embedded_runner   test program that runs the embedded server like
+#                               the command line one (NINJAM_SERVER_TESTS=ON)
 #
 # NINJAM_PORTMAP (on by default) builds in router port mapping. miniupnpc and
 # libnatpmp are then downloaded and linked statically, so the binary has no
@@ -12,15 +19,16 @@ cmake_minimum_required(VERSION 3.24)
 project(ninjamsrv LANGUAGES C CXX)
 
 option(NINJAM_PORTMAP "Map the server port on the router with UPnP-IGD or NAT-PMP" ON)
+option(NINJAM_SERVER_TESTS "Build the test runner for the embedded server" OFF)
 
 set(WDL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../WDL)
 
-add_executable(ninjamsrv
-    ninjamsrv.cpp
-    usercon.cpp
-    portmap.cpp
-    ../mpb.cpp
-    ../netmsg.cpp
+set(NINJAMSRV_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/ninjamsrv.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/usercon.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/portmap.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../mpb.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../netmsg.cpp
     ${WDL_DIR}/jnetlib/asyncdns.cpp
     ${WDL_DIR}/jnetlib/connection.cpp
     ${WDL_DIR}/jnetlib/listen.cpp
@@ -29,22 +37,6 @@ add_executable(ninjamsrv
     ${WDL_DIR}/rng.cpp
     ${WDL_DIR}/sha.cpp
 )
-target_compile_features(ninjamsrv PRIVATE cxx_std_11)
-
-if(APPLE)
-    target_compile_definitions(ninjamsrv PRIVATE _MAC)
-endif()
-
-if(WIN32)
-    target_compile_definitions(ninjamsrv PRIVATE _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS NOMINMAX)
-    target_link_libraries(ninjamsrv PRIVATE ws2_32)
-    if(MINGW)
-        target_link_options(ninjamsrv PRIVATE -static)
-    endif()
-else()
-    find_package(Threads REQUIRED)
-    target_link_libraries(ninjamsrv PRIVATE Threads::Threads)
-endif()
 
 if(NINJAM_PORTMAP)
     include(FetchContent)
@@ -66,11 +58,45 @@ if(NINJAM_PORTMAP)
         EXCLUDE_FROM_ALL
     )
     FetchContent_MakeAvailable(miniupnp libnatpmp)
+    set_target_properties(libminiupnpc-static natpmp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     # the server includes <miniupnpc/miniupnpc.h>, as with the system package
     file(COPY ${miniupnp_SOURCE_DIR}/miniupnpc/include/ DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/portmap-include/miniupnpc)
-    target_include_directories(ninjamsrv PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/portmap-include)
+endif()
 
-    target_compile_definitions(ninjamsrv PRIVATE NINJAM_PORTMAP)
-    target_link_libraries(ninjamsrv PRIVATE libminiupnpc-static natpmp)
+function(ninjamsrv_configure target)
+    target_compile_features(${target} PRIVATE cxx_std_11)
+    if(APPLE)
+        target_compile_definitions(${target} PRIVATE _MAC)
+    endif()
+    if(WIN32)
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS NOMINMAX)
+        target_link_libraries(${target} PUBLIC ws2_32)
+    else()
+        find_package(Threads REQUIRED)
+        target_link_libraries(${target} PUBLIC Threads::Threads)
+    endif()
+    if(NINJAM_PORTMAP)
+        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/portmap-include)
+        target_compile_definitions(${target} PRIVATE NINJAM_PORTMAP)
+        target_link_libraries(${target} PUBLIC libminiupnpc-static natpmp)
+    endif()
+endfunction()
+
+add_executable(ninjamsrv ${NINJAMSRV_SOURCES})
+ninjamsrv_configure(ninjamsrv)
+if(MINGW)
+    target_link_options(ninjamsrv PRIVATE -static)
+endif()
+
+add_library(ninjamsrv_embedded STATIC EXCLUDE_FROM_ALL ${NINJAMSRV_SOURCES})
+ninjamsrv_configure(ninjamsrv_embedded)
+target_compile_definitions(ninjamsrv_embedded PRIVATE NINJAM_EMBEDDED)
+target_include_directories(ninjamsrv_embedded INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(ninjamsrv_embedded PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+if(NINJAM_SERVER_TESTS)
+    add_executable(ninjamsrv_embedded_runner tests/embedded_runner.cpp)
+    target_link_libraries(ninjamsrv_embedded_runner PRIVATE ninjamsrv_embedded)
+    target_compile_features(ninjamsrv_embedded_runner PRIVATE cxx_std_11)
 endif()

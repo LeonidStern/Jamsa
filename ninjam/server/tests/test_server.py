@@ -1,6 +1,8 @@
 """Protocol-level tests for ninjamsrv.
 
 Run:  NINJAMSRV=../ninjamsrv python3 -m unittest -v test_server
+The same tests run against the embedded server with NINJAMSRV=path/to/ninjamsrv_embedded_runner
+(cmake -DNINJAM_SERVER_TESTS=ON).
 Each test starts its own server on a free port with a temporary config.
 """
 import os
@@ -94,6 +96,7 @@ class ServerTest(unittest.TestCase):
         # sanitizer builds report memory errors and undefined behaviour on stdout/stderr
         self.assertNotIn("runtime error", out)
         self.assertNotIn("AddressSanitizer", out)
+        self.assertNotIn("ThreadSanitizer", out)
 
     def client(self, name, codecs=0):
         c = Client(self.server.port)
@@ -311,6 +314,7 @@ class VorbisOnlyTests(ServerTest):
 
 class StartupTests(unittest.TestCase):
     @unittest.skipUnless(os.geteuid() == 0, "needs root to bind a port below 1024")
+    @unittest.skipIf("embedded" in os.path.basename(SERVER), "the embedded server never changes user")
     def test_can_use_low_port_with_setuid(self):
         port = 1000 + os.getpid() % 23
         s = Server(extra_config="SetUID 65534\n", port=port)
@@ -371,6 +375,7 @@ class PortMappingTests(unittest.TestCase):
         self.server.log.close()
         self.assertNotIn("runtime error", out)
         self.assertNotIn("AddressSanitizer", out)
+        self.assertNotIn("ThreadSanitizer", out)
 
     def log(self):
         try:

@@ -39,6 +39,13 @@ JNL_Connection::JNL_Connection(JNL_IAsyncDNS *dns, int sendbufsize, int recvbufs
   memset(m_saddr,0,sizeof(struct sockaddr_in));
 }
 
+// a peer that hangs up must not raise SIGPIPE: the server can run inside another program (macOS uses SO_NOSIGPIPE)
+#ifdef MSG_NOSIGNAL
+#define JNL_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define JNL_SEND_FLAGS 0
+#endif
+
 void JNL_Connection::connect(SOCKET s, struct sockaddr_in *loc)
 {
   close(1);
@@ -199,7 +206,7 @@ void JNL_Connection::run(int max_send_bytes, int max_recv_bytes, int *bytes_sent
         if (len > bytes_allowed_to_send) len=bytes_allowed_to_send;
         if (len > 0)
         {
-          int res=(int)::send(m_socket,(char*)m_send_buffer.Get()+m_send_pos,len,0);
+          int res=(int)::send(m_socket,(char*)m_send_buffer.Get()+m_send_pos,len,JNL_SEND_FLAGS);
           if (res==-1 && JNL_ERRNO != JNL_EWOULDBLOCK)
           {            
 //            m_state=STATE_CLOSED;
@@ -221,7 +228,7 @@ void JNL_Connection::run(int max_send_bytes, int max_recv_bytes, int *bytes_sent
             len=m_send_buffer.GetSize()-m_send_pos;
             if (len > m_send_len) len=m_send_len;
             if (len > bytes_allowed_to_send) len=bytes_allowed_to_send;
-            int res=(int)::send(m_socket,(char*)m_send_buffer.Get()+m_send_pos,len,0);
+            int res=(int)::send(m_socket,(char*)m_send_buffer.Get()+m_send_pos,len,JNL_SEND_FLAGS);
             if (res==-1 && JNL_ERRNO != JNL_EWOULDBLOCK)
             {
 //              m_state=STATE_CLOSED;
