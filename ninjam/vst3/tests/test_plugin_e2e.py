@@ -288,7 +288,7 @@ class PluginEndToEndTest(unittest.TestCase):
         # the host's tempo dragged to 110: one more vote
         self.assertEqual(lines["SYNC follow"], {"room_bpm": "110.0", "tempovotes": "2"}, log)
         # each interval starts on a host beat that is a multiple of BPI, every interval as long as usual
-        for name, n in (("100bpm", 4), ("110bpm", 3), ("loop", 5), ("moved", 3)):
+        for name, n in (("100bpm", 4), ("110bpm", 3), ("loop", 5), ("hidden", 5), ("moved", 3)):
             phase = lines["SYNC phase " + name]
             self.assertGreaterEqual(int(phase["n"]), n, name + "\n" + log)
             self.assertLess(float(phase["max_ms"]), MAX_HOST_PHASE_MS, name + "\n" + log)
@@ -298,15 +298,23 @@ class PluginEndToEndTest(unittest.TestCase):
             self.assertAlmostEqual(float(phase["accent_hz"]), 1500, delta=50, msg=name + "\n" + log)
             self.assertAlmostEqual(float(phase["beat_hz"]), 1000, delta=50, msg=name + "\n" + log)
             self.assertGreaterEqual(int(phase["beats"]), 3 * (n - 1), name + "\n" + log)
-        # one fix to line up when the host started, after the tempo change, into the loop, and after the move;
-        # none for the loops themselves
-        fixes = [int(lines["SYNC phase " + name]["fixes"]) for name in ("100bpm", "110bpm", "loop", "moved")]
-        self.assertEqual(fixes, [1, 2, 3, 4], log)
+        # one fix to line up when the host started, after the tempo change, into the loop, into the loop
+        # it doesn't declare and the first time round it (a move, as far as the plug-in can tell), and
+        # after the move; none for the loops themselves
+        fixes = [int(lines["SYNC phase " + name]["fixes"]) for name in ("100bpm", "110bpm", "loop", "hidden", "moved")]
+        self.assertEqual(fixes, [1, 2, 3, 5, 6], log)
         self.assertEqual(lines["SYNC loop"]["fixes_before"], "3", log)
+        self.assertEqual(lines["SYNC hidden"]["fixes_before"], "5", log)
         # stopped: the intervals play on as they are
         stopped = lines["SYNC stopped"]
         self.assertGreaterEqual(int(stopped["n"]), 3, log)
-        self.assertEqual((stopped["gap_err"], stopped["fixes"], stopped["bars"]), ("0", "4", "stopped"), log)
+        self.assertEqual((stopped["gap_err"], stopped["fixes"], stopped["bars"]), ("0", "6", "stopped"), log)
+        # The interval that a fix makes shorter or longer is also the one the plug-in encodes and
+        # sends: from before the host played to after it stopped, the others got one interval of
+        # another length for each fix (each start or move), and every other one as usual.
+        tape = lines["SYNC tape"]
+        self.assertGreaterEqual(int(tape["intervals"]), 25, log)
+        self.assertEqual((tape["odd"], tape["fixes"]), ("6", "6"), log)
 
         # someone else votes the room to 90: no vote back, and a note
         host = "My VST3 HostApplication"

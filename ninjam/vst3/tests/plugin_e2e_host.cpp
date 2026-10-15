@@ -55,8 +55,11 @@
   beats. The host plays from the middle of bar 3: each interval must start on a host beat that
   is a multiple of 4 (the metronome's accent). The host's tempo is dragged to 110: one vote, and
   the intervals line up again. Someone votes the room to 90: no vote back, and a note says the
-  tempos differ. At 90, the host loops 6 beats (intervals don't move), its playhead moves (they
-  line up again), and it stops (they play on). With following off, the host at 120 votes
+  tempos differ. At 90, the host loops 6 beats (intervals don't move), then loops 6 beats
+  without saying so (no cycle in the ProcessContext: the first time round is a move, then
+  they don't move), its playhead moves (they line up again), and it stops (they play on).
+  From before it starts to when it stops, each interval the plug-in plays (the one it sends)
+  is of the usual length, but one for each fix. With following off, the host at 120 votes
   nothing; turned on again, it votes 120.
     PORT <port>
     SYNC join room_bpm=<bpm> tempovotes=<n>
@@ -65,7 +68,9 @@
     SYNC follow room_bpm=<bpm> tempovotes=<n>
     NOTE other room_bpm=<bpm> tempovotes=<n> text=<the note>
     SYNC loop fixes_before=<n>             (then SYNC phase loop ...: measured as if the host never looped)
+    SYNC hidden fixes_before=<n>           (then SYNC phase hidden ...: as if it never looped after the first time)
     SYNC stopped n=<accents> gap_err=<samples> fixes=<n> bars=<state>
+    SYNC tape intervals=<n> odd=<intervals of another length than the usual> fixes=<n> odd_lengths=<samples,...>
     NOTE off room_bpm=<bpm> tempovotes=<n> bars=<state> text=<the note, with following off>
     SYNC refollow room_bpm=<bpm> tempovotes=<n>
     NOTE same text=<empty when the tempos agree>
@@ -306,7 +311,7 @@ public:
         context.state |= ProcessContext::kTempoValid;
       }
       if (played.playing) context.state |= ProcessContext::kPlaying;
-      if (played.cycle)
+      if (played.cycle && played.tellCycle)
       {
         context.cycleStartMusic = played.cycleStart;
         context.cycleEndMusic = played.cycleEnd;
@@ -319,7 +324,12 @@ public:
         m_transport.ppq += beats;
         m_transport.line += beats;
         // the loop goes back at the end of a block (the next block starts in the loop)
-        if (played.cycle && m_transport.ppq >= played.cycleEnd) m_transport.ppq -= played.cycleEnd - played.cycleStart;
+        if (played.cycle && m_transport.ppq >= played.cycleEnd)
+        {
+          m_transport.ppq -= played.cycleEnd - played.cycleStart;
+          // a loop the host doesn't declare is a move for the plug-in, the first time round
+          if (m_transport.wraps++ == 0 && !played.tellCycle) m_transport.line = m_transport.ppq;
+        }
       }
     }
     data.symbolicSampleSize = kSample32;
@@ -329,11 +339,15 @@ public:
     data.inputs = &inBus;
     data.outputs = &outBus;
     m_processor->process(data);
-    if (record)
+    if (record || m_taping)
     {
       std::lock_guard<std::mutex> lock(m_heardMutex);
-      m_pluginHeard.insert(m_pluginHeard.end(), m_out0.begin(), m_out0.end());
-      m_heardTransport.push_back(played);
+      if (record)
+      {
+        m_pluginHeard.insert(m_pluginHeard.end(), m_out0.begin(), m_out0.end());
+        m_heardTransport.push_back(played);
+      }
+      if (m_taping) m_tape.insert(m_tape.end(), m_out0.begin(), m_out0.end());
     }
 
     if (peer)
@@ -394,6 +408,8 @@ public:
     double line = 0; // the same, as if the host never looped since it last moved
     bool cycle = false;
     double cycleStart = 0, cycleEnd = 0;
+    bool tellCycle = true; // false: the host loops without saying so
+    int wraps = 0;         // times round the loop
   };
   Transport m_transport;
   void locate(double ppq) { m_transport.ppq = m_transport.line = ppq; }
@@ -404,6 +420,8 @@ public:
   long m_pos = 0;
   double m_start = 0;
   std::vector<float> m_pluginHeard, m_peerHeard;
+  bool m_taping = false;     // all the plug-in plays goes on m_tape too, recorded or not
+  std::vector<float> m_tape;
   std::mutex m_heardMutex;
 
 private:
@@ -653,6 +671,20 @@ static void measure_sync(Host &host, const char *name, bool playing)
     printf("SYNC %s n=%d gap_err=%ld fixes=%s bars=%s\n", name, (int)acc.size(), gapErr, s["barfixes"].c_str(), s["bars"].c_str());
 }
 
+// The intervals the plug-in played on the tape (the gaps between its accents), which are the
+// ones it sent: how many there are, and the lengths of those that aren't one of `usual`.
+static int odd_intervals(const std::vector<float> &x, int srate, const std::vector<int> &usual, std::string &oddLengths)
+{
+  const std::vector<long> acc = metronome_beats(x, srate, true);
+  for (size_t k = 1; k < acc.size(); k ++)
+  {
+    const long gap = acc[k] - acc[k - 1];
+    if (std::find(usual.begin(), usual.end(), (int)gap) != usual.end()) continue;
+    oddLengths += (oddLengths.empty() ? "" : ",") + std::to_string(gap);
+  }
+  return acc.empty() ? 0 : (int)acc.size() - 1;
+}
+
 // the host leads: the room follows its tempo, and the intervals its bars
 static int host_sync(Host &host)
 {
@@ -688,6 +720,10 @@ static int host_sync(Host &host)
   if (!host.runUntil(nullptr, 15.0, [&]() { return len_is(100); })) return fail(host, "the room did not get to 4 beats");
   auto s = host.status();
   printf("SYNC join room_bpm=%s tempovotes=%s\n", s["bpm"].c_str(), s["tempovotes"].c_str());
+
+  // from an interval before the host plays to when it stops, the tape has each interval the plug-in sent
+  host.m_taping = true;
+  host.run(nullptr, len_at(100, 4) / (double)host.m_srate + 0.3);
 
   // the host plays from the middle of bar 3
   host.locate(9.37);
@@ -726,6 +762,24 @@ static int host_sync(Host &host)
   host.run(nullptr, 4 * (6 * 60.0 / 90), true); // four times round the loop
   measure_sync(host, "loop", true);
 
+  // the host loops 6 beats without saying so (no cycle in the ProcessContext), from a beat
+  // before the loop: the first time round is a move (in line from there), then the same jump
+  // back each time is a loop, and the intervals play on
+  t.tellCycle = false;
+  t.cycleStart = 40;
+  t.cycleEnd = 46;
+  t.wraps = 0;
+  host.locate(37);
+  if (!host.runUntil(nullptr, 20.0, [&]() { return t.wraps > 0; })) return fail(host, "the host did not loop");
+  host.run(nullptr, 0.1);
+  if (!host.runUntil(nullptr, 20.0, [&]() { return bars_are("aligned"); }))
+    return fail(host, "the intervals did not line up in the loop the host doesn't declare");
+  printf("SYNC hidden fixes_before=%s\n", host.status()["barfixes"].c_str());
+  host.clearHeard();
+  host.run(nullptr, 4 * (6 * 60.0 / 90), true);
+  measure_sync(host, "hidden", true);
+  t.tellCycle = true;
+
   // the playhead moves: in line again
   t.cycle = false;
   host.locate(101.5);
@@ -737,6 +791,15 @@ static int host_sync(Host &host)
   host.clearHeard();
   host.run(nullptr, len_at(90, 4) / (double)host.m_srate * 3 + 0.2, true);
   measure_sync(host, "stopped", false);
+
+  // what the others heard: one interval of another length for each fix, the others all as usual
+  host.m_taping = false;
+  std::string oddLengths;
+  const int intervals = odd_intervals(host.m_tape, host.m_srate, { len_at(100, 4), len_at(110, 4), len_at(90, 4) }, oddLengths);
+  const int odd = oddLengths.empty() ? 0 : (int)std::count(oddLengths.begin(), oddLengths.end(), ',') + 1;
+  printf("SYNC tape intervals=%d odd=%d fixes=%s odd_lengths=%s\n", intervals, odd, host.status()["barfixes"].c_str(),
+         oddLengths.empty() ? "-" : oddLengths.c_str());
+  host.m_tape.clear();
 
   // following off: the host at 120 votes nothing; on again, it votes 120
   host.command("follow off");

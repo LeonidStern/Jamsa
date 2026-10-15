@@ -61,6 +61,9 @@ void BarSync::reset()
   m_wasPlaying = false;
   m_loopOffset = 0;
   m_fixedInterval = -1;
+  m_jumped = false;
+  m_lineUp = true;
+  m_outOfLine = 0;
 }
 
 int BarSync::process(const HostPosition &host, int frames, double sampleRate, const Interval &iv)
@@ -68,19 +71,19 @@ int BarSync::process(const HostPosition &host, int frames, double sampleRate, co
   if (!iv.running || iv.len <= 0 || iv.bpi <= 0 || iv.bpm <= 0 || sampleRate <= 0)
   {
     m_state = Off;
-    m_wasPlaying = false;
+    m_wasPlaying = m_jumped = false;
     return 0;
   }
   if (!host.hasPosition || host.tempo <= 0)
   {
     m_state = NoPosition;
-    m_wasPlaying = false;
+    m_wasPlaying = m_jumped = false;
     return 0;
   }
   if (!host.playing)
   {
     m_state = Stopped; // the intervals play on as they are
-    m_wasPlaying = false;
+    m_wasPlaying = m_jumped = false;
     return 0;
   }
 
@@ -92,13 +95,22 @@ int BarSync::process(const HostPosition &host, int frames, double sampleRate, co
     const bool looped = host.cycleActive && host.cycleEnd > host.cycleStart && m_expectedPpq >= host.cycleEnd - SAME_PLACE &&
                         m_expectedPpq - m_blockBeats <= host.cycleEnd + SAME_PLACE && host.ppq >= host.cycleStart - SAME_PLACE &&
                         host.ppq < host.cycleEnd;
-    if (looped) m_loopOffset += m_expectedPpq - host.ppq; // the intervals play on as before the loop
+    // a loop the host doesn't declare: the same jump back as the last one, from about the same
+    // place (the host goes back at the end of a block) to about the same place. The first time
+    // round, it can't be told from a move.
+    const double slack = m_blockBeats + SAME_PLACE;
+    const bool again = m_jumped && host.ppq < m_expectedPpq && fabs(m_expectedPpq - m_jumpFrom) <= slack && fabs(host.ppq - m_jumpTo) <= slack;
+    m_jumped = true;
+    m_jumpFrom = m_expectedPpq;
+    m_jumpTo = host.ppq;
+    if (looped || again) m_loopOffset += m_expectedPpq - host.ppq; // the intervals play on as before the loop
     else moved = true;
   }
   if (moved)
   {
     m_loopOffset = 0;
     m_fixedInterval = -1; // line up again, even if this interval's end moved already
+    m_lineUp = true;
   }
   m_wasPlaying = true;
   m_blockBeats = frames / sampleRate * host.tempo / 60.0;
@@ -107,7 +119,14 @@ int BarSync::process(const HostPosition &host, int frames, double sampleRate, co
   if (fabs(host.tempo - iv.bpm) > SAME_TEMPO)
   {
     m_state = OtherTempo;
+    m_lineUp = true; // once the tempos agree
     return 0;
+  }
+  if (iv.len != m_len || iv.bpi != m_bpi)
+  {
+    m_len = iv.len;
+    m_bpi = iv.bpi;
+    m_lineUp = true; // another length of interval: other places to line up with
   }
 
   const double target = barmath::hostIntervalPos(host.ppq + m_loopOffset, iv.bpi, iv.len);
@@ -120,8 +139,25 @@ int BarSync::process(const HostPosition &host, int frames, double sampleRate, co
   if (fabs(m_errorMs) <= TOLERANCE_MS)
   {
     m_state = Aligned;
+    m_lineUp = false;
+    m_outOfLine = 0;
     return 0;
   }
+  if (!m_lineUp)
+  {
+    // Out of line while the host plays on, after the intervals were in line: NJClient's intervals
+    // are a whole number of samples, so they drift from the host's bars (a millisecond in some
+    // minutes), or the host's position wobbles. Each fix sends the room one interval of another
+    // length, so this one waits until they stay out of line for a whole interval.
+    m_outOfLine += frames;
+    if (m_outOfLine < iv.len)
+    {
+      m_state = Aligned;
+      return 0;
+    }
+  }
+  m_lineUp = false;
+  m_outOfLine = 0;
   m_fixedInterval = iv.count;
   m_corrections++;
   m_state = Lining;

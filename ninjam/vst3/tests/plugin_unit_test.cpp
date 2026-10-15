@@ -200,11 +200,27 @@ struct Host
 {
   HostPosition p;
   double srate = 48000;
+  bool hideCycle = false; // loops without saying so: the plug-in doesn't see p.cycle*
+  double wobbleMs = 0;    // the position it gives is off by up to this much, at random
+  unsigned seed = 1;
   void play(int frames)
   {
     if (!p.playing) return;
     p.ppq += frames / srate * p.tempo / 60;
     if (p.cycleActive && p.ppq >= p.cycleEnd) p.ppq -= p.cycleEnd - p.cycleStart;
+  }
+  // what the plug-in is told
+  HostPosition told()
+  {
+    HostPosition t = p;
+    if (hideCycle) t.cycleActive = false;
+    if (wobbleMs > 0)
+    {
+      seed = seed * 1103515245u + 12345u;
+      const double r = ((seed >> 8) & 0xffff) / 65535.0 * 2 - 1; // -1 .. 1
+      t.ppq += r * wobbleMs / 60000.0 * p.tempo;
+    }
+    return t;
   }
 };
 
@@ -239,12 +255,21 @@ struct Run
       i.bpi = bpi;
       i.bpm = bpm;
       i.count = iv.count;
-      const int end = sync.process(host.p, frames, host.srate, i);
+      const int end = sync.process(host.told(), frames, host.srate, i);
       if (end > 0) iv.setEnd(end);
       iv.play(frames);
+      const double was = host.p.ppq;
       host.play(frames);
+      if (host.hideCycle && host.p.ppq < was && !wrapped)
+      {
+        // the first time round a loop the host doesn't declare is a move for the plug-in
+        wrapped = true;
+        hostBeatsAtMove = host.p.ppq;
+        moveSample = iv.now;
+      }
     }
   }
+  bool wrapped = false;
   // the largest distance (ms) from a host interval start, of the interval starts after sample `from`
   double worstMs(long from) const
   {
@@ -260,11 +285,14 @@ struct Run
   }
   int startsAfter(long from) const { return (int)std::count_if(iv.starts.begin(), iv.starts.end(), [&](long s) { return s >= from; }); }
   // are the intervals that started after `from` all of the usual length?
-  bool regular(long from) const
+  bool regular(long from) const { return odd(from) == 0; }
+  // how many intervals that started after `from` were of another length (what the others hear)
+  int odd(long from = 0) const
   {
+    int n = 0;
     for (size_t k = 1; k < iv.starts.size(); k ++)
-      if (iv.starts[k - 1] >= from && iv.starts[k] - iv.starts[k - 1] != iv.len) return false;
-    return true;
+      if (iv.starts[k - 1] >= from && iv.starts[k] - iv.starts[k - 1] != iv.len) n++;
+    return n;
   }
 };
 
@@ -336,6 +364,59 @@ static void test_bar_sync()
     CHECK(r.sync.state() == BarSync::OtherTempo);
     CHECK_EQ(r.sync.corrections(), fixes + 2);
     CHECK(r.regular(other));
+
+    // the interval each fix shortens or lengthens is one the room hears: one for each, no other
+    CHECK_EQ(r.odd(), r.sync.corrections());
+  }
+
+  // A loop the host doesn't declare (no cycle in the ProcessContext): the first time round
+  // is a move (one fix, in line from there), then each time is the same jump back, a loop
+  // (no fix, the intervals play on as they were).
+  {
+    Run r(100, 4, 30000);
+    r.host.p.hasPosition = true;
+    r.host.p.tempo = 100;
+    r.run(3);
+    r.host.p.playing = true;
+    r.host.hideCycle = r.host.p.cycleActive = true;
+    r.host.p.cycleStart = 40;
+    r.host.p.cycleEnd = 46;
+    r.move(37); // a beat before the loop
+    r.run(0.1);
+    CHECK_EQ(r.sync.corrections(), 1); // started
+    r.run(5.6); // 9 beats to the loop's end
+    CHECK(r.wrapped);
+    CHECK_EQ(r.sync.corrections(), 2); // the first time round
+    const long wrapped = r.moveSample;
+    r.run(60); // sixteen times round
+    CHECK_EQ(r.sync.corrections(), 2);
+    const long next = *std::find_if(r.iv.starts.begin(), r.iv.starts.end(), [&](long s) { return s > wrapped; });
+    CHECK(r.regular(next));
+    CHECK(r.worstMs(next) < 1.0 / 48); // in line with the host as if it hadn't looped since the first time
+    CHECK_EQ(r.odd(), 2);
+    printf("bars: a loop the host doesn't declare, %d times round: %d fixes, %d intervals of another length\n",
+           (int)(60 / (6 * 60.0 / 100)), r.sync.corrections(), r.odd());
+
+    // a move to another place is a move again, not a loop
+    r.host.hideCycle = r.host.p.cycleActive = false;
+    r.move(101.5);
+    r.run(10);
+    CHECK_EQ(r.sync.corrections(), 3);
+    CHECK_EQ(r.odd(), 3);
+  }
+
+  // A host whose position wobbles (up to 2 ms off, at random, less than a move): one fix
+  // when it starts, then none, so the room doesn't get an interval of another length now and then.
+  {
+    Run r(100, 4, 30000);
+    r.host.p.hasPosition = r.host.p.playing = true;
+    r.host.p.tempo = 100;
+    r.host.wobbleMs = 2.0;
+    r.move(9.37);
+    r.run(60 * 5);
+    printf("bars: a host 2 ms off at random, 5 minutes: %d fixes, worst %.3f ms\n", r.sync.corrections(), r.worstMs(r.iv.len * 2));
+    CHECK_EQ(r.sync.corrections(), 1);
+    CHECK(r.worstMs(r.iv.len * 2) < 2.1);
   }
 
   // NJClient's interval is a whole number of samples (0.63 short of 16 beats at 95 BPM): it
@@ -352,6 +433,7 @@ static void test_bar_sync()
     printf("bars at 95 BPM, 16 BPI, 20 minutes: %d fixes, worst %.3f ms\n", r.sync.corrections(), r.worstMs(from));
     CHECK(r.sync.corrections() <= 3);
     CHECK(r.worstMs(from) <= BarSync::TOLERANCE_MS + 0.05);
+    CHECK_EQ(r.odd(), r.sync.corrections()); // each one a single interval of another length
   }
 }
 

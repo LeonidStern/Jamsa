@@ -28,6 +28,14 @@
     the line they had before the loop), a move of the playhead lines them up
     again, and a stopped host leaves them alone.
 
+    The interval that ends sooner or later is also the one the plug-in sends,
+    so the others hear one interval of another length each time: once when the
+    host starts, moves or changes tempo, not at each time round a loop. A loop
+    the host doesn't declare (no cycle in the ProcessContext) looks like a move
+    the first time round, and like a loop from then on (the same jump back).
+    A drift (NJClient's intervals are a whole number of samples) is fixed only
+    once it has lasted a whole interval: about a millisecond, now and then.
+
   BarSync runs on the audio thread (no locks, no allocations), the
   TempoFollower on the network thread.
 
@@ -111,6 +119,11 @@ private:
   double m_blockBeats = 0;  // how far the last block went (quarter notes)
   double m_loopOffset = 0;  // quarter notes the host's loops went back, since it last started or moved
   int m_fixedInterval = -1; // the interval whose end was moved (the next one starts in line)
+  bool m_jumped = false;    // the host jumped since it started: from m_jumpFrom to m_jumpTo (quarter notes)
+  double m_jumpFrom = 0, m_jumpTo = 0;
+  bool m_lineUp = true;     // line up at once: the host started or moved, or the tempo or interval changed
+  int m_outOfLine = 0;      // samples out of line since the intervals were in line (a drift)
+  int m_len = 0, m_bpi = 0; // the interval's usual length and beats in the last block
 };
 
 // Votes the room to the host's tempo. Network thread.
