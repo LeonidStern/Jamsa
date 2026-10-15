@@ -10,6 +10,7 @@ CONFIG_CHANGE = 0x02
 USERINFO_CHANGE = 0x03
 DOWNLOAD_BEGIN = 0x04
 DOWNLOAD_WRITE = 0x05
+CODEC_MASK = 0x06
 CLIENT_AUTH_USER = 0x80
 CLIENT_SET_USERMASK = 0x81
 CLIENT_SET_CHANNEL_INFO = 0x82
@@ -19,6 +20,10 @@ CHAT = 0xC0
 KEEPALIVE = 0xFD
 
 PROTO_VER = 0x00020000
+
+# client_caps bits for codecs the client can decode besides Vorbis
+CAP_OPUS = 0x100
+CAP_FLAC = 0x200
 
 
 class Client:
@@ -105,13 +110,13 @@ class Client:
             return True
 
     # login
-    def login(self, user, password="", agree_license=True):
+    def login(self, user, password="", agree_license=True, codecs=0):
         mtype, p = self.recv(5.0)
         assert mtype == AUTH_CHALLENGE, mtype
         challenge = p[:8]
         h = hashlib.sha1((user + ":" + password).encode()).digest()
         passhash = hashlib.sha1(h + challenge).digest()
-        caps = 1 if agree_license else 0
+        caps = (1 if agree_license else 0) | codecs
         self.send(CLIENT_AUTH_USER, passhash + user.encode() + b"\0" + struct.pack("<II", caps, PROTO_VER))
         m = self.wait_for(lambda m: m[0] == AUTH_REPLY, 5.0)
         assert m is not None, "no auth reply"
@@ -149,6 +154,11 @@ class Client:
             self.sock.close()
         except OSError:
             pass
+
+
+def codec_mask(msg):
+    """The codec bits of a CODEC_MASK message."""
+    return struct.unpack("<I", msg[1][:4])[0]
 
 
 def chat_fields(payload):
