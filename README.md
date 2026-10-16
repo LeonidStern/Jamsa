@@ -19,7 +19,7 @@ Jamsa is one `Jamsa.vst3`. On Windows that's a single file; on macOS and Linux i
 **Windows**
 1. Unzip the download.
 2. Copy `Jamsa.vst3` to `C:\Program Files\Common Files\VST3`.
-3. In Ableton, open Settings (Preferences in Live 11), then Plug-Ins. Turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
+3. Rescan plug-ins in your DAW. In Ableton Live, open Settings (Preferences in Live 11), then Plug-Ins: turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
 
 **macOS**
 1. Open `Jamsa-vst3-macos.dmg`.
@@ -28,7 +28,7 @@ Jamsa is one `Jamsa.vst3`. On Windows that's a single file; on macOS and Linux i
    ```
    xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Jamsa.vst3
    ```
-4. In Ableton, open Settings (Preferences in Live 11), then Plug-Ins. Turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
+4. Rescan plug-ins in your DAW. In Ableton Live, open Settings (Preferences in Live 11), then Plug-Ins: turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
 
 **Linux**
 1. Unzip the download into `~/.vst3`, so you have `~/.vst3/Jamsa.vst3`.
@@ -38,7 +38,7 @@ The editor uses X11. It needs the usual desktop libraries: xcb, cairo, pango and
 
 ## Play
 
-1. Put Jamsa on an audio track with your instrument or microphone as the input, and set monitoring to In.
+1. Put Jamsa on an audio track with your instrument or microphone as the input, and turn on the track's input monitoring (in Live, set Monitor to In).
 2. **To host**, click **Host** in the bottom bar, and use **Copy** to send players the WAN address.
 3. **To join**, type the address under Server and click **Connect**.
 4. These settings belong to the room, so changing one changes it for everyone:
@@ -52,7 +52,7 @@ The editor uses X11. It needs the usual desktop libraries: xcb, cairo, pango and
 Hosting tips:
 - Jamsa asks your router to forward its port (UPnP or NAT-PMP). If the router doesn't allow that, forward TCP port 2049 to your computer yourself (Jamsa tries ports 2049 to 2058). The WAN address still shows: Jamsa asks a "what's my IP" service (api.ipify.org) for it. Jamsa can't see a port you forwarded yourself, so it says *Forward port* until the first player joins from the internet, then *Port open*.
 - The host's connection sends every player everyone else's audio. With 4 players at 510 kbps, that's about 4.6 Mbit/s of upload; at 128 kbps, about 1.2 Mbit/s.
-- The room closes when the host closes Ableton. For a room that stays up, run the server on a machine that's always on (see below).
+- The room closes when the host closes their DAW. For a room that stays up, run the server on a machine that's always on (see below).
 
 ## Build from source
 

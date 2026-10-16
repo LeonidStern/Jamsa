@@ -44,11 +44,11 @@ def draw(scale, sans, semibold, mono):
     d.polygon([(s(x1), s(y)), (s(x1 - head - 2), s(y - 9)), (s(x1 - head - 2), s(y + 9))], fill=ORANGE)
 
     # the two steps after it, in the bottom third (Finder's labels end near y = 255)
-    centred(290, "Then, once, run this in Terminal, so macOS lets Ableton open it:", body, DIM)
+    centred(290, "Then, once, run this in Terminal, so macOS lets your DAW open it:", body, DIM)
     box_w = d.textlength(COMMAND, font=code) / scale + 28
     d.rounded_rectangle((s((W - box_w) / 2), s(305), s((W + box_w) / 2), s(331)), radius=s(6), fill=BOX)
     centred(318, COMMAND, code, TEXT)
-    centred(357, "In Ableton: Settings, Plug-Ins, turn on VST3 System Folders, Rescan", body, DIM)
+    centred(357, "Last, rescan plug-ins in your DAW (in Live: Settings, Plug-Ins, Rescan)", body, DIM)
     return image
 
 
