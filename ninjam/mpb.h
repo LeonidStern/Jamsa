@@ -258,17 +258,27 @@ class mpb_server_codec_mask
 //   8   u64  key              the key it was given
 //   16  u32  dest_id          DATA: 0 = every other Live player in the room, else one
 //                             player's peer_id. HELLO: 0
-//   20  HELLO: u64 timestamp (any value; the server echoes it), then 4 zero bytes, so a
-//       HELLO is 32 bytes. DATA: the audio packet, 1 to 1452 bytes, forwarded as is.
+//   20  HELLO: u64 timestamp (any value; the server echoes it), u64 cookie (the latest
+//       one the server sent, see below; 0 for none), then 4 zero bytes, so a HELLO is
+//       40 bytes. DATA: the audio packet, 1 to 1452 bytes, forwarded as is.
 // Server to client:
 //   0   'N' 'L', u8 version 1, u8 type (1 = HELLO_ACK, 2 = DATA)
 //   4   u32  from_id          DATA: the sender's peer_id. HELLO_ACK: 0
-//   8   HELLO_ACK: the 8 timestamp bytes of the HELLO. DATA: the audio packet.
+//   8   HELLO_ACK: the 8 timestamp bytes of the HELLO, then the u64 cookie for the
+//       address and port the HELLO came from (24 bytes, less than the HELLO).
+//       DATA: the audio packet.
 // A client sends a HELLO once it gets LIVE_FLAG_UDP_OPEN, and then every 2 seconds,
-// which keeps its router's mapping open; the server drops a player it hasn't heard
-// from in 20 seconds. Datagrams that are malformed, carry the wrong key or come from
-// another address than the player's TCP connection (unless the server's config says
-// LiveStrictAddress no) are dropped without an answer.
+// which keeps its router's mapping open. The server sends a player audio only at an
+// address and port from which a HELLO echoed the cookie it sent there (so nobody can
+// have the room's audio sent to an address that isn't theirs): the client keeps the
+// cookie of each HELLO_ACK whose timestamp is that of a HELLO it sent lately, echoes
+// it in its HELLOs, and sends a HELLO at once when the cookie changes, so that a new
+// address (its router may give it another port) counts after one round trip. A cookie
+// works for 30 to 60 seconds. Audio from an address that hasn't echoed a cookie is
+// still forwarded. The server stops sending to a player whose last HELLO with a
+// cookie that worked is 20 seconds old. Datagrams that are malformed, carry the wrong
+// key or come from another address than the player's TCP connection (unless the
+// server's config says LiveStrictAddress no) are dropped without an answer.
 #define MESSAGE_SERVER_LIVE 0x07
 class mpb_server_live
 {

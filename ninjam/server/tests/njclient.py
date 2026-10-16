@@ -49,6 +49,7 @@ class Client:
         self.last_send = time.time()
         self.udp = None  # the Live socket, see udp_open()
         self.udp_connected = False
+        self.cookie = 0  # the latest cookie the server sent to that socket, see udp_bind()
         self.live = None  # the latest Live state from the server, see wait_live()
 
     # framing
@@ -194,6 +195,7 @@ class Client:
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.bind((bind_host, 0))
         self.udp_connected = connect
+        self.cookie = 0
         if connect:
             self.udp.connect((self.host, self.port))
         return self.udp
@@ -231,10 +233,34 @@ class Client:
                 return out
             out.append(d)
 
-    def hello(self, timestamp=0, peer_id=None, key=None):
-        """Sends a HELLO with this client's Live id and key (or others, to test the server)."""
+    def hello(self, timestamp=0, peer_id=None, key=None, cookie=None):
+        """Sends a HELLO with this client's Live id, key and latest cookie (or others, to test the server)."""
         self.udp_send(udp_hello(self.live["peer_id"] if peer_id is None else peer_id,
-                                self.live["key"] if key is None else key, timestamp))
+                                self.live["key"] if key is None else key, timestamp,
+                                self.cookie if cookie is None else cookie))
+
+    def hello_ack(self, timestamp, timeout=2.0):
+        """Waits for the HELLO_ACK that answers the HELLO with this timestamp (skipping anything else), keeps its
+        cookie, and returns it; None if it doesn't come."""
+        deadline = time.time() + timeout
+        while True:
+            d = self.udp_recv(deadline - time.time())
+            if d is None:
+                return None
+            if d[:4] == b"NL\x01\x01" and len(d) == 24 and udp_ack(d)[0] == timestamp:
+                self.cookie = udp_ack(d)[1]
+                return d
+
+    def udp_bind(self, timeout=2.0):
+        """Says HELLO, then again with the cookie the server answers with, as a Live client does: after that,
+        the server sends Live audio to this socket. Returns the last HELLO_ACK, or None if one didn't come."""
+        ack = None
+        for timestamp in (0x6e6a01, 0x6e6a02):
+            self.hello(timestamp)
+            ack = self.hello_ack(timestamp, timeout)
+            if ack is None:
+                return None
+        return ack
 
     def send_live(self, payload, dest=0, peer_id=None, key=None):
         """Sends audio (any bytes) to one player (dest = its peer id) or to everyone else in the room (0)."""
@@ -276,9 +302,14 @@ def live_info(msg):
             "peer_id": peer_id, "key": key, "frame": frame, "max_peers": max_peers, "peers": peers}
 
 
-def udp_hello(peer_id, key, timestamp=0):
-    """A Live HELLO datagram (32 bytes)."""
-    return struct.pack("<2sBBIQIQ4x", b"NL", 1, UDP_HELLO, peer_id, key, 0, timestamp)
+def udp_hello(peer_id, key, timestamp=0, cookie=0):
+    """A Live HELLO datagram (40 bytes)."""
+    return struct.pack("<2sBBIQIQQ4x", b"NL", 1, UDP_HELLO, peer_id, key, 0, timestamp, cookie)
+
+
+def udp_ack(data):
+    """(timestamp, cookie) of a HELLO_ACK."""
+    return struct.unpack("<QQ", data[8:24])
 
 
 def udp_data(peer_id, key, dest, payload):

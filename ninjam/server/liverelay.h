@@ -25,6 +25,9 @@
   SetStrictAddress (the default), comes from the address of the sender's TCP
   connection; then only to players in the same room who may send and have been
   heard from in the last 20 seconds, never to an address taken from the packet.
+  A player is heard from at an address only through a HELLO that echoes the
+  cookie the relay sent to that address, so nobody can point the room's audio at
+  an address that isn't theirs.
   Each sender may send at most twice its stream (the room's Live bitrate plus 64
   bytes of headers per frame) plus 8 KB/s, and twice the room's frame rate plus 50
   datagrams/s, with a quarter second of burst.
@@ -69,7 +72,7 @@ class LiveRelay
     void RemoveRoom(unsigned int room_id);
 
     // true while the relay has an address for this player that it heard from in the
-    // last 20 seconds
+    // last 20 seconds (a HELLO with the address's cookie)
     bool PeerBound(unsigned int id);
 
     // changes whenever a player becomes bound or stops being bound, and on Open and Close

@@ -12,7 +12,9 @@
   Live mode's UDP relay, see liverelay.h.
 
   It logs a summary of its traffic at most once a minute, while there is any.
-  NINJAM_LIVE_STATS_SECONDS in the environment changes how often, for the tests.
+  NINJAM_LIVE_STATS_SECONDS in the environment changes how often, and
+  NINJAM_LIVE_FRESH_SECONDS how soon a player who stops saying HELLO gets no more
+  audio (20 seconds), for the tests.
 
 */
 
@@ -89,14 +91,16 @@ enum
   TYPE_DATA = 2,
   CLIENT_HEADER = 20,
   SERVER_HEADER = 8,
-  HELLO_SIZE = 32,
-  HELLO_ACK_SIZE = 16,
+  HELLO_SIZE = 40,
+  HELLO_COOKIE = 28,       // where a HELLO echoes its cookie
+  HELLO_ACK_SIZE = 24,
   MAX_PAYLOAD = 1452,
   MAX_DATAGRAM = CLIENT_HEADER + MAX_PAYLOAD,
   MAX_DESTS = 64,          // more than a room can have (LiveMaxPeers is at most 64)
 };
 
 const double FRESH_SECONDS = 20.0; // a player not heard from for this long gets no more audio
+const double COOKIE_SECONDS = 30.0; // a cookie works for this long, then for as long again
 const double BURST_SECONDS = 0.25;
 const double DATAGRAM_OVERHEAD = 64.0; // bytes of headers in a datagram of audio, see TakeTokens
 const int SOCKET_BUFFER = 1 << 20;
@@ -105,13 +109,14 @@ const int SOCKET_BUFFER = 1 << 20;
 enum
 {
   DROP_MALFORMED, DROP_TOO_BIG, DROP_UNKNOWN_SENDER, DROP_WRONG_KEY, DROP_WRONG_ADDRESS,
-  DROP_RATE, DROP_ROOM_OFF, DROP_MAY_NOT_SEND, DROP_NO_SUCH_PLAYER, DROP_SEND_FAILED,
+  DROP_RATE, DROP_UNVERIFIED, DROP_ROOM_OFF, DROP_MAY_NOT_SEND, DROP_NO_SUCH_PLAYER, DROP_SEND_FAILED,
   NUM_DROPS
 };
 const char * const drop_names[NUM_DROPS] =
 {
   "malformed", "too big", "unknown sender", "wrong key", "wrong address",
-  "over the rate limit", "room's Live is off", "sender may not send", "no such player", "could not send",
+  "over the rate limit", "unverified address (answered)", "room's Live is off", "sender may not send",
+  "no such player", "could not send",
 };
 
 struct Peer
@@ -120,11 +125,11 @@ struct Peer
   unsigned int tcp_ip;
   WDL_UINT64 key;
   bool may_send;
-  bool bound; // addr is where it last sent from
-  bool fresh; // heard from in the last FRESH_SECONDS; PeerBound() and Generation() follow it
+  bool bound; // addr is where it last said HELLO from, with a cookie it was sent there
+  bool fresh; // and that was less than FRESH_SECONDS ago; PeerBound() and Generation() follow it
   struct sockaddr_in addr;
   unsigned int local_ip; // the address of this machine that it sends to, 0 if not known
-  double last_rx;
+  double last_rx; // when
   double tokens_bytes, tokens_packets, tokens_time; // rate limit; tokens_time < 0 until the first datagram
 };
 
@@ -165,6 +170,46 @@ void put_le32(unsigned char *p, unsigned int v)
   p[1] = (v >> 8) & 0xff;
   p[2] = (v >> 16) & 0xff;
   p[3] = (v >> 24) & 0xff;
+}
+
+WDL_UINT64 rotl(WDL_UINT64 x, int b)
+{
+  return (x << b) | (x >> (64 - b));
+}
+
+void sip_round(WDL_UINT64 v[4])
+{
+  v[0] += v[1]; v[1] = rotl(v[1], 13); v[1] ^= v[0]; v[0] = rotl(v[0], 32);
+  v[2] += v[3]; v[3] = rotl(v[3], 16); v[3] ^= v[2];
+  v[0] += v[3]; v[3] = rotl(v[3], 21); v[3] ^= v[0];
+  v[2] += v[1]; v[1] = rotl(v[1], 17); v[1] ^= v[2]; v[2] = rotl(v[2], 32);
+}
+
+// SipHash-2-4 (Aumasson and Bernstein): a keyed hash whose output can't be guessed or
+// forged without the key, however many outputs one has seen
+WDL_UINT64 siphash24(const unsigned char key[16], const unsigned char *in, size_t len)
+{
+  const WDL_UINT64 k0 = get_le64(key), k1 = get_le64(key + 8);
+  WDL_UINT64 v[4] = { 0x736f6d6570736575ULL ^ k0, 0x646f72616e646f6dULL ^ k1, 0x6c7967656e657261ULL ^ k0, 0x7465646279746573ULL ^ k1 };
+  WDL_UINT64 m;
+  size_t i = 0;
+  for (; i + 8 <= len; i += 8)
+  {
+    m = get_le64(in + i);
+    v[3] ^= m;
+    sip_round(v);
+    sip_round(v);
+    v[0] ^= m;
+  }
+  m = (WDL_UINT64)(len & 0xff) << 56;
+  for (int j = 0; i + j < len; j ++) m |= (WDL_UINT64)in[i + j] << (8 * j);
+  v[3] ^= m;
+  sip_round(v);
+  sip_round(v);
+  v[0] ^= m;
+  v[2] ^= 0xff;
+  for (int j = 0; j < 4; j ++) sip_round(v);
+  return v[0] ^ v[1] ^ v[2] ^ v[3];
 }
 
 // takes as long whichever bits differ
@@ -252,9 +297,26 @@ struct LiveRelay::State
 
   std::atomic<unsigned int> generation;
 
-  // the relay thread's own
+  // the relay thread's own (set by Open before it starts)
+  unsigned char secret[16]; // for the cookies, new on each Open
+  double fresh_seconds; // FRESH_SECONDS, or less for the tests
   double stats_start, stats_seconds;
   unsigned long long received, sent, dropped[NUM_DROPS];
+
+  // A HELLO_ACK's cookie: whoever echoes it gets what is sent to this address and port,
+  // since that's where it went. Only the relay can make one, from its secret: for this
+  // player and key, and for COOKIE_SECONDS from epoch (now / COOKIE_SECONDS).
+  WDL_UINT64 Cookie(unsigned int id, WDL_UINT64 key, const struct sockaddr_in &addr, unsigned int epoch) const
+  {
+    unsigned char m[22];
+    put_le32(m, id);
+    put_le32(m + 4, (unsigned int)key);
+    put_le32(m + 8, (unsigned int)(key >> 32));
+    memcpy(m + 12, &addr.sin_addr.s_addr, 4);
+    memcpy(m + 16, &addr.sin_port, 2);
+    put_le32(m + 18, epoch);
+    return siphash24(secret, m, sizeof(m));
+  }
 
   void Run();
   int Receive(unsigned char *buf, int size, struct sockaddr_in *from, unsigned int *local_ip);
@@ -362,6 +424,13 @@ bool LiveRelay::Open(int port)
 #endif
   (void)on;
 
+  // the old cookies stop working, as do the keys of the players it forgets
+  if (!random_bytes(st->secret, sizeof(st->secret)))
+  {
+    closesocket(s);
+    return false;
+  }
+
   {
     std::lock_guard<std::mutex> lock(st->mutex);
     st->peers.clear();
@@ -373,6 +442,9 @@ bool LiveRelay::Open(int port)
   st->stats_seconds = 60.0;
   const char *env = getenv("NINJAM_LIVE_STATS_SECONDS");
   if (env && atof(env) > 0) st->stats_seconds = atof(env);
+  st->fresh_seconds = FRESH_SECONDS;
+  env = getenv("NINJAM_LIVE_FRESH_SECONDS");
+  if (env && atof(env) > 0) st->fresh_seconds = atof(env);
   st->ResetStats(now_seconds());
   st->thread = std::thread([st] { st->Run(); });
   st->generation ++;
@@ -794,6 +866,8 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
 
   Dest to[MAX_DESTS];
   int nto = 0;
+  WDL_UINT64 cookie = 0; // for the HELLO_ACK
+  bool verified = false;
   {
     std::lock_guard<std::mutex> lock(mutex);
     std::map<unsigned int, Peer>::iterator it = peers.find(sender);
@@ -814,18 +888,6 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
       return;
     }
 
-    // the player is where its latest good datagram came from (its router may have
-    // given it another port)
-    p.addr = from;
-    p.local_ip = local_ip;
-    p.bound = true;
-    p.last_rx = now;
-    if (!p.fresh)
-    {
-      p.fresh = true;
-      generation ++;
-    }
-
     std::map<unsigned int, Room>::const_iterator r = rooms.find(p.room);
     const Room *room = r != rooms.end() ? &r->second : NULL;
     if (!TakeTokens(p, room, len, now))
@@ -834,7 +896,31 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
       return;
     }
 
-    if (type == TYPE_DATA)
+    if (type == TYPE_HELLO)
+    {
+      // Anyone can write another address on a datagram, and the relay would send the
+      // room's audio there. So the player is at an address (its router may give it
+      // another port) only once a HELLO from there echoes the cookie the relay sent
+      // there, which shows that whoever sent it gets what is sent there. Only such a
+      // HELLO keeps the player fresh: the cookie expires, its audio doesn't count.
+      const unsigned int epoch = (unsigned int)(now / COOKIE_SECONDS);
+      const WDL_UINT64 echoed = get_le64(buf + HELLO_COOKIE);
+      cookie = Cookie(sender, key, from, epoch);
+      verified = same_key(echoed, cookie) || same_key(echoed, Cookie(sender, key, from, epoch - 1));
+      if (verified)
+      {
+        p.addr = from;
+        p.local_ip = local_ip;
+        p.bound = true;
+        p.last_rx = now;
+        if (!p.fresh)
+        {
+          p.fresh = true;
+          generation ++;
+        }
+      }
+    }
+    else
     {
       if (!room || !room->on)
       {
@@ -879,6 +965,8 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
 
   if (type == TYPE_HELLO)
   {
+    // answered either way, smaller than the HELLO, so nobody gets more than was sent
+    // with their address on it
     unsigned char ack[HELLO_ACK_SIZE];
     ack[0] = 'N';
     ack[1] = 'L';
@@ -886,6 +974,9 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
     ack[3] = TYPE_HELLO;
     put_le32(ack + 4, 0);
     memcpy(ack + 8, buf + CLIENT_HEADER, 8); // the client's timestamp
+    put_le32(ack + 16, (unsigned int)cookie);
+    put_le32(ack + 20, (unsigned int)(cookie >> 32));
+    if (!verified) dropped[DROP_UNVERIFIED] ++;
     SendTo(ack, sizeof(ack), from, local_ip); // from the address it was sent to
     return;
   }
@@ -927,7 +1018,7 @@ void LiveRelay::State::Housekeeping(double now)
     for (std::map<unsigned int, Peer>::iterator it = peers.begin(); it != peers.end(); ++ it)
     {
       Peer &p = it->second;
-      if (p.fresh && now - p.last_rx >= FRESH_SECONDS)
+      if (p.fresh && now - p.last_rx >= fresh_seconds)
       {
         p.fresh = false;
         generation ++;

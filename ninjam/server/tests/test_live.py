@@ -11,8 +11,8 @@ import subprocess
 import time
 import unittest
 
-from njclient import (Client, chat_fields, live_info, udp_hello, udp_data, udp_parse, CHAT, LIVE, CAP_LIVE, CAP_OPUS,
-                      LIVE_ROOM_ON, LIVE_UDP_OPEN, LIVE_MAY_SEND, LIVE_PEER_BOUND, UDP_HELLO, UDP_DATA)
+from njclient import (Client, chat_fields, live_info, udp_hello, udp_ack, udp_data, udp_parse, CHAT, LIVE, CAP_LIVE,
+                      CAP_OPUS, LIVE_ROOM_ON, LIVE_UDP_OPEN, LIVE_MAY_SEND, LIVE_PEER_BOUND, UDP_HELLO, UDP_DATA)
 from test_server import SERVER, Server, ServerTest, PortMappingTestCase, closed_url
 from fake_router import FakeIGD, FakeNatPmp
 
@@ -21,10 +21,11 @@ EMBEDDED = "embedded" in os.path.basename(SERVER)
 
 class LiveTest(ServerTest):
     extra_config = "Live yes\n"
+    env = {}
 
     def setUp(self):
         # the relay's traffic summary every second instead of every minute
-        self.server = Server(self.extra_config, env={"NINJAM_LIVE_STATS_SECONDS": "1"}).wait_ready()
+        self.server = Server(self.extra_config, env=dict({"NINJAM_LIVE_STATS_SECONDS": "1"}, **self.env)).wait_ready()
         self.clients = []
 
     def live_client(self, name, caps=CAP_LIVE | CAP_OPUS, bind_host="127.0.0.1"):
@@ -35,12 +36,26 @@ class LiveTest(ServerTest):
         return c
 
     def bind(self, *clients):
-        """Each says HELLO and waits for the answer, after which the server forwards audio to it."""
+        """Each says HELLO, and again with the cookie it gets back, after which the server forwards audio to it."""
         for c in clients:
-            c.hello(1)
-            d = c.udp_recv(2.0)
-            self.assertIsNotNone(d, "no HELLO_ACK")
-            self.assertEqual(udp_parse(d)[0], UDP_HELLO)
+            self.assertIsNotNone(c.udp_bind(), "no HELLO_ACK")
+
+    def socket_at(self, host):
+        """A UDP socket at another address of this machine (skips the test where there is none)."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(s.close)
+        try:
+            s.bind((host, 0))
+        except OSError:
+            self.skipTest("can't use " + host)
+        return s
+
+    def ack(self, s, timeout=2.0):
+        """The HELLO_ACK that s gets: (timestamp, cookie)."""
+        s.settimeout(timeout)
+        d = s.recvfrom(100)[0]
+        self.assertEqual((d[:4], len(d)), (b"NL\x01\x01", 24))
+        return udp_ack(d)
 
     def turn_on(self, c, *others):
         c.chat("MSG", "!live on")
@@ -259,7 +274,16 @@ class RelayTests(LiveTest):
     def test_hello_is_answered_with_its_timestamp(self):
         a = self.live_client("alice")
         a.hello(0x1122334455667788)
-        self.assertEqual(a.udp_recv(2.0), b"NL\x01\x01" + bytes(4) + struct.pack("<Q", 0x1122334455667788))
+        ack = a.udp_recv(2.0)
+        # and a cookie for the address and port it came from, smaller than the HELLO
+        self.assertEqual(ack[:16], b"NL\x01\x01" + bytes(4) + struct.pack("<Q", 0x1122334455667788))
+        self.assertEqual(len(ack), 24)
+        cookie = udp_ack(ack)[1]
+        a.hello(2)
+        self.assertEqual(udp_ack(a.udp_recv(2.0)), (2, cookie))
+        a.udp_open()  # another port
+        a.hello(3)
+        self.assertNotEqual(udp_ack(a.udp_recv(2.0))[1], cookie)
 
     def test_audio_reaches_one_player_or_everyone_else(self):
         a, b, c = self.three()
@@ -297,7 +321,8 @@ class RelayTests(LiveTest):
             b"NL\x01\x03" + good[4:],  # unknown type
             good[:20],  # no audio
             good[:19],
-            udp_hello(me, key)[:31],
+            udp_hello(me, key)[:39],
+            udp_hello(me, key)[:32],  # the size it had before cookies
             udp_hello(me, key) + b"\0",
             b"",
             b"N",
@@ -329,18 +354,34 @@ class RelayTests(LiveTest):
         self.assertEqual(self.got(a), [(b.live["peer_id"], b"to alice")])
 
     def test_the_latest_address_wins(self):
-        # a router may give the player another port (NAT rebinding)
+        # a router may give the player another port (NAT rebinding); it counts once it echoes its cookie
         a, b, c = self.three()
-        moved = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.addCleanup(moved.close)
-        moved.bind(("127.0.0.1", 0))
-        moved.sendto(udp_hello(b.live["peer_id"], b.live["key"], 7), ("127.0.0.1", self.server.port))
-        moved.settimeout(2.0)
-        self.assertEqual(moved.recvfrom(100)[0][:4], b"NL\x01\x01")
+        moved = self.socket_at("127.0.0.1")
+        server = ("127.0.0.1", self.server.port)
+        moved.sendto(udp_hello(b.live["peer_id"], b.live["key"], 7, b.cookie), server)  # the old port's cookie
+        self.assertEqual(self.ack(moved)[0], 7)
+        moved.sendto(udp_hello(b.live["peer_id"], b.live["key"], 8), server)
+        timestamp, cookie = self.ack(moved)
+        self.assertEqual(timestamp, 8)
+        a.send_live(b"before")
+        self.assertEqual(self.got(b), [(a.live["peer_id"], b"before")])  # still the old port
+        moved.sendto(udp_hello(b.live["peer_id"], b.live["key"], 9, cookie), server)
+        self.assertEqual(self.ack(moved), (9, cookie))
         a.send_live(b"after the move")
         moved.settimeout(1.0)
         self.assertEqual(udp_parse(moved.recvfrom(2000)[0])[2], b"after the move")
         self.assertEqual(self.got(b, 0.2), [])  # not to the old port
+
+    def test_someone_elses_hello_moves_nobody(self):
+        # in the same household or behind the same carrier NAT, someone may send from the player's address
+        a, b, c = self.three()
+        other = self.socket_at("127.0.0.1")
+        other.sendto(udp_hello(b.live["peer_id"], b.live["key"], 1), ("127.0.0.1", self.server.port))
+        self.ack(other)  # it isn't echoed: other stands for someone who doesn't get it
+        a.send_live(b"to bob")
+        self.assertEqual(self.got(b), [(a.live["peer_id"], b"to bob")])
+        other.settimeout(0.2)
+        self.assertRaises(socket.timeout, other.recvfrom, 2000)
 
     def test_players_not_heard_from_get_nothing(self):
         a, b, c = self.three()
@@ -396,6 +437,108 @@ class RelayTests(LiveTest):
         out = self.server.output()
         self.assertIn("over the rate limit", out)
         self.assertLess(out.count("[live]"), 10)
+
+
+class LooseAddressTests(LiveTest):
+    """LiveStrictAddress no: a player's UDP may come from another address than its TCP connection."""
+    extra_config = "Live on\nLiveStrictAddress no\n"
+
+    def three(self):
+        a = self.live_client("alice")
+        b = self.live_client("bob")
+        c = self.live_client("carol")
+        self.bind(a, b, c)
+        return a, b, c
+
+    def test_audio_from_another_address_is_forwarded(self):
+        a, b, c = self.three()
+        other = self.socket_at("127.0.0.2")  # not the address alice connected from
+        server = ("127.0.0.1", self.server.port)
+        other.sendto(udp_data(a.live["peer_id"], a.live["key"], 0, b"from elsewhere"), server)
+        self.assertEqual(self.got(b), [(a.live["peer_id"], b"from elsewhere")])
+        self.assertEqual(self.got(c), [(a.live["peer_id"], b"from elsewhere")])
+        # the key still has to match
+        other.sendto(udp_data(a.live["peer_id"], a.live["key"] ^ 1, 0, b"wrong key"), server)
+        other.sendto(udp_hello(a.live["peer_id"], a.live["key"] ^ 1), server)
+        self.assertEqual(self.got(b) + self.got(c, 0.1), [])
+        other.settimeout(0.2)
+        self.assertRaises(socket.timeout, other.recvfrom, 100)
+
+    def test_a_forged_hello_sends_the_room_nowhere(self):
+        # Mallory writes another address (the victim's) on a HELLO with her own id and key: the victim gets
+        # the answer, which is smaller, but not the room's audio
+        a, b, c = self.three()
+        victim = self.socket_at("127.0.0.3")
+        server = ("127.0.0.1", self.server.port)
+        victim.sendto(udp_hello(a.live["peer_id"], a.live["key"], 5), server)
+        self.assertEqual(self.ack(victim)[0], 5)
+        victim.sendto(udp_hello(a.live["peer_id"], a.live["key"], 6, a.cookie), server)  # alice's cookie is no good there
+        self.assertEqual(self.ack(victim)[0], 6)
+        for x in (b, c):
+            x.send_live(b"to everyone")
+        self.assertEqual(sorted(self.got(a)), sorted([(b.live["peer_id"], b"to everyone"), (c.live["peer_id"], b"to everyone")]))
+        b.send_live(b"to alice", dest=a.live["peer_id"])
+        self.assertEqual(self.got(a), [(b.live["peer_id"], b"to alice")])
+        victim.settimeout(0.2)
+        self.assertRaises(socket.timeout, victim.recvfrom, 2000)
+
+    def test_a_forged_hello_binds_nobody(self):
+        a = self.live_client("alice")
+        d = self.live_client("dave")  # never says HELLO
+        self.bind(a)
+        self.assertIsNotNone(a.wait_live(lambda i: i["peers"]))
+        victim = self.socket_at("127.0.0.3")
+        victim.sendto(udp_hello(d.live["peer_id"], d.live["key"], 5), ("127.0.0.1", self.server.port))
+        self.ack(victim)
+        self.assertIsNone(a.wait_live(lambda i: i["peers"] and i["peers"][0][1] & LIVE_PEER_BOUND, timeout=0.5))
+        a.send_live(b"to everyone")
+        a.send_live(b"to dave", dest=d.live["peer_id"])
+        victim.settimeout(0.3)
+        self.assertRaises(socket.timeout, victim.recvfrom, 2000)
+
+    def test_an_address_that_echoes_its_cookie_is_the_players(self):
+        # the player moved (from Wi-Fi to mobile data): its new address counts once it echoes its cookie
+        a, b, c = self.three()
+        moved = self.socket_at("127.0.0.2")
+        server = ("127.0.0.1", self.server.port)
+        moved.sendto(udp_hello(a.live["peer_id"], a.live["key"], 1), server)
+        cookie = self.ack(moved)[1]
+        moved.sendto(udp_hello(a.live["peer_id"], a.live["key"], 2, cookie), server)
+        self.assertEqual(self.ack(moved), (2, cookie))
+        b.send_live(b"to the new address")
+        moved.settimeout(1.0)
+        self.assertEqual(udp_parse(moved.recvfrom(2000)[0])[1:], (b.live["peer_id"], b"to the new address"))
+        self.assertEqual(self.got(a, 0.2), [])
+
+
+class FreshnessTests(LiveTest):
+    """A player that stops saying HELLO gets no more audio (after 20 seconds, 1 here)."""
+    extra_config = "Live on\n"
+    env = {"NINJAM_LIVE_FRESH_SECONDS": "1"}
+
+    def test_players_who_stop_saying_hello_get_nothing(self):
+        a = self.live_client("alice")
+        b = self.live_client("bob")
+        self.bind(a, b)
+        self.assertIsNotNone(a.wait_live(lambda i: i["peers"] and i["peers"][0][1] & LIVE_PEER_BOUND))
+        a.send_live(b"while bob says HELLO")
+        self.assertEqual(self.got(b), [(a.live["peer_id"], b"while bob says HELLO")])
+        # bob keeps playing, but his audio doesn't count as a HELLO
+        deadline = time.time() + 3
+        info = None
+        while info is None and time.time() < deadline:
+            b.send_live(b"bob plays")
+            info = a.wait_live(lambda i: i["peers"] and not i["peers"][0][1] & LIVE_PEER_BOUND, timeout=0.1)
+        self.assertIsNotNone(info, "bob's audio kept him bound")
+        b.udp_drain(0.1)
+        a.send_live(b"to everyone")
+        a.send_live(b"to bob", dest=b.live["peer_id"])
+        self.assertEqual(self.got(b), [])
+        # his next HELLO (with his cookie) brings him back
+        self.bind(b)
+        self.assertIsNotNone(a.wait_live(lambda i: i["peers"] and i["peers"][0][1] & LIVE_PEER_BOUND))
+        a.send_live(b"again")
+        self.assertEqual(self.got(b), [(a.live["peer_id"], b"again")])
 
 
 class ServerAddressTests(LiveTest):
