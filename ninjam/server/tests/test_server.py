@@ -14,8 +14,8 @@ import time
 import unittest
 import uuid
 
-from njclient import (Client, chat_fields, codec_mask, CHAT, CODEC_MASK, DOWNLOAD_BEGIN, DOWNLOAD_WRITE,
-                      CAP_OPUS, CAP_FLAC)
+from njclient import (Client, chat_fields, codec_mask, mask_opus_kbps, CHAT, CODEC_MASK, DOWNLOAD_BEGIN,
+                      DOWNLOAD_WRITE, CAP_OPUS, CAP_FLAC)
 from fake_router import FakeIGD, FakeNatPmp
 
 # absolute, because each server runs with its own temporary directory as cwd
@@ -468,6 +468,92 @@ class VorbisOnlyTests(ServerTest):
         m = a.wait_for(lambda m: m[0] == CODEC_MASK)
         self.assertIsNotNone(m)
         self.assertEqual(codec_mask(m), 0)
+
+
+class BitrateTests(CodecTestCase):
+    extra_config = "AllowCodecs opus flac\n"
+
+    def masks(self, c):
+        return [(codec_mask(m), mask_opus_kbps(m)) for m in c.drain(0.5) if m[0] == CODEC_MASK]
+
+    def test_room_starts_at_128_kbps(self):
+        a = self.client("alice", CAP_OPUS)
+        m = a.wait_for(lambda m: m[0] == CODEC_MASK)
+        self.assertEqual((codec_mask(m), mask_opus_kbps(m)), (CAP_OPUS, 128))
+
+    def test_anyone_sets_the_bitrate_for_everyone(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        b = self.client("bob", CAP_OPUS | CAP_FLAC)
+        for c in (a, b):
+            c.drain(0.5)
+        a.chat("MSG", "!bitrate 256 ")
+        for c in (a, b):
+            msgs = c.drain(0.5)
+            self.assertEqual([(codec_mask(m), mask_opus_kbps(m)) for m in msgs if m[0] == CODEC_MASK], [(CAP_OPUS, 256)])
+            self.assertIn("[server] %s set the room's Opus bitrate to 256 kbps" % a.username,
+                          [chat_fields(m[1])[2] for m in msgs if m[0] == CHAT and chat_fields(m[1])[:2] == ["MSG", ""]])
+        # someone who joins later gets it too
+        c = self.client("carol", CAP_OPUS)
+        m = c.wait_for(lambda m: m[0] == CODEC_MASK)
+        self.assertEqual(mask_opus_kbps(m), 256)
+
+    def test_bitrate_in_a_flac_room_waits_for_opus(self):
+        a = self.client("alice", CAP_OPUS | CAP_FLAC)
+        b = self.client("bob", CAP_OPUS | CAP_FLAC)
+        a.chat("MSG", "!codec flac")
+        for c in (a, b):
+            c.drain(0.5)
+        b.chat("MSG", "!bitrate 96")
+        self.assertEqual(self.masks(a), [(CAP_FLAC, 96)])
+        self.assertIn("[server] %s set the room's Opus bitrate to 96 kbps, for when the room plays Opus" % b.username,
+                      self.server_says(b))
+        a.chat("MSG", "!codec opus")
+        self.assertEqual(self.masks(b), [(CAP_OPUS, 96)])
+
+    def test_a_bad_bitrate_only_tells_the_sender(self):
+        a = self.client("alice", CAP_OPUS)
+        b = self.client("bob", CAP_OPUS)
+        for c in (a, b):
+            c.drain(0.5)
+        for arg in ("", " 20", " 511", " fast", " 128k"):
+            a.chat("MSG", "!bitrate" + arg)
+            msgs = a.drain(0.5)
+            self.assertNotIn(CODEC_MASK, [m[0] for m in msgs])
+            self.assertIn("[server] the room's Opus bitrate is 128 kbps. Change it with !bitrate N, from 32 to 510",
+                          [chat_fields(m[1])[2] for m in msgs if m[0] == CHAT])
+        self.assertEqual(b.drain(0.3), [])
+
+    def test_unknown_command_lists_bitrate(self):
+        a = self.client("alice", CAP_OPUS)
+        a.drain(0.3)
+        a.chat("MSG", "!speed 2")
+        self.assertIn("Unknown !command. Commands available: !vote, !topic, !codec, !bitrate",
+                      [chat_fields(m[1])[2] for m in a.drain(0.5) if m[0] == CHAT])
+
+
+class NoBitrateTests(CodecTestCase):
+    extra_config = "OpusBitrate none\n"
+
+    def test_mask_is_the_old_one_until_someone_sets_a_bitrate(self):
+        a = self.client("alice", CAP_OPUS)
+        m = a.wait_for(lambda m: m[0] == CODEC_MASK)
+        self.assertEqual(len(m[1]), 4)  # what servers sent before there was a room bitrate
+        self.assertEqual(codec_mask(m), CAP_OPUS)
+        a.chat("MSG", "!bitrate")
+        self.assertIn("[server] the room has no Opus bitrate: everyone sends their own. Set one with !bitrate N, from 32 to 510",
+                      self.server_says(a))
+        a.chat("MSG", "!bitrate 64")
+        m = a.wait_for(lambda m: m[0] == CODEC_MASK)
+        self.assertEqual((codec_mask(m), mask_opus_kbps(m)), (CAP_OPUS, 64))
+
+
+class BadBitrateConfigTests(CodecTestCase):
+    extra_config = "OpusBitrate 16\n"
+
+    def test_a_bitrate_out_of_range_is_ignored(self):
+        a = self.client("alice", CAP_OPUS)
+        m = a.wait_for(lambda m: m[0] == CODEC_MASK)
+        self.assertEqual(mask_opus_kbps(m), 128)  # a warning, and the default stays
 
 
 class StartupTests(unittest.TestCase):

@@ -1,8 +1,8 @@
-# NINJAM as a VST3 plug-in: a NINJAM client with a built-in server, in one file.
+# Jamsa: a NINJAM client as a VST3 plug-in, with a built-in server, in one file.
 #
 #   cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-#   cmake --build build --target NINJAM validator
-#   build/bin/Release/validator build/VST3/Release/NINJAM.vst3
+#   cmake --build build --target Jamsa validator
+#   build/bin/Release/validator build/VST3/Release/Jamsa.vst3
 #
 # Everything it needs is downloaded at configure time and linked statically: the
 # VST3 SDK with VSTGUI (MIT / BSD), Ogg, Opus and FLAC (BSD), and for the built-in
@@ -13,7 +13,7 @@
 # The plug-in sends and plays Opus and FLAC only (NINJAM_NO_VORBIS): it sends
 # nothing in a room that uses Vorbis, and plays Vorbis intervals as silence.
 #
-# On Windows the plug-in is a single NINJAM.vst3 file; build with /MT
+# On Windows the plug-in is a single Jamsa.vst3 file; build with /MT
 # (-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
 # -DSMTG_USE_STATIC_CRT=ON) so it needs no Visual C++ runtime.
 #
@@ -46,7 +46,7 @@ set(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SMTG_ENABLE_VST3_HOSTING_EXAMPLES ${NINJAM_VST3_EDITORHOST} CACHE BOOL "" FORCE) # the validator is built anyway
 set(SMTG_ENABLE_VSTGUI_SUPPORT ON CACHE BOOL "" FORCE)
 set(SMTG_CREATE_PLUGIN_LINK OFF CACHE BOOL "" FORCE) # don't symlink the build into the user's VST3 folder
-set(SMTG_CREATE_BUNDLE_FOR_WINDOWS OFF CACHE BOOL "" FORCE) # on Windows NINJAM.vst3 is a single file
+set(SMTG_CREATE_BUNDLE_FOR_WINDOWS OFF CACHE BOOL "" FORCE) # on Windows Jamsa.vst3 is a single file
 set(SMTG_RUN_VST_VALIDATOR OFF CACHE BOOL "" FORCE) # CI runs the validator as its own step
 
 FetchContent_Declare(vst3sdk
@@ -164,8 +164,8 @@ endif()
 # ---------------------------------------------------------------------------
 # The plug-in
 # ---------------------------------------------------------------------------
-smtg_add_vst3plugin(NINJAM
-    PACKAGE_NAME "NINJAM"
+smtg_add_vst3plugin(Jamsa
+    PACKAGE_NAME "Jamsa"
     SOURCES_LIST
         source/factory.cpp
         source/version.h
@@ -191,30 +191,30 @@ smtg_add_vst3plugin(NINJAM
         ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.cpp
         ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.h
 )
-target_compile_features(NINJAM PRIVATE cxx_std_17)
-target_link_libraries(NINJAM PRIVATE sdk vstgui_support ninjam_client ninjamsrv_embedded)
+target_compile_features(Jamsa PRIVATE cxx_std_17)
+target_link_libraries(Jamsa PRIVATE sdk vstgui_support ninjam_client ninjamsrv_embedded)
 
 if(SMTG_LINUX)
     # Export only the VST3 entry points, not the symbols of the libraries linked in,
     # so they can't clash with another plug-in's copies in the host.
-    target_link_options(NINJAM PRIVATE "LINKER:--exclude-libs,ALL")
+    target_link_options(Jamsa PRIVATE "LINKER:--exclude-libs,ALL")
     # dlopen() keeps Pango loaded (see factory.cpp)
-    target_link_libraries(NINJAM PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(Jamsa PRIVATE ${CMAKE_DL_LIBS})
     # the Copy buttons own X11's clipboard themselves (see clipboard.cpp); VSTGUI needs xcb too
-    target_link_libraries(NINJAM PRIVATE xcb)
+    target_link_libraries(Jamsa PRIVATE xcb)
 endif()
 
 if(SMTG_MAC)
-    smtg_target_set_bundle(NINJAM
-        BUNDLE_IDENTIFIER io.github.leonidstern.ninjam.vst3
+    smtg_target_set_bundle(Jamsa
+        BUNDLE_IDENTIFIER io.github.leonidstern.jamsa.vst3
         COMPANY_NAME "LeonidStern/ninjam"
     )
     # Ninja and Makefile builds get CMake's default Info.plist, which calls the bundle an
     # application; this one says it is a plug-in bundle (BNDL), so Finder shows one item.
-    set_target_properties(NINJAM PROPERTIES
+    set_target_properties(Jamsa PROPERTIES
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/mac/Info.plist.in
-        MACOSX_BUNDLE_GUI_IDENTIFIER io.github.leonidstern.ninjam.vst3
-        MACOSX_BUNDLE_BUNDLE_NAME NINJAM
+        MACOSX_BUNDLE_GUI_IDENTIFIER io.github.leonidstern.jamsa.vst3
+        MACOSX_BUNDLE_BUNDLE_NAME Jamsa
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
         MACOSX_BUNDLE_COPYRIGHT "NINJAM contributors, GPL v2 or later"

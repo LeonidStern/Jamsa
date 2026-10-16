@@ -155,6 +155,7 @@ int g_config_max_users; // these all must be copied to User_Group
 int g_config_portmap;
 int g_config_allow_codecs; // CLIENT_CAP_CODEC_* bits
 int g_config_require_codec; // CLIENT_CAP_CODEC_* bit, 0 for none
+int g_config_opus_kbps; // the rooms' Opus bitrate until someone changes it with !bitrate, 0 for none
 int g_config_keepalive;
 WDL_FastString g_config_motdfile, g_config_private_lobby_motdfile;
 WDL_FastString g_config_default_topic;
@@ -181,6 +182,7 @@ static void copyConfigToGroup(User_Group *group)
   group->m_allow_hidden_users = g_config_allow_hidden_users;
   group->m_allow_codecs = g_config_allow_codecs | g_config_require_codec; // a required codec is allowed
   group->m_require_codec = g_config_require_codec;
+  if (!group->m_room_opus_kbps_chosen) group->m_room_opus_kbps = g_config_opus_kbps;
   group->m_voting_threshold = g_config_voting_threshold;
   group->m_voting_timeout = g_config_voting_timeout;
 }
@@ -411,6 +413,17 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
     int x=lp->gettoken_enum(1,"none\0opus\0flac\0");
     if (x < 0) return -2;
     g_config_require_codec = x == 1 ? CLIENT_CAP_CODEC_OPUS : x == 2 ? CLIENT_CAP_CODEC_FLAC : 0;
+  }
+  else if (!stricmp(t,"OpusBitrate"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    if (!stricmp(lp->gettoken_str(1),"none")) g_config_opus_kbps=0;
+    else
+    {
+      int x=lp->gettoken_int(1);
+      if (x < User_Group::MIN_OPUS_KBPS || x > User_Group::MAX_OPUS_KBPS) return -2;
+      g_config_opus_kbps=x;
+    }
   }
   else if (!stricmp(t,"SetKeepAlive"))
   {
@@ -653,6 +666,7 @@ static int ReadConfig(char *configfile, bool is_init=false)
   g_config_portmap=0;
   g_config_allow_codecs=CLIENT_CAP_CODEC_OPUS; // FLAC needs several times the bandwidth, so servers opt in
   g_config_require_codec=0;
+  g_config_opus_kbps=128;
   g_config_motdfile.Set("");
 
   g_acllist.Resize(0);

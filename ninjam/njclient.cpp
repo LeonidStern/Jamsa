@@ -662,6 +662,7 @@ NJClient::NJClient()
   config_send_opus=true;
   config_send_flac=true;
   m_codec_mask=0;
+  m_room_opus_kbps=0;
   config_savelocalaudio=0;
   config_metronome=0.5f;
   config_metronome_pan=0.0f;
@@ -998,6 +999,7 @@ void NJClient::Connect(const char *host, const char *user, const char *pass)
 
   m_status=0;
   m_codec_mask=0; // Vorbis until the server says otherwise
+  m_room_opus_kbps=0;
 }
 
 unsigned int NJClient::GetUploadCodec() const
@@ -1232,7 +1234,11 @@ int NJClient::Run() // nonzero if sleep ok
         case MESSAGE_SERVER_CODEC_MASK:
           {
             mpb_server_codec_mask cm;
-            if (!cm.parse(msg)) m_codec_mask=cm.codecs;
+            if (!cm.parse(msg))
+            {
+              m_codec_mask=cm.codecs;
+              m_room_opus_kbps=cm.opus_kbps;
+            }
           }
         break;
         case MESSAGE_SERVER_CONFIG_CHANGE_NOTIFY:

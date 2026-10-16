@@ -12,10 +12,10 @@
 
   A small VST3 host for the end-to-end test (test_plugin_e2e.py).
 
-  It loads NINJAM.vst3, plays a 997 Hz tone into it in real time, and drives
+  It loads Jamsa.vst3, plays a 997 Hz tone into it in real time, and drives
   it through its text command interface.
 
-  Usage: plugin_e2e_host path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two | sync]]]
+  Usage: plugin_e2e_host path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync]]]
 
   Hosting (the default): the plug-in hosts a server and joins it, and a second
   NJClient ("peer", in this process) joins too and plays a 661 Hz tone. The
@@ -40,13 +40,16 @@
   (so the server sees one name twice, from one address). "alice" hosts a server; "bob"
   can't host a second one in this process and is told to join, joins as the name's
   second player, and they hear each other (alice plays 997 Hz, bob 661 Hz) and stay in.
-  Then alice stops her server, which drops bob; bob hosts one, and alice joins it.
+  Then bob changes the room's bitrate and codec, which changes alice's too. Last, alice
+  stops her server, which drops bob; bob hosts one (at his bitrate), and alice joins it.
     PORT <port>            alice's server is up
     PHASE two BEGIN
     PHASE two END a_hears_snr=<dB> b_hears_snr=<dB> b_host_refused=<0|1> b_got_chat=<0|1> a_users=<n> b_users=<n>
                   a_name=<alice's name> b_name=<bob's> a_sees=<who alice hears, as shown> b_sees=<who bob hears>
                   a_state=<state> b_state=<state> (at the end)
-    PHASE swap END b_dropped=<0|1> b_hosting=<0|1> port=<port> a_state=<state> a_users=<n>
+    PHASE room END start_kbps=<the room's at first> a_kbps=<alice sends> b_kbps=<bob sends> a_own=<alice's own>
+                   b_own=<bob's own> b_saw_note=<0|1> flac=<alice's room>/<alice sends> opus=<the same, after>
+    PHASE swap END b_dropped=<0|1> b_hosting=<0|1> port=<port> a_state=<state> a_users=<n> a_kbps=<alice sends>
     DONE
 
   The host leads (sync): this host passes a tempo, a transport and a time signature (4/4) in
@@ -205,13 +208,13 @@ public:
     const auto &factory = m_module->getFactory();
     for (auto &ci : factory.classInfos())
     {
-      if (ci.category() != kVstAudioEffectClass || ci.name() != "NINJAM") continue;
+      if (ci.category() != kVstAudioEffectClass || ci.name() != "Jamsa") continue;
       m_component = factory.createInstance<IComponent>(ci.ID());
       break;
     }
     if (!m_component)
     {
-      printf("error: no NINJAM audio effect class in the module\n");
+      printf("error: no Jamsa audio effect class in the module\n");
       return false;
     }
     if (m_component->initialize(m_hostApp) != kResultOk)
@@ -579,6 +582,23 @@ static int jam_two_instances(Host &a, Host &b)
            aSnr, bSnr, refused ? 1 : 0, gotChat ? 1 : 0, sa["users"].c_str(), sb["users"].c_str(), sa["user"].c_str(), sb["user"].c_str(),
            shown(a.command("users")).c_str(), shown(b.command("users")).c_str(), sa["state"].c_str(), sb["state"].c_str());
 
+    // bob changes the room's bitrate, then its codec; alice's changes too, her own setting doesn't
+    const std::string startKbps = a.status()["roomkbps"];
+    b.command("bitrate 256");
+    a.runUntil(nullptr, 10.0, [&]() { return a.status()["kbps"] == "256" && b.status()["kbps"] == "256"; });
+    sa = a.status();
+    sb = b.status();
+    const bool sawNote = contains(b.command("chatlog"), "set the room's Opus bitrate to 256 kbps");
+    b.command("codec flac");
+    a.runUntil(nullptr, 10.0, [&]() { auto s = a.status(); return s["codec"] == "FLAC" && s["upload"] == "FLAC"; });
+    const std::string flac = a.status()["codec"] + "/" + a.status()["upload"];
+    a.command("codec opus");
+    a.runUntil(nullptr, 10.0, [&]() { auto s = a.status(); return s["codec"] == "Opus" && s["upload"] == "OPUS"; });
+    const std::string opus = a.status()["codec"] + "/" + a.status()["upload"];
+    printf("PHASE room END start_kbps=%s a_kbps=%s b_kbps=%s a_own=%s b_own=%s b_saw_note=%d flac=%s opus=%s\n", startKbps.c_str(),
+           sa["kbps"].c_str(), sb["kbps"].c_str(), sa["ownkbps"].c_str(), sb["ownkbps"].c_str(), sawNote ? 1 : 0, flac.c_str(),
+           opus.c_str());
+
     // alice stops her server, which drops bob; now bob can host, and alice joins him
     a.command("host off");
     const bool dropped = a.runUntil(nullptr, 15.0, [&]() { return a.status()["hosting"] == "0" && b.status()["state"] != "connected"; });
@@ -586,10 +606,13 @@ static int jam_two_instances(Host &a, Host &b)
     a.runUntil(nullptr, 15.0, [&]() { auto s = b.status(); return s["state"] == "connected" && s["hosting"] == "1"; });
     const std::string port2 = b.status()["port"];
     a.command("connect localhost:" + port2);
-    a.runUntil(nullptr, 15.0, [&]() { auto s = a.status(); return s["state"] == "connected" && atoi(s["users"].c_str()) >= 1; });
+    a.runUntil(nullptr, 15.0, [&]() {
+      auto s = a.status();
+      return s["state"] == "connected" && atoi(s["users"].c_str()) >= 1 && s["roomkbps"] != "0";
+    });
     sa = a.status();
-    printf("PHASE swap END b_dropped=%d b_hosting=%s port=%s a_state=%s a_users=%s\n", dropped ? 1 : 0, b.status()["hosting"].c_str(),
-           port2.c_str(), sa["state"].c_str(), sa["users"].c_str());
+    printf("PHASE swap END b_dropped=%d b_hosting=%s port=%s a_state=%s a_users=%s a_kbps=%s\n", dropped ? 1 : 0,
+           b.status()["hosting"].c_str(), port2.c_str(), sa["state"].c_str(), sa["users"].c_str(), sa["kbps"].c_str());
 
     b.command("host off");
     if (!a.runUntil(nullptr, 15.0, [&]() { return b.status()["hosting"] == "0" && a.status()["state"] != "connected"; }))
@@ -835,7 +858,7 @@ int main(int argc, char **argv)
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2)
   {
-    fprintf(stderr, "usage: %s path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two | sync]]]\n", argv[0]);
+    fprintf(stderr, "usage: %s path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync]]]\n", argv[0]);
     return 2;
   }
   const int srate = argc > 2 ? atoi(argv[2]) : 48000;

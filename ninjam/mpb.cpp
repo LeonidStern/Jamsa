@@ -234,6 +234,15 @@ int mpb_server_codec_mask::parse(Net_Message *msg) // return 0 on success
   codecs |= ((int)*p++)<<16;
   codecs |= ((int)*p++)<<24;
 
+  opus_kbps = 0;
+  if (msg->get_size() >= 8)
+  {
+    opus_kbps = ((int)*p++);
+    opus_kbps |= ((int)*p++)<<8;
+    opus_kbps |= ((int)*p++)<<16;
+    opus_kbps |= ((int)*p++)<<24;
+  }
+
   return 0;
 }
 
@@ -242,7 +251,7 @@ Net_Message *mpb_server_codec_mask::build()
   Net_Message *nm=new Net_Message;
   nm->set_type(MESSAGE_SERVER_CODEC_MASK);
 
-  nm->set_size(4);
+  nm->set_size(opus_kbps > 0 ? 8 : 4);
 
   unsigned char *p=(unsigned char *)nm->get_data();
 
@@ -256,6 +265,13 @@ Net_Message *mpb_server_codec_mask::build()
   *p++=(codecs>>8)&0xff;
   *p++=(codecs>>16)&0xff;
   *p++=(codecs>>24)&0xff;
+  if (opus_kbps > 0)
+  {
+    *p++=opus_kbps&0xff;
+    *p++=(opus_kbps>>8)&0xff;
+    *p++=(opus_kbps>>16)&0xff;
+    *p++=(opus_kbps>>24)&0xff;
+  }
 
   return nm;
 }

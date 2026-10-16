@@ -173,6 +173,10 @@ class mpb_server_download_interval_write
 // room uses the best one everyone can until they leave. A client shows the room's
 // codec from the mask.
 //
+// The mask may also carry the room's Opus bitrate (kbps), which ninjamsrv sets with
+// OpusBitrate in its config and any player can change with !bitrate N. Clients that know
+// it send Opus at that bitrate; older ones read only the codecs and send their own.
+//
 // A client may upload an interval in one of these codecs only while the latest mask it
 // received includes it, and must choose the codec at the start of each interval.
 // Without a mask (older servers never send one) it uploads Vorbis.
@@ -196,7 +200,7 @@ static inline int mpb_codec_cap_for_fourcc(unsigned int fourcc)
 class mpb_server_codec_mask
 {
   public:
-    mpb_server_codec_mask() : codecs(0) { }
+    mpb_server_codec_mask() : codecs(0), opus_kbps(0) { }
     ~mpb_server_codec_mask() { }
 
     int parse(Net_Message *msg); // return 0 on success
@@ -204,6 +208,8 @@ class mpb_server_codec_mask
 
     // public data
     int codecs; // CLIENT_CAP_CODEC_* bits; 0 = Vorbis only
+    int opus_kbps; // the room's Opus bitrate in kbps; 0 = none (each client sends its own).
+                   // Sent only when nonzero, after the codecs; older clients ignore it.
 };
 
 

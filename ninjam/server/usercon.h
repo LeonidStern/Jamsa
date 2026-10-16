@@ -111,10 +111,16 @@ class User_Group
     // (not to Vorbis with RequireCodec)
     void onCodecCommand(User_Connection *con, const char *arg);
 
+    // !bitrate [N]: any player can set the Opus bitrate everyone sends (MIN_OPUS_KBPS to
+    // MAX_OPUS_KBPS kbps); it goes to clients with the codec mask
+    void onBitrateCommand(User_Connection *con, const char *arg);
+    enum { MIN_OPUS_KBPS = 32, MAX_OPUS_KBPS = 510 };
+
     // tells everyone else that this user (and their channels) are gone
     void NotifyUserLeft(User_Connection *p);
 
-    // tells clients that negotiate codecs which one the room uses, when that changes
+    // tells clients that negotiate codecs which one the room uses (and its Opus bitrate),
+    // when that changes
     void SendCodecMask();
 
     // The codec (CLIENT_CAP_CODEC_* bit, 0 for Vorbis) everyone in the room uploads: the one
@@ -145,6 +151,8 @@ class User_Group
                          // With it, rooms never use Vorbis.
     int m_room_codec; // codec chosen with !codec, 0 for Vorbis
     int m_room_codec_announced; // codec the room was last told about, -1 while the room is empty
+    int m_room_opus_kbps; // Opus bitrate everyone sends (OpusBitrate, then !bitrate), 0 for none
+    bool m_room_opus_kbps_chosen; // set with !bitrate, so a config reload keeps it
 
 #define LOBBY_ALLOW_CHAT 2
     int m_is_lobby_mode; // nonzero for lobby (and LOBBY_ALLOW_CHAT etc optional)
@@ -245,6 +253,7 @@ class User_Connection
     unsigned char m_challenge[8];
     int m_clientcaps;
     int m_codec_mask_sent; // last MESSAGE_SERVER_CODEC_MASK sent, -1 for none
+    int m_opus_kbps_sent; // the bitrate in it
 
     int m_auth_privs;
 

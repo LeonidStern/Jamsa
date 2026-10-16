@@ -136,6 +136,9 @@ public:
   // and the codec (fourcc, such as 'OGGv', 'OPUS', 'FLAC') this client uploads the next interval with;
   // 0 in builds with NINJAM_NO_VORBIS when the room plays neither Opus nor FLAC (nothing is sent)
   int GetCodecMask() const { return m_codec_mask; }
+  // the Opus bitrate (kbps) the server set for the room, 0 when it set none (each client picks
+  // its own); the client doesn't apply it: set the local channel's bitrate to it
+  int GetRoomOpusKbps() const { return m_room_opus_kbps; }
   unsigned int GetUploadCodec() const;
   // the tempo the server set last; GetActualBPM() and GetBPI() follow at the next interval, in AudioProc()
   int GetServerBPM() const { return m_bpm; }
@@ -254,6 +257,7 @@ protected:
   int m_max_localch;
   int m_connection_keepalive;
   int m_codec_mask; // codecs (CLIENT_CAP_CODEC_*) the server says everyone in the room can decode
+  int m_room_opus_kbps; // the room's Opus bitrate from the codec mask, 0 for none
   FILE *m_logFile;
 #ifndef NJCLIENT_NO_XMIT_SUPPORT
   FILE *m_oggWrite;

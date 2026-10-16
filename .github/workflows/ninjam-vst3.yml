@@ -1,6 +1,6 @@
 name: ninjam-vst3
 
-# Builds the NINJAM VST3 plug-in (ninjam/vst3) on Linux, Windows and macOS, checks it with
+# Builds Jamsa, the NINJAM VST3 plug-in (ninjam/vst3), on Linux, Windows and macOS, checks it with
 # Steinberg's validator and Tracktion's pluginval (which also opens the editor), runs the
 # plug-in's tests and uploads what users install.
 
@@ -51,14 +51,14 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build build --target NINJAM validator plugin_unit_test plugin_e2e_host -- -k 0
+          cmake --build build --target Jamsa validator plugin_unit_test plugin_e2e_host -- -k 0
           # what gets validated, tested and shipped
-          strip --strip-unneeded build/VST3/Release/NINJAM.vst3/Contents/x86_64-linux/NINJAM.so
-          ls -l build/VST3/Release/NINJAM.vst3/Contents/x86_64-linux/
+          strip --strip-unneeded build/VST3/Release/Jamsa.vst3/Contents/x86_64-linux/Jamsa.so
+          ls -l build/VST3/Release/Jamsa.vst3/Contents/x86_64-linux/
 
       - name: Steinberg validator
         run: |
-          build/bin/Release/validator -e build/VST3/Release/NINJAM.vst3 2>&1 | tee validator.log
+          build/bin/Release/validator -e build/VST3/Release/Jamsa.vst3 2>&1 | tee validator.log
           grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator.log
 
       - name: pluginval (with the editor, under Xvfb)
@@ -66,7 +66,7 @@ jobs:
           curl -fsSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_Linux.zip"
           echo "$PLUGINVAL_SHA256_LINUX  pluginval.zip" | sha256sum -c -
           unzip -q -o pluginval.zip -d pluginval
-          xvfb-run -a -s "-screen 0 1400x900x24" pluginval/pluginval $PLUGINVAL_ARGS --validate build/VST3/Release/NINJAM.vst3
+          xvfb-run -a -s "-screen 0 1400x900x24" pluginval/pluginval $PLUGINVAL_ARGS --validate build/VST3/Release/Jamsa.vst3
 
       - name: Servers and old clients for the end-to-end test
         run: |
@@ -82,11 +82,11 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp -R build/VST3/Release/NINJAM.vst3 dist/
+          cp -R build/VST3/Release/Jamsa.vst3 dist/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NINJAM-vst3-linux-x86_64
+          name: Jamsa-vst3-linux-x86_64
           path: dist/
 
       - uses: actions/upload-artifact@v4
@@ -103,19 +103,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build (MSVC, static runtime, single-file NINJAM.vst3)
+      - name: Build (MSVC, static runtime, single-file Jamsa.vst3)
         shell: cmd
         run: |
           for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           where ninja >nul 2>nul || choco install ninja --no-progress -y || exit /b 1
           cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DSMTG_USE_STATIC_CRT=ON || exit /b 1
-          cmake --build build --target NINJAM validator plugin_unit_test -- -k 0 || exit /b 1
+          cmake --build build --target Jamsa validator plugin_unit_test -- -k 0 || exit /b 1
 
       - name: Find the plug-in and the validator
         shell: bash
         run: |
-          PLUGIN=$(find build/VST3 -name NINJAM.vst3 -type f | head -1)
+          PLUGIN=$(find build/VST3 -name Jamsa.vst3 -type f | head -1)
           VALIDATOR=$(find build/bin -name validator.exe -type f | head -1)
           test -n "$PLUGIN" && test -n "$VALIDATOR"
           echo "PLUGIN=$PLUGIN" >> "$GITHUB_ENV"
@@ -129,7 +129,7 @@ jobs:
           DUMPBIN=$(cygpath -u "$("$VSWHERE" -latest -products '*' -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | head -1 | tr -d '\r')")
           MSYS_NO_PATHCONV=1 "$DUMPBIN" /nologo /dependents "$PLUGIN" | tee dependents.txt
           if grep -i -E "vcruntime|msvcp|ucrtbase|api-ms-win-crt" dependents.txt; then
-            echo "NINJAM.vst3 needs the Visual C++ runtime; it should be built with /MT"
+            echo "Jamsa.vst3 needs the Visual C++ runtime; it should be built with /MT"
             exit 1
           fi
 
@@ -141,9 +141,9 @@ jobs:
           "$VALIDATOR" -e "$PLUGIN" 2>&1 | tee validator.log || true
           grep -F "Invalid bundle structure: Not a bundle" validator.log
           grep -E "Result: [0-9]+ tests passed, 1 tests failed" validator.log
-          mkdir -p validate/NINJAM.vst3/Contents/x86_64-win
-          cp "$PLUGIN" validate/NINJAM.vst3/Contents/x86_64-win/NINJAM.vst3
-          "$VALIDATOR" -e validate/NINJAM.vst3 2>&1 | tee validator-folder.log
+          mkdir -p validate/Jamsa.vst3/Contents/x86_64-win
+          cp "$PLUGIN" validate/Jamsa.vst3/Contents/x86_64-win/Jamsa.vst3
+          "$VALIDATOR" -e validate/Jamsa.vst3 2>&1 | tee validator-folder.log
           grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator-folder.log
 
       - name: pluginval (with the editor)
@@ -163,11 +163,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp "$PLUGIN" dist/NINJAM.vst3
+          cp "$PLUGIN" dist/Jamsa.vst3
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NINJAM-vst3-windows-x64
+          name: Jamsa-vst3-windows-x64
           path: dist/
 
       - uses: actions/upload-artifact@v4
@@ -184,7 +184,7 @@ jobs:
     runs-on: macos-14
     env:
       MACOSX_DEPLOYMENT_TARGET: '12.0'
-      BUNDLE: build/VST3/Release/NINJAM.vst3
+      BUNDLE: build/VST3/Release/Jamsa.vst3
     steps:
       - uses: actions/checkout@v4
 
@@ -195,17 +195,17 @@ jobs:
         run: cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
 
       - name: Build
-        run: cmake --build build --target NINJAM validator plugin_unit_test plugin_e2e_host -- -k 0
+        run: cmake --build build --target Jamsa validator plugin_unit_test plugin_e2e_host -- -k 0
 
       - name: Strip and sign (ad hoc)
         run: |
-          strip -x "$BUNDLE/Contents/MacOS/NINJAM"
+          strip -x "$BUNDLE/Contents/MacOS/Jamsa"
           codesign --force --deep --sign - "$BUNDLE"
           codesign --verify --deep --strict --verbose=2 "$BUNDLE"
 
       - name: Check the bundle
         run: |
-          BIN="$BUNDLE/Contents/MacOS/NINJAM"
+          BIN="$BUNDLE/Contents/MacOS/Jamsa"
           lipo -archs "$BIN"
           lipo -archs "$BIN" | grep -w arm64 && lipo -archs "$BIN" | grep -w x86_64
           otool -l "$BIN" | grep -A4 LC_BUILD_VERSION | grep minos
@@ -291,13 +291,30 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p dist
-          ditto -c -k --keepParent "$BUNDLE" dist/NINJAM-vst3-macos.zip
+          # Finder shows a folder whose extension no app has registered (like .vst3) as a plain
+          # folder unless its bundle bit is set (kHasBundle in its Finder info), so set it: then
+          # Jamsa.vst3 shows as one file, like other plug-ins. It is set last, on a copy, after the
+          # checks above, because codesign --strict rejects any extended attribute on the bundle;
+          # the signature itself covers the files inside and stays valid. ditto zips the Finder
+          # info of what is inside the folder it is given (not of that folder itself), the way
+          # Finder's Compress does (--sequesterRsrc: in __MACOSX/), and unzipping restores it.
+          mkdir -p stage dist
+          ditto "$BUNDLE" stage/Jamsa.vst3
+          xattr -wx com.apple.FinderInfo 0000000000000000200000000000000000000000000000000000000000000000 stage/Jamsa.vst3
+          ditto -c -k --sequesterRsrc stage dist/Jamsa-vst3-macos.zip
           ls -l dist
+          zipinfo -1 dist/Jamsa-vst3-macos.zip | grep -Fx "__MACOSX/._Jamsa.vst3"
+          # what someone gets after unzipping: the bundle bit, a valid signature, a plug-in that loads
+          ditto -x -k dist/Jamsa-vst3-macos.zip "$RUNNER_TEMP/unzipped"
+          UNZIPPED="$RUNNER_TEMP/unzipped/Jamsa.vst3"
+          test "$(xattr -px com.apple.FinderInfo "$UNZIPPED" | tr -d ' \n' | cut -c17-20)" = 2000
+          codesign --verify --deep --verbose=2 "$UNZIPPED"
+          build/bin/Release/validator "$UNZIPPED" 2>&1 | tee validator-unzipped.log
+          grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator-unzipped.log
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NINJAM-vst3-macos-universal
+          name: Jamsa-vst3-macos-universal
           path: dist/
 
       - uses: actions/upload-artifact@v4
@@ -308,3 +325,49 @@ jobs:
             validator.log
             pluginval-logs/
           if-no-files-found: ignore
+
+  # The downloads in the README: each push to main puts that build of all three in the
+  # release "jamsa-latest" (the tag moves to the commit), replacing the files there.
+  release:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: jamsa-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Jamsa-vst3-linux-x86_64
+          path: linux
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Jamsa-vst3-windows-x64
+          path: windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Jamsa-vst3-macos-universal
+          path: macos
+
+      - name: Zip the downloads
+        run: |
+          mkdir release
+          (cd linux && zip -qr ../release/Jamsa-vst3-linux-x86_64.zip Jamsa.vst3)
+          (cd windows && zip -q ../release/Jamsa-vst3-windows-x64.zip Jamsa.vst3)
+          cp macos/Jamsa-vst3-macos.zip release/ # zipped on the Mac, with the bundle bit (see the macos job)
+          ls -l release
+
+      - name: Publish to the jamsa-latest release
+        run: |
+          NOTES="The newest build of Jamsa, from ${GITHUB_SHA::7} on main. See the README for how to install it."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Jamsa (latest build)" --notes "$NOTES"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Jamsa (latest build)" --notes "$NOTES" --latest
+          fi
+          gh release upload "$TAG" release/*.zip --repo "$GITHUB_REPOSITORY" --clobber

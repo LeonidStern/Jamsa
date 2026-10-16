@@ -13,7 +13,8 @@
   The built-in server (ninjamsrv_embedded): one per process, so one plug-in
   instance at a time owns it. It is set up like JamTaba's private server:
   anyone can join without an account, a single vote changes BPM/BPI, any player
-  can switch the room's codec with !codec (Opus or FLAC allowed), up to 8 users,
+  can switch the room's codec with !codec (Opus or FLAC allowed) and its Opus bitrate
+  with !bitrate (at first the host's own), up to 8 users,
   and the router is asked to forward the port (UPnP-IGD or NAT-PMP).
 
   Ports 2049 to 2058 are tried in turn. start() and stop() block (stop waits for
@@ -37,8 +38,8 @@ public:
 
   enum { FIRST_PORT = 2049, PORTS_TO_TRY = 10 };
 
-  // true when started (or already running for this owner)
-  bool start(const void *owner, std::string *error);
+  // true when started (or already running for this owner); the room's Opus bitrate starts at opusKbps
+  bool start(const void *owner, int opusKbps, std::string *error);
   void stop(const void *owner);
 
   struct State
@@ -62,7 +63,7 @@ public:
 private:
   HostServer() {}
   static void onLog(void *ctx, const char *text);
-  static std::string writeConfig(int port);
+  static std::string writeConfig(int port, int opusKbps);
 
   std::mutex m_startStop; // held while starting or stopping
   std::mutex m_mutex;     // guards everything below
