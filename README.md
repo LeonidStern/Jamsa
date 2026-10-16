@@ -6,11 +6,11 @@ Jam online from Ableton Live, or any other VST3 host. Jamsa is a [NINJAM](https:
 
 | System | Download |
 |---|---|
-| Windows 10 and 11 (64-bit) | [Jamsa-vst3-windows-x64.zip](https://github.com/LeonidStern/ninjam/releases/download/jamsa-latest/Jamsa-vst3-windows-x64.zip) |
-| macOS 12 and later (Apple silicon and Intel) | [Jamsa-vst3-macos.zip](https://github.com/LeonidStern/ninjam/releases/download/jamsa-latest/Jamsa-vst3-macos.zip) |
-| Linux (x86-64) | [Jamsa-vst3-linux-x86_64.zip](https://github.com/LeonidStern/ninjam/releases/download/jamsa-latest/Jamsa-vst3-linux-x86_64.zip) |
+| Windows 10 and 11 (64-bit) | [Jamsa-vst3-windows-x64.zip](https://github.com/LeonidStern/Jamsa/releases/download/jamsa-latest/Jamsa-vst3-windows-x64.zip) |
+| macOS 12 and later (Apple silicon and Intel) | [Jamsa-vst3-macos.dmg](https://github.com/LeonidStern/Jamsa/releases/download/jamsa-latest/Jamsa-vst3-macos.dmg) |
+| Linux (x86-64) | [Jamsa-vst3-linux-x86_64.zip](https://github.com/LeonidStern/Jamsa/releases/download/jamsa-latest/Jamsa-vst3-linux-x86_64.zip) |
 
-These are the newest builds from `main`, in the [jamsa-latest release](https://github.com/LeonidStern/ninjam/releases/tag/jamsa-latest). CI builds and tests them on every push.
+These are the newest builds from `main`, in the [jamsa-latest release](https://github.com/LeonidStern/Jamsa/releases/tag/jamsa-latest). CI builds and tests them on every push.
 
 ## Install
 
@@ -22,9 +22,9 @@ Jamsa is one `Jamsa.vst3`. On Windows that's a single file; on macOS and Linux i
 3. In Ableton, open Settings (Preferences in Live 11), then Plug-Ins. Turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
 
 **macOS**
-1. Double-click the zip to unzip it.
-2. Move `Jamsa.vst3` to `/Library/Audio/Plug-Ins/VST3`, the folder most plug-in installers use.
-3. The build isn't notarized by Apple, so macOS blocks it until you remove the download flag. In Terminal, run:
+1. Open `Jamsa-vst3-macos.dmg`.
+2. Drag `Jamsa.vst3` onto the *VST3 Plug-Ins* folder next to it. That folder is `/Library/Audio/Plug-Ins/VST3`, where most plug-in installers put theirs; if it isn't there yet, make it in Finder first.
+3. The build isn't notarized by Apple, so macOS blocks it until you remove the download flag. In Terminal, run this once:
    ```
    xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Jamsa.vst3
    ```
