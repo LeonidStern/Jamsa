@@ -43,6 +43,20 @@ xcb_atom_t intern(xcb_connection_t *c, const char *name)
   return a;
 }
 
+// A connection to the X server. Up to three tries: Xvfb sometimes hangs up on a connection
+// made just as another of ours closed (seen in CI, about once in 70 runs); the next one works.
+xcb_connection_t *connect_x()
+{
+  for (int attempt = 0; attempt < 3; attempt++)
+  {
+    xcb_connection_t *c = xcb_connect(nullptr, nullptr);
+    if (!xcb_connection_has_error(c)) return c;
+    xcb_disconnect(c);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return nullptr;
+}
+
 // a window of our own to own the selection with (never shown)
 xcb_window_t make_window(xcb_connection_t *c)
 {
@@ -117,13 +131,8 @@ private:
   // the connection and the window, made by set() before the thread starts
   bool open()
   {
-    m_conn = xcb_connect(nullptr, nullptr);
-    if (!m_conn || xcb_connection_has_error(m_conn))
-    {
-      if (m_conn) xcb_disconnect(m_conn);
-      m_conn = nullptr;
-      return false;
-    }
+    m_conn = connect_x();
+    if (!m_conn) return false;
     m_window = make_window(m_conn);
     m_clipboard = intern(m_conn, "CLIPBOARD");
     m_targets = intern(m_conn, "TARGETS");
@@ -320,12 +329,8 @@ void stopX11()
 
 bool readX11(std::string *text, double timeoutSeconds)
 {
-  xcb_connection_t *c = xcb_connect(nullptr, nullptr);
-  if (!c || xcb_connection_has_error(c))
-  {
-    if (c) xcb_disconnect(c);
-    return false;
-  }
+  xcb_connection_t *c = connect_x();
+  if (!c) return false;
   const xcb_window_t w = make_window(c);
   const xcb_atom_t clipboard = intern(c, "CLIPBOARD"), utf8 = intern(c, "UTF8_STRING"), into = intern(c, "NINJAM_PASTE");
   xcb_convert_selection(c, w, clipboard, utf8, into, XCB_CURRENT_TIME);
