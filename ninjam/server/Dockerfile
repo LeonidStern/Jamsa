@@ -1,7 +1,10 @@
 # Build and run the NINJAM server in a container.
 #
 #   docker build -f ninjam/server/Dockerfile -t ninjamsrv .     (from the repository root)
-#   docker run -d -p 2049:2049 ninjamsrv
+#   docker run -d -p 2049:2049 -p 2049:2049/udp ninjamsrv
+#
+# The UDP port is for Live (players hear each other in real time); without it,
+# everyone still plays through intervals.
 #
 # To use your own config, mount it over /config/ninjamsrv.cfg. Session archives
 # (SessionArchive /data/archive ...) and logs can go in the /data volume.
@@ -20,4 +23,5 @@ USER ninjam
 WORKDIR /data
 VOLUME /data
 EXPOSE 2049
+EXPOSE 2049/udp
 ENTRYPOINT ["ninjamsrv", "/config/ninjamsrv.cfg"]

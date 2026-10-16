@@ -35,6 +35,7 @@
 #include <ctype.h>
 
 #include "usercon.h"
+#include "liverelay.h"
 #include "../mpb.h"
 
 #include "../../WDL/rng.h"
@@ -123,7 +124,8 @@ static void trimTransferList(WDL_PtrList<User_TransferState> *list, unsigned int
   }
 }
 
-User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_codec_mask_sent(-1), m_opus_kbps_sent(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
+User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_codec_mask_sent(-1), m_opus_kbps_sent(0),
+      m_live_key(0), m_live_room(0), m_live_sent_gen(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
       m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0)
 {
   m_id = ++g_next_connection_id;
@@ -169,6 +171,8 @@ void User_Connection::Send(Net_Message *msg)
 
 User_Connection::~User_Connection()
 {
+  g_live.RemovePeer(m_id); // however the user goes: left, kicked, replaced, or the room closed
+
   int x;
   for (x = 0; x < m_sublist.GetSize(); x ++)
     delete m_sublist.Get(x);
@@ -992,9 +996,16 @@ User_Group::User_Group() : m_max_users(0), m_last_bpm(120), m_last_bpi(32), m_ke
   m_voting_threshold(110), m_voting_timeout(120),
   m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_allow_codecs(CLIENT_CAP_CODEC_OPUS), m_require_codec(0),
   m_room_codec(CLIENT_CAP_CODEC_OPUS), m_room_codec_announced(-1), m_room_opus_kbps(0), m_room_opus_kbps_chosen(false),
+  m_allow_live(false), m_room_live(false), m_room_live_chosen(false), m_live_kbps(128), m_live_frame(240),
+  m_live_max_peers(8), m_live_port(0), m_live_gen(0), m_live_relay_gen(0), m_live_users(0),
   m_is_lobby_mode(0)
 
 {
+  static unsigned int next_live_room_id;
+  m_live_room_id = ++next_live_room_id;
+  if (!m_live_room_id) m_live_room_id = ++next_live_room_id;
+  memset(m_live_params,0,sizeof(m_live_params));
+
   m_logfp = NULL;
   CreateUserLookup=0;
   memset(&m_next_loop_time,0,sizeof(m_next_loop_time));
@@ -1008,6 +1019,7 @@ User_Group::~User_Group()
     delete m_users.Get(x);
   }
   m_users.Empty();
+  g_live.RemoveRoom(m_live_room_id);
   if (m_logfp) fclose(m_logfp);
   m_logfp=0;
 }
@@ -1136,7 +1148,11 @@ int User_Group::Run()
     }
     m_run_robin++;
 
-    if (!m_is_lobby_mode) SendCodecMask();
+    if (!m_is_lobby_mode)
+    {
+      SendCodecMask();
+      SendLiveState();
+    }
 
     return wantsleep;
 }
@@ -1311,6 +1327,210 @@ void User_Group::onBitrateCommand(User_Connection *con, const char *arg)
       display_name(con),m_room_opus_kbps);
   Broadcast(server_chat(buf));
   SendCodecMask();
+}
+
+// A player whose client can play Live. Hidden users stay out of it, or the others'
+// lists of Live players would show them.
+static bool is_live_user(User_Connection *u)
+{
+  return u->m_auth_state > 0 && (u->m_clientcaps & CLIENT_CAP_LIVE) && !(u->m_auth_privs & PRIV_HIDDEN);
+}
+
+// The room's Live players, who may send: the first LiveMaxPeers players with Live
+// clients, in the order they joined, who may send audio at all. The others (over the
+// limit, or without channels) stay on intervals.
+static void live_senders(User_Group *g, WDL_PtrList<User_Connection> *senders)
+{
+  for (int x = 0; x < g->m_users.GetSize() && senders->GetSize() < g->m_live_max_peers; x ++)
+  {
+    User_Connection *u = g->m_users.Get(x);
+    if (is_live_user(u) && u->m_max_channels > 0) senders->Add(u);
+  }
+}
+
+// "alice", "alice and bob", "alice, bob and carol"
+static void append_names(WDL_FastString *s, const WDL_PtrList<User_Connection> &users)
+{
+  for (int x = 0; x < users.GetSize(); x ++)
+  {
+    if (x) s->Append(x == users.GetSize()-1 ? " and " : ", ");
+    s->Append(users.Get(x)->m_username.Get());
+  }
+}
+
+void User_Group::SendLiveState()
+{
+  // what the room's Live state depends on: worked out again only when one of these changes
+  const bool open = g_live.IsOpen();
+  const unsigned int relay_gen = g_live.Generation(); // a player was heard from, or went quiet
+  const int params[7] = { m_allow_live, m_room_live, open, m_live_kbps, m_live_frame, m_live_max_peers, m_live_port };
+  int x, n = 0;
+  bool newcomer = false;
+  for (x = 0; x < m_users.GetSize(); x ++)
+  {
+    User_Connection *u = m_users.Get(x);
+    if (!is_live_user(u)) continue;
+    n++;
+    if (u->m_live_room != m_live_room_id) newcomer = true; // logged in, or came from the lobby
+  }
+  if (!newcomer && n == m_live_users && relay_gen == m_live_relay_gen && !memcmp(params,m_live_params,sizeof(params)))
+    return;
+  m_live_users = n;
+  m_live_relay_gen = relay_gen;
+  memcpy(m_live_params,params,sizeof(params));
+  m_live_gen++;
+
+  WDL_PtrList<User_Connection> senders;
+  if (m_allow_live) live_senders(this,&senders);
+  const bool room_on = m_allow_live && open && m_room_live;
+
+  // the relay first, so the messages below have the players' bound flags
+  if (open) g_live.SetRoomLive(m_live_room_id,room_on,m_live_kbps,m_live_frame);
+  for (x = 0; x < m_users.GetSize(); x ++)
+  {
+    User_Connection *u = m_users.Get(x);
+    if (!is_live_user(u)) continue;
+    u->m_live_room = m_live_room_id;
+    if (m_allow_live && !u->m_live_key && !LiveRelay::RandomKey(&u->m_live_key))
+    {
+      static bool warned;
+      if (!warned) logText("warning: Live: could not read the system's random source, so nobody can play Live\n");
+      warned = true;
+    }
+    if (!open) continue;
+    if (m_allow_live && u->m_live_key)
+      g_live.SetPeer(u->m_id,m_live_room_id,u->m_netcon.GetConnection()->get_remote(),u->m_live_key,senders.Find(u) >= 0);
+    else
+      g_live.RemovePeer(u->m_id);
+  }
+
+  for (x = 0; x < m_users.GetSize(); x ++)
+  {
+    User_Connection *u = m_users.Get(x);
+    if (!is_live_user(u)) continue;
+    u->m_live_sent_gen = m_live_gen;
+
+    mpb_server_live ml;
+    ml.udp_port = m_live_port;
+    ml.live_kbps = m_live_kbps;
+    ml.peer_id = u->m_id;
+    ml.key = u->m_live_key;
+    ml.frame_samples = m_live_frame;
+    ml.max_peers = m_live_max_peers;
+    if (m_allow_live && u->m_live_key)
+    {
+      const bool may_send = senders.Find(u) >= 0;
+      ml.flags = (room_on ? mpb_server_live::LIVE_FLAG_ROOM_ON : 0) |
+                 (open ? mpb_server_live::LIVE_FLAG_UDP_OPEN : 0) |
+                 (may_send ? mpb_server_live::LIVE_FLAG_MAY_SEND : 0);
+      for (int s = 0; s < senders.GetSize(); s ++)
+      {
+        User_Connection *p = senders.Get(s);
+        if (p != u)
+          ml.build_add_peer(p->m_id,open && g_live.PeerBound(p->m_id) ? mpb_server_live::LIVE_PEER_BOUND : 0,p->m_username.Get());
+      }
+    }
+    else if (!u->m_live_sent.GetSize()) continue; // never told about Live, so nothing to take back
+    // else no flags, no peers: Live is gone (a config reload turned it off)
+
+    Net_Message *msg = ml.build();
+    if (!msg) continue;
+    if (msg->get_size() == u->m_live_sent.GetSize() && !memcmp(msg->get_data(),u->m_live_sent.Get(),msg->get_size()))
+    {
+      delete msg; // nothing new for this one
+      continue;
+    }
+    void *p = u->m_live_sent.ResizeOK(msg->get_size(),false);
+    if (p) memcpy(p,msg->get_data(),msg->get_size());
+    u->Send(msg);
+  }
+}
+
+void User_Group::onLiveCommand(User_Connection *con, const char *arg)
+{
+  const bool open = g_live.IsOpen();
+  int choice = -1;
+  if (!strcasecmp(arg,"on")) choice = 1;
+  else if (!strcasecmp(arg,"off")) choice = 0;
+
+  if (choice >= 0 && !(con->m_auth_privs & PRIV_VOTE))
+  {
+    con->Send(server_chat("[server] you don't have permission to change the room's audio"));
+    return;
+  }
+  if (!m_allow_live)
+  {
+    con->Send(server_chat("[server] this server doesn't have Live"));
+    return;
+  }
+  if (!open)
+  {
+    con->Send(server_chat("[server] Live is off: the server could not open its UDP port"));
+    return;
+  }
+
+  WDL_PtrList<User_Connection> senders, over, cant;
+  live_senders(this,&senders);
+  for (int x = 0; x < m_users.GetSize(); x ++)
+  {
+    User_Connection *u = m_users.Get(x);
+    if (u->m_auth_state <= 0 || (u->m_auth_privs & PRIV_HIDDEN)) continue;
+    if (!(u->m_clientcaps & CLIENT_CAP_LIVE)) cant.Add(u);
+    else if (u->m_max_channels > 0 && senders.Find(u) < 0) over.Add(u);
+  }
+
+  WDL_FastString s;
+  if (choice < 0 || choice == (int)m_room_live)
+  {
+    // the room's state, to the sender only
+    s.SetFormatted(64,"[server] Live is %s. ",m_room_live ? "on" : "off");
+    if (senders.GetSize())
+    {
+      s.Append("Players who can play Live: ");
+      append_names(&s,senders);
+      s.Append(". ");
+    }
+    else s.Append("Nobody here can play Live yet. ");
+    if (over.GetSize())
+    {
+      s.AppendFormatted(64,"Live has room for %d, so ",m_live_max_peers);
+      append_names(&s,over);
+      s.Append(over.GetSize() == 1 ? " stays on intervals. " : " stay on intervals. ");
+    }
+    s.Append(m_room_live ? "Turn it off with !live off" : "Turn it on with !live on");
+    if (choice >= 0) m_room_live_chosen = true; // keep it across a config reload, as asked
+    con->Send(server_chat(s.Get()));
+    return;
+  }
+
+  m_room_live = choice == 1;
+  m_room_live_chosen = true;
+  if (m_room_live)
+  {
+    s.SetFormatted(512,"[server] %s turned Live on: Jamsa players now hear each other in real time.",display_name(con));
+    if (cant.GetSize() == 1)
+    {
+      s.AppendFormatted(256," %s's client can't play Live and stays on intervals.",cant.Get(0)->m_username.Get());
+    }
+    else if (cant.GetSize())
+    {
+      s.Append(" The clients of ");
+      append_names(&s,cant);
+      s.Append(" can't play Live, so they stay on intervals.");
+    }
+    if (over.GetSize())
+    {
+      s.AppendFormatted(64," Live has room for %d, so ",m_live_max_peers);
+      append_names(&s,over);
+      s.Append(over.GetSize() == 1 ? " stays on intervals." : " stay on intervals.");
+    }
+  }
+  else
+  {
+    s.SetFormatted(512,"[server] %s turned Live off: everyone hears each other through intervals again.",display_name(con));
+  }
+  Broadcast(server_chat(s.Get()));
+  SendLiveState();
 }
 
 void User_Group::NotifyUserLeft(User_Connection *p)
@@ -1584,12 +1804,22 @@ void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
       onBitrateCommand(con,arg.Get());
       return;
     }
+    else if (str_begins_tok(p,"!live"))
+    {
+      p += 5;
+      while (*p == ' ' || *p == '\t') p++;
+      WDL_FastString arg(p);
+      while (arg.GetLength() && (arg.Get()[arg.GetLength()-1] == ' ' || arg.Get()[arg.GetLength()-1] == '\t'))
+        arg.SetLen(arg.GetLength()-1);
+      onLiveCommand(con,arg.Get());
+      return;
+    }
     else if (*p == '!')
     {
       mpb_chat_message newmsg;
       newmsg.parms[0]="PRIVMSG";
       newmsg.parms[1]="*";
-      newmsg.parms[2]="Unknown !command. Commands available: !vote, !topic, !codec, !bitrate";
+      newmsg.parms[2]="Unknown !command. Commands available: !vote, !topic, !codec, !bitrate, !live";
       con->Send(newmsg.build());
       return;
     }

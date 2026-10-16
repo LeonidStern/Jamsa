@@ -56,6 +56,7 @@
 #include "../mpb.h"
 #include "usercon.h"
 #include "portmap.h"
+#include "liverelay.h"
 
 #include "../../WDL/rng.h"
 #include "../../WDL/sha.h"
@@ -84,6 +85,7 @@ JNL_Listen *m_listener;
 int m_listener_port;
 PortMapper g_portmapper;
 int m_portmap_port; // port the router is being asked to forward, 0 if none
+bool m_portmap_udp; // and whether UDP too, for Live
 void onConfigChange(int argc, char **argv);
 void logText(const char *s, ...);
 
@@ -156,6 +158,10 @@ int g_config_portmap;
 int g_config_allow_codecs; // CLIENT_CAP_CODEC_* bits
 int g_config_require_codec; // CLIENT_CAP_CODEC_* bit, 0 for none
 int g_config_opus_kbps; // the rooms' Opus bitrate until someone changes it with !bitrate, 0 for none
+enum { LIVE_NO, LIVE_YES, LIVE_ON, LIVE_REQUIRE };
+int g_config_live; // LIVE_*
+int g_config_live_kbps, g_config_live_frame, g_config_live_max_peers, g_config_live_port;
+bool g_config_live_strict_address;
 int g_config_keepalive;
 WDL_FastString g_config_motdfile, g_config_private_lobby_motdfile;
 WDL_FastString g_config_default_topic;
@@ -183,6 +189,12 @@ static void copyConfigToGroup(User_Group *group)
   group->m_allow_codecs = g_config_allow_codecs | g_config_require_codec; // a required codec is allowed
   group->m_require_codec = g_config_require_codec;
   if (!group->m_room_opus_kbps_chosen) group->m_room_opus_kbps = g_config_opus_kbps;
+  group->m_allow_live = g_config_live != LIVE_NO;
+  if (!group->m_room_live_chosen) group->m_room_live = g_config_live == LIVE_ON;
+  group->m_live_kbps = g_config_live_kbps;
+  group->m_live_frame = g_config_live_frame;
+  group->m_live_max_peers = g_config_live_max_peers;
+  group->m_live_port = g_config_live_port;
   group->m_voting_threshold = g_config_voting_threshold;
   group->m_voting_timeout = g_config_voting_timeout;
 }
@@ -424,6 +436,49 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
       if (x < User_Group::MIN_OPUS_KBPS || x > User_Group::MAX_OPUS_KBPS) return -2;
       g_config_opus_kbps=x;
     }
+  }
+  else if (!stricmp(t,"Live"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int x=lp->gettoken_enum(1,"no\0yes\0on\0require\0");
+    if (x < 0) return -2;
+    g_config_live=x; // LIVE_*
+  }
+  else if (!stricmp(t,"LiveKbps"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int x=lp->gettoken_int(1);
+    if (x < User_Group::MIN_LIVE_KBPS || x > User_Group::MAX_LIVE_KBPS) return -2;
+    g_config_live_kbps=x;
+  }
+  else if (!stricmp(t,"LiveFrame"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int x=lp->gettoken_int(1);
+    if (x != 120 && x != 240 && x != 480) return -2;
+    g_config_live_frame=x;
+  }
+  else if (!stricmp(t,"LiveMaxPeers"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int x=lp->gettoken_int(1);
+    if (x < 1 || x > User_Group::MAX_LIVE_PEERS) return -2;
+    g_config_live_max_peers=x;
+  }
+  else if (!stricmp(t,"LivePort"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    const char *s=lp->gettoken_str(1);
+    int x=lp->gettoken_int(1);
+    if ((x == 0 && strcmp(s,"0")) || x < 0 || x > 65535) return -2;
+    g_config_live_port=x;
+  }
+  else if (!stricmp(t,"LiveStrictAddress"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int x=lp->gettoken_enum(1,"no\0yes\0");
+    if (x < 0) return -2;
+    g_config_live_strict_address = x == 1;
   }
   else if (!stricmp(t,"SetKeepAlive"))
   {
@@ -667,6 +722,12 @@ static int ReadConfig(char *configfile, bool is_init=false)
   g_config_allow_codecs=CLIENT_CAP_CODEC_OPUS; // FLAC needs several times the bandwidth, so servers opt in
   g_config_require_codec=0;
   g_config_opus_kbps=128;
+  g_config_live=LIVE_NO; // servers opt in to opening a UDP port
+  g_config_live_kbps=128;
+  g_config_live_frame=240;
+  g_config_live_max_peers=8;
+  g_config_live_port=0;
+  g_config_live_strict_address=true;
   g_config_motdfile.Set("");
 
   g_acllist.Resize(0);
@@ -739,6 +800,7 @@ static int ReadConfig(char *configfile, bool is_init=false)
     }
   }
   copyConfigToGroup(m_group);
+  g_live.SetStrictAddress(g_config_live_strict_address);
 
   if (g_logfp) logText("[config] reload complete\n");
 
@@ -1113,6 +1175,34 @@ static int run_server(int argc, char **argv, bool embedded)
       return 1;
     }
 
+    // Live: UDP on the same port number, also before dropping root
+    if (g_config_live != LIVE_NO && g_live.Open(g_config_port))
+    {
+      logText("Live: listening on UDP port %d\n",g_config_port);
+    }
+    else if (g_config_live != LIVE_NO)
+    {
+      if (g_config_live == LIVE_REQUIRE)
+      {
+        // like a TCP port that is taken, so the plug-in hosting this server tries the next port
+        logText("Error listening on UDP port %d for Live! Another program may already be using it (2049 is also the NFS port), "
+                "or you may need permission to use it. Set a different Port in the config or use -port.\n",g_config_port);
+        if (g_logfp) fclose(g_logfp);
+        g_logfp=0;
+#ifdef NINJAM_EMBEDDED
+        delete m_listener;
+        m_listener=NULL;
+        delete m_group;
+        m_group=NULL;
+        JNL::close_socketlib();
+        embeddedListening(NINJAMSRV_LISTEN_ERROR);
+#endif
+        return 1;
+      }
+      logText("warning: Live is off, could not open UDP port %d. Another program may already be using it "
+              "(2049 is also the NFS port). Set a different Port in the config, or Live no.\n",g_config_port);
+    }
+
 #ifndef _WIN32
     if (!embedded && g_set_uid != -1) // drop root only after the port is open, so ports below 1024 (e.g. 443 on restrictive networks) work with SetUID
     {
@@ -1128,6 +1218,7 @@ static int run_server(int argc, char **argv, bool embedded)
       if (setuid(g_set_uid))
       {
         logText("Error: setuid(%d) failed, refusing to keep running as root\n",g_set_uid);
+        g_live.Close();
         if (g_logfp) fclose(g_logfp);
         return 1;
       }
@@ -1137,7 +1228,8 @@ static int run_server(int argc, char **argv, bool embedded)
     if (g_config_portmap)
     {
       m_portmap_port=g_config_port;
-      g_portmapper.Start(m_portmap_port);
+      m_portmap_udp=g_live.IsOpen();
+      g_portmapper.Start(m_portmap_port,m_portmap_udp);
     }
 
     m_group->CreateUserLookup=myCreateUserLookup;
@@ -1482,6 +1574,7 @@ static int run_server(int argc, char **argv, bool embedded)
   logText("Shutting down server\n");
 
   g_portmapper.Stop();
+  g_live.Close(); // before the users go, so nothing is forwarded to them meanwhile
 
   g_private_groups.DeleteAll();
   delete m_group;
@@ -1679,11 +1772,29 @@ void onConfigChange(int argc, char **argv)
     }
   }
 
-  const int portmap_port = g_config_portmap ? m_listener_port : 0;
-  if (portmap_port != m_portmap_port)
+  // Live's UDP port follows the TCP one, and opens or closes with Live
+  if (g_config_live == LIVE_NO)
   {
-    if (portmap_port) g_portmapper.Start(portmap_port);
+    if (g_live.IsOpen())
+    {
+      g_live.Close();
+      logText("Live is off, closed UDP port %d\n",m_listener_port);
+    }
+  }
+  else if (!g_live.IsOpen() || g_live.Port() != m_listener_port)
+  {
+    if (g_live.Open(m_listener_port)) logText("Live: listening on UDP port %d\n",m_listener_port);
+    else logText("warning: Live is off, could not open UDP port %d. Another program may already be using it "
+                 "(2049 is also the NFS port). Set a different Port in the config, or Live no.\n",m_listener_port);
+  }
+
+  const int portmap_port = g_config_portmap ? m_listener_port : 0;
+  const bool portmap_udp = portmap_port && g_live.IsOpen();
+  if (portmap_port != m_portmap_port || portmap_udp != m_portmap_udp)
+  {
+    if (portmap_port) g_portmapper.Start(portmap_port,portmap_udp);
     else g_portmapper.Stop();
     m_portmap_port = portmap_port;
+    m_portmap_udp = portmap_udp;
   }
 }

@@ -116,6 +116,14 @@ class User_Group
     void onBitrateCommand(User_Connection *con, const char *arg);
     enum { MIN_OPUS_KBPS = 32, MAX_OPUS_KBPS = 510 };
 
+    // !live [on|off]: any player can turn the room's Live mode on or off
+    void onLiveCommand(User_Connection *con, const char *arg);
+
+    // tells the relay (g_live, liverelay.h) who plays Live in this room, and each Live
+    // client its MESSAGE_SERVER_LIVE when that changes
+    void SendLiveState();
+    enum { MIN_LIVE_KBPS = 32, MAX_LIVE_KBPS = 510, MAX_LIVE_PEERS = 64 };
+
     // tells everyone else that this user (and their channels) are gone
     void NotifyUserLeft(User_Connection *p);
 
@@ -153,6 +161,21 @@ class User_Group
     int m_room_codec_announced; // codec the room was last told about, -1 while the room is empty
     int m_room_opus_kbps; // Opus bitrate everyone sends (OpusBitrate, then !bitrate), 0 for none
     bool m_room_opus_kbps_chosen; // set with !bitrate, so a config reload keeps it
+
+    // Live mode
+    bool m_allow_live; // the server has Live (Live yes, on or require)
+    bool m_room_live; // the room's Live is on (Live on, then !live)
+    bool m_room_live_chosen; // set with !live, so a config reload keeps it
+    int m_live_kbps; // LiveKbps
+    int m_live_frame; // LiveFrame
+    int m_live_max_peers; // LiveMaxPeers: how many players can play Live in the room
+    int m_live_port; // LivePort: the UDP port clients are told, 0 for the TCP one
+    unsigned int m_live_room_id; // the room's id in the relay, never 0
+    int m_live_gen; // counts the changes to the room's Live state
+    // what the room's Live state was last worked out from
+    unsigned int m_live_relay_gen;
+    int m_live_users;
+    int m_live_params[7];
 
 #define LOBBY_ALLOW_CHAT 2
     int m_is_lobby_mode; // nonzero for lobby (and LOBBY_ALLOW_CHAT etc optional)
@@ -254,6 +277,11 @@ class User_Connection
     int m_clientcaps;
     int m_codec_mask_sent; // last MESSAGE_SERVER_CODEC_MASK sent, -1 for none
     int m_opus_kbps_sent; // the bitrate in it
+
+    WDL_UINT64 m_live_key; // this connection's secret for Live datagrams, 0 until it needs one
+    unsigned int m_live_room; // m_live_room_id of the room whose Live state it has, 0 for none
+    int m_live_sent_gen; // that room's m_live_gen then
+    WDL_HeapBuf m_live_sent; // the last MESSAGE_SERVER_LIVE it got, empty for none
 
     int m_auth_privs;
 

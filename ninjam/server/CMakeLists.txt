@@ -27,6 +27,7 @@ set(NINJAMSRV_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ninjamsrv.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/usercon.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/portmap.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/liverelay.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../mpb.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../netmsg.cpp
     ${WDL_DIR}/jnetlib/asyncdns.cpp
@@ -77,7 +78,7 @@ function(ninjamsrv_configure target)
     endif()
     if(WIN32)
         target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS NOMINMAX)
-        target_link_libraries(${target} PUBLIC ws2_32)
+        target_link_libraries(${target} PUBLIC ws2_32 advapi32) # advapi32: the random source for Live keys
     else()
         find_package(Threads REQUIRED)
         target_link_libraries(${target} PUBLIC Threads::Threads)

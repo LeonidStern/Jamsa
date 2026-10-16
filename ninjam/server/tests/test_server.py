@@ -527,7 +527,7 @@ class BitrateTests(CodecTestCase):
         a = self.client("alice", CAP_OPUS)
         a.drain(0.3)
         a.chat("MSG", "!speed 2")
-        self.assertIn("Unknown !command. Commands available: !vote, !topic, !codec, !bitrate",
+        self.assertIn("Unknown !command. Commands available: !vote, !topic, !codec, !bitrate, !live",
                       [chat_fields(m[1])[2] for m in a.drain(0.5) if m[0] == CHAT])
 
 
@@ -601,8 +601,9 @@ def closed_url():
     return "http://127.0.0.1:%d/rootDesc.xml" % free_port()
 
 
-class PortMappingTests(unittest.TestCase):
-    """Router port mapping (PortMapping yes) against a fake router. Needs a PORTMAP=1 build."""
+class PortMappingTestCase(unittest.TestCase):
+    """Starts a server with PortMapping yes against a fake router (and test_live.py does, with Live).
+    Skips unless the server was built with PORTMAP=1."""
 
     def start(self, rootdesc, natpmp_gateway="127.0.0.1", extra_config=""):
         self.server = Server("LogFile $DIR/server.log\nPortMapping yes\n" + extra_config,
@@ -640,12 +641,17 @@ class PortMappingTests(unittest.TestCase):
         self.server.proc.send_signal(signal.SIGTERM)
         self.assertEqual(self.server.proc.wait(10), 0)
 
+
+class PortMappingTests(PortMappingTestCase):
+    """Router port mapping (PortMapping yes) against a fake router."""
+
     def test_upnp_forwards_the_port_and_removes_it_on_shutdown(self):
         igd = FakeIGD(external_ip="203.0.113.7")
         self.addCleanup(igd.close)
         self.start(igd.url)
         self.wait_for_log("UPnP: people can connect to 203.0.113.7:%d" % self.server.port)
-        m = igd.mappings[self.server.port]
+        self.assertEqual(list(igd.mappings), [(self.server.port, "TCP")])  # no UDP without Live
+        m = igd.mappings[(self.server.port, "TCP")]
         self.assertEqual((m["NewProtocol"], m["NewInternalPort"], m["NewInternalClient"], m["NewLeaseDuration"]),
                          ("TCP", str(self.server.port), "127.0.0.1", "3600"))
 
@@ -658,7 +664,7 @@ class PortMappingTests(unittest.TestCase):
         self.addCleanup(igd.close)
         self.start(igd.url)
         self.wait_for_log("people can connect to")
-        self.assertEqual(igd.mappings[self.server.port]["NewLeaseDuration"], "0")
+        self.assertEqual(igd.mappings[(self.server.port, "TCP")]["NewLeaseDuration"], "0")
 
     def test_warns_when_the_router_has_no_public_address(self):
         igd = FakeIGD(external_ip="100.64.12.34")  # carrier-grade NAT
@@ -687,7 +693,8 @@ class PortMappingTests(unittest.TestCase):
         self.addCleanup(natpmp.close)
         self.start(closed_url())
         self.wait_for_log("NAT-PMP: people can connect to 198.51.100.9:%d" % self.server.port)
-        m = natpmp.mappings[self.server.port]
+        self.assertEqual(list(natpmp.mappings), [(self.server.port, "TCP")])
+        m = natpmp.mappings[(self.server.port, "TCP")]
         self.assertEqual((m["protocol"], m["internal"], m["lifetime"]), ("TCP", self.server.port, 3600))
 
         self.shut_down()

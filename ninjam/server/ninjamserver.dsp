@@ -171,6 +171,10 @@ SOURCE=..\netmsg.cpp
 # End Group
 # Begin Source File
 
+SOURCE=.\liverelay.cpp
+# End Source File
+# Begin Source File
+
 SOURCE=.\ninjamsrv.cpp
 # End Source File
 # Begin Source File
@@ -229,6 +233,10 @@ SOURCE=..\mpb.h
 SOURCE=..\netmsg.h
 # End Source File
 # End Group
+# Begin Source File
+
+SOURCE=.\liverelay.h
+# End Source File
 # Begin Source File
 
 SOURCE=.\portmap.h

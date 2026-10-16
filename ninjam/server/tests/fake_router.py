@@ -3,7 +3,8 @@
 FakeIGD answers UPnP-IGD requests (device description over HTTP, SOAP control
 for AddPortMapping / DeletePortMapping / GetExternalIPAddress).
 FakeNatPmp answers NAT-PMP (RFC 6886) on 127.0.0.1:5351, the fixed NAT-PMP port.
-Both record the mappings they hold in `mappings`, keyed by external port.
+Both record the mappings they hold in `mappings`, keyed by (external port, protocol),
+e.g. (2049, "TCP"). With refuse_udp they refuse to forward UDP ports.
 """
 import http.server
 import re
@@ -45,9 +46,10 @@ ENVELOPE = ('<?xml version="1.0"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.
 
 
 class FakeIGD:
-    def __init__(self, external_ip="203.0.113.7", only_permanent_leases=False):
+    def __init__(self, external_ip="203.0.113.7", only_permanent_leases=False, refuse_udp=False):
         self.external_ip = external_ip
         self.only_permanent_leases = only_permanent_leases
+        self.refuse_udp = refuse_udp
         self.mappings = {}
         self.lock = threading.Lock()
         igd = self
@@ -94,10 +96,12 @@ class FakeIGD:
             if action == "AddPortMapping":
                 if self.only_permanent_leases and args.get("NewLeaseDuration") != "0":
                     return 725, None  # OnlyPermanentLeasesSupported
-                self.mappings[int(args["NewExternalPort"])] = args
+                if self.refuse_udp and args.get("NewProtocol") == "UDP":
+                    return 718, None  # ConflictInMappingEntry
+                self.mappings[(int(args["NewExternalPort"]), args["NewProtocol"])] = args
                 return 0, {}
             if action == "DeletePortMapping":
-                if self.mappings.pop(int(args["NewExternalPort"]), None) is None:
+                if self.mappings.pop((int(args["NewExternalPort"]), args["NewProtocol"]), None) is None:
                     return 714, None  # NoSuchEntryInArray
                 return 0, {}
             if action == "GetExternalIPAddress":
@@ -112,8 +116,9 @@ class FakeIGD:
 class FakeNatPmp:
     PORT = 5351
 
-    def __init__(self, external_ip="198.51.100.9"):
+    def __init__(self, external_ip="198.51.100.9", refuse_udp=False):
         self.external_ip = external_ip
+        self.refuse_udp = refuse_udp
         self.mappings = {}
         self.started = time.time()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -138,11 +143,16 @@ class FakeNatPmp:
             elif len(req) == 12 and req[0] == 0 and req[1] in (1, 2):
                 _, op, _, internal, external, lifetime = struct.unpack("!BBHHHI", req)
                 external = external or internal
+                proto = "TCP" if op == 2 else "UDP"
+                if proto == "UDP" and self.refuse_udp:
+                    # result code 2: not authorized/refused
+                    self.sock.sendto(struct.pack("!BBHIHHI", 0, 128 + op, 2, epoch, internal, 0, 0), addr)
+                    continue
                 if lifetime:
-                    self.mappings[external] = {"protocol": "TCP" if op == 2 else "UDP", "internal": internal,
-                                               "lifetime": lifetime, "client": addr[0]}
+                    self.mappings[(external, proto)] = {"protocol": proto, "internal": internal,
+                                                        "lifetime": lifetime, "client": addr[0]}
                 else:
-                    self.mappings.pop(external, None)
+                    self.mappings.pop((external, proto), None)
                 self.sock.sendto(struct.pack("!BBHIHHI", 0, 128 + op, 0, epoch, internal, external, lifetime), addr)
 
     def close(self):
