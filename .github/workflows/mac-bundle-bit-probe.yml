@@ -1,0 +1,52 @@
+name: mac-bundle-bit-probe
+
+# Temporary: which archive keeps a folder's bundle bit (Finder info) through unzipping.
+on:
+  pull_request:
+    paths: ['.github/workflows/mac-bundle-bit-probe.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-14
+    steps:
+      - name: Probe
+        run: |
+          set -x
+          BIT=0000000000000000200000000000000000000000000000000000000000000000
+          bit() { xattr -px com.apple.FinderInfo "$1" 2>/dev/null | tr -d ' \n' | cut -c17-20; }
+          W=$RUNNER_TEMP/w; mkdir -p $W/src/Jamsa.vst3/Contents/MacOS; echo hi > $W/src/Jamsa.vst3/Contents/MacOS/Jamsa
+          B=$W/src/Jamsa.vst3
+          xattr -wx com.apple.FinderInfo $BIT "$B"; echo "source bit: $(bit "$B")"
+          GetFileInfo -a "$B" || true
+          cd $W
+          # A: the bundle itself, kept parent
+          ditto -c -k --sequesterRsrc --keepParent "$B" a.zip; zipinfo -1 a.zip
+          mkdir xa; ditto -x -k a.zip xa; echo "A: $(bit xa/Jamsa.vst3)"
+          # B: a folder holding the bundle, without the parent
+          ditto -c -k --sequesterRsrc src b.zip; zipinfo -1 b.zip
+          mkdir xb; ditto -x -k b.zip xb; echo "B: $(bit xb/Jamsa.vst3)"
+          # C: a folder holding the bundle, with the parent
+          ditto -c -k --sequesterRsrc --keepParent src c.zip; zipinfo -1 c.zip
+          mkdir xc; ditto -x -k c.zip xc; echo "C: $(bit xc/src/Jamsa.vst3)"
+          # D: no sequestering
+          ditto -c -k src d.zip; zipinfo -v d.zip | grep -i -A2 "extra field" | head -20
+          mkdir xd; ditto -x -k d.zip xd; echo "D: $(bit xd/Jamsa.vst3)"
+          # E: a disk image
+          hdiutil create -volname Jamsa -srcfolder src -format UDZO -ov e.dmg
+          hdiutil attach -nobrowse -mountpoint $W/mnt e.dmg
+          echo "E mounted: $(bit $W/mnt/Jamsa.vst3)"
+          ditto $W/mnt/Jamsa.vst3 xe/Jamsa.vst3; echo "E copied with ditto: $(bit xe/Jamsa.vst3)"
+          cp -R $W/mnt/Jamsa.vst3 xe2.vst3; echo "E copied with cp -R: $(bit xe2.vst3)"
+          hdiutil detach $W/mnt
+          # F: Apple Archive
+          aa archive -d src -o f.aar || true
+          mkdir xf; aa extract -i f.aar -d xf || true; echo "F: $(bit xf/Jamsa.vst3)"
+          # G: tar (bsdtar keeps Finder info as AppleDouble)
+          tar -czf g.tgz -C src Jamsa.vst3; tar -tzf g.tgz
+          mkdir xg; tar -xzf g.tgz -C xg; echo "G: $(bit xg/Jamsa.vst3)"
+          # H: Finder's own Compress (Archive Utility's engine) through the archive tool
+          /usr/bin/ditto -V -c -k --sequesterRsrc --keepParent --rsrc --extattr "$B" h.zip 2>&1 | tail -3; zipinfo -1 h.zip
+          mkdir xh; ditto -x -k --rsrc --extattr h.zip xh; echo "H: $(bit xh/Jamsa.vst3)"
