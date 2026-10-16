@@ -129,7 +129,7 @@ struct Peer
   bool fresh; // and that was less than FRESH_SECONDS ago; PeerBound() and Generation() follow it
   struct sockaddr_in addr;
   unsigned int local_ip; // the address of this machine that it sends to, 0 if not known
-  double last_rx; // when
+  double last_rx; // when it last did
   double tokens_bytes, tokens_packets, tokens_time; // rate limit; tokens_time < 0 until the first datagram
 };
 
@@ -723,6 +723,9 @@ bool LiveRelay::State::TakeTokens(Peer &p, const Room *room, int len, double now
   // stream, which is its Opus bitrate plus about 64 bytes of headers in each datagram
   // (ours 20, AOO's 16 to 32, Opus's few), plus room for HELLOs and AOO's own messages.
   // Small frames make many small datagrams, whose headers can be as big as the audio.
+  // It doesn't grow with the room, though AOO's resends go to each listener: that would
+  // let one sender aim the whole room's worth at a single player. At the default 8
+  // players, it covers resends up to about 14% loss, where the datagrams run out too.
   const double frames_per_second = 48000.0 / frame;
   const double bytes_per_second = 2.0 * (kbps * 1000.0 / 8.0 + frames_per_second * DATAGRAM_OVERHEAD) + 8000.0;
   const double packets_per_second = 2.0 * frames_per_second + 50.0;
