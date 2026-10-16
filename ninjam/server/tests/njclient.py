@@ -11,6 +11,7 @@ USERINFO_CHANGE = 0x03
 DOWNLOAD_BEGIN = 0x04
 DOWNLOAD_WRITE = 0x05
 CODEC_MASK = 0x06
+LIVE = 0x07
 CLIENT_AUTH_USER = 0x80
 CLIENT_SET_USERMASK = 0x81
 CLIENT_SET_CHANNEL_INFO = 0x82
@@ -24,16 +25,30 @@ PROTO_VER = 0x00020000
 # client_caps bits for codecs the client can decode besides Vorbis
 CAP_OPUS = 0x100
 CAP_FLAC = 0x200
+# client_caps bit of clients that can play Live
+CAP_LIVE = 0x10000
+
+# Live (see MESSAGE_SERVER_LIVE in ../../mpb.h): flags, peer flags, datagram types
+LIVE_ROOM_ON = 1
+LIVE_UDP_OPEN = 2
+LIVE_MAY_SEND = 4
+LIVE_PEER_BOUND = 1
+UDP_HELLO = 1  # and HELLO_ACK
+UDP_DATA = 2
 
 
 class Client:
     def __init__(self, port, host="127.0.0.1", timeout=5.0):
+        self.host = host
+        self.port = port
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.buf = b""
         self.username = None
         self.inbox = []  # messages read while waiting for something else
         self.last_send = time.time()
+        self.udp = None  # the Live socket, see udp_open()
+        self.live = None  # the latest Live state from the server, see wait_live()
 
     # framing
     def send(self, mtype, payload=b""):
@@ -110,13 +125,14 @@ class Client:
             return True
 
     # login
-    def login(self, user, password="", agree_license=True, codecs=0):
+    def login(self, user, password="", agree_license=True, codecs=0, caps=0):
+        """codecs and caps are client_caps bits (CAP_*), ORed together."""
         mtype, p = self.recv(5.0)
         assert mtype == AUTH_CHALLENGE, mtype
         challenge = p[:8]
         h = hashlib.sha1((user + ":" + password).encode()).digest()
         passhash = hashlib.sha1(h + challenge).digest()
-        caps = (1 if agree_license else 0) | codecs
+        caps = (1 if agree_license else 0) | codecs | caps
         self.send(CLIENT_AUTH_USER, passhash + user.encode() + b"\0" + struct.pack("<II", caps, PROTO_VER))
         m = self.wait_for(lambda m: m[0] == AUTH_REPLY, 5.0)
         assert m is not None, "no auth reply"
@@ -149,11 +165,82 @@ class Client:
             payload += b"\0"
         self.send(CHAT, payload)
 
+    # Live
+    def wait_live(self, pred=None, timeout=3.0):
+        """The next Live message (for which pred(info) holds), as live_info() reads it; also kept in self.live.
+        Older Live messages that didn't match are dropped: the new one replaces them."""
+        deadline = time.time() + timeout
+        kept = []
+        try:
+            while time.time() < deadline:
+                m = self.recv(deadline - time.time())
+                if m is None:
+                    return None
+                if m[0] == LIVE and (pred is None or pred(live_info(m))):
+                    kept = [k for k in kept if k[0] != LIVE]
+                    self.live = live_info(m)
+                    return self.live
+                kept.append(m)
+            return None
+        finally:
+            self.inbox = kept + self.inbox
+
+    def udp_open(self, bind_host="127.0.0.1"):
+        """A UDP socket for Live, from bind_host (any 127.x address is this machine)."""
+        if self.udp:
+            self.udp.close()
+        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp.bind((bind_host, 0))
+        return self.udp
+
+    def udp_send(self, data, port=None):
+        """Sends a datagram to the server's UDP port (the TCP port unless given)."""
+        if not self.udp:
+            self.udp_open()
+        self.udp.sendto(data, (self.host, port or self.port))
+
+    def udp_recv(self, timeout=1.0):
+        """The next datagram from the server, or None. Keeps the TCP connection alive meanwhile."""
+        deadline = time.time() + timeout
+        while True:
+            self.keepalive()
+            left = deadline - time.time()
+            if left <= 0:
+                return None
+            self.udp.settimeout(min(left, 0.05))
+            try:
+                data, _ = self.udp.recvfrom(4096)
+                return data
+            except socket.timeout:
+                continue
+
+    def udp_drain(self, timeout=0.3):
+        """Every datagram that arrives until none has for timeout seconds."""
+        out = []
+        while True:
+            d = self.udp_recv(timeout)
+            if d is None:
+                return out
+            out.append(d)
+
+    def hello(self, timestamp=0, peer_id=None, key=None):
+        """Sends a HELLO with this client's Live id and key (or others, to test the server)."""
+        self.udp_send(udp_hello(self.live["peer_id"] if peer_id is None else peer_id,
+                                self.live["key"] if key is None else key, timestamp))
+
+    def send_live(self, payload, dest=0, peer_id=None, key=None):
+        """Sends audio (any bytes) to one player (dest = its peer id) or to everyone else in the room (0)."""
+        self.udp_send(udp_data(self.live["peer_id"] if peer_id is None else peer_id,
+                               self.live["key"] if key is None else key, dest, payload))
+
     def close(self):
         try:
             self.sock.close()
         except OSError:
             pass
+        if self.udp:
+            self.udp.close()
+            self.udp = None
 
 
 def codec_mask(msg):
@@ -164,6 +251,37 @@ def codec_mask(msg):
 def mask_opus_kbps(msg):
     """The room's Opus bitrate in a CODEC_MASK message, 0 when it has none."""
     return struct.unpack("<I", msg[1][4:8])[0] if len(msg[1]) >= 8 else 0
+
+
+def live_info(msg):
+    """The fields of a LIVE message, as a dict; peers is a list of (peer_id, peer_flags, name)."""
+    p = msg[1]
+    version, fixed_len, flags = p[0], p[1], p[2]
+    udp_port, kbps, peer_id, key, frame, max_peers = struct.unpack("<HHIQHH", p[4:24])
+    peers = []
+    rest = p[fixed_len:]
+    while rest:
+        pid, pflags = struct.unpack("<IB", rest[:5])
+        name, rest = rest[5:].split(b"\0", 1)
+        peers.append((pid, pflags, name.decode(errors="replace")))
+    return {"version": version, "fixed_len": fixed_len, "flags": flags, "udp_port": udp_port, "kbps": kbps,
+            "peer_id": peer_id, "key": key, "frame": frame, "max_peers": max_peers, "peers": peers}
+
+
+def udp_hello(peer_id, key, timestamp=0):
+    """A Live HELLO datagram (32 bytes)."""
+    return struct.pack("<2sBBIQIQ4x", b"NL", 1, UDP_HELLO, peer_id, key, 0, timestamp)
+
+
+def udp_data(peer_id, key, dest, payload):
+    """A Live DATA datagram: the 20-byte header, then the audio."""
+    return struct.pack("<2sBBIQI", b"NL", 1, UDP_DATA, peer_id, key, dest) + payload
+
+
+def udp_parse(data):
+    """(type, from_id, rest) of a datagram from the server."""
+    assert data[:3] == b"NL\x01", data[:3]
+    return data[3], struct.unpack("<I", data[4:8])[0], data[8:]
 
 
 def chat_fields(payload):
