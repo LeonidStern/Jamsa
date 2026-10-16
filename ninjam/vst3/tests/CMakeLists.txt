@@ -15,6 +15,7 @@ add_executable(plugin_unit_test
     ../source/engine.cpp
     ../source/hostserver.cpp
     ../source/hostsync.cpp
+    ../source/textkeys.cpp
     ../source/uitext.cpp
 )
 target_compile_features(plugin_unit_test PRIVATE cxx_std_17)

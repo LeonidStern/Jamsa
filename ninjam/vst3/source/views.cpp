@@ -17,6 +17,7 @@
 #include "vstgui/lib/platform/iplatformfont.h"
 #include "vstgui/lib/platform/iplatformframe.h"
 
+#include "textkeys.h"
 #include "uitext.h"
 
 namespace ninjam_vst3 {
@@ -941,6 +942,39 @@ void TextLinesView::onMouseWheelEvent(MouseWheelEvent &event)
   if (m_scroll < 0) m_scroll = 0;
   invalid();
   event.consumed = true;
+}
+
+// ---------------------------------------------------------------------------
+
+void TextShortcuts::attach(CFrame *frame)
+{
+  detach();
+  if (!frame || !frame->getPlatformFrame()) return;
+  m_frame = frame;
+  frame->registerKeyboardHook(this);
+  m_catcher.start(frame->getPlatformFrame()->getPlatformRepresentation());
+}
+
+void TextShortcuts::detach()
+{
+  m_catcher.stop();
+  if (m_frame) m_frame->unregisterKeyboardHook(this);
+  m_frame = nullptr;
+}
+
+void TextShortcuts::onKeyboardEvent(KeyboardEvent &event, CFrame *frame)
+{
+  if (event.type != EventType::KeyDown || !frame || !frame->getPlatformFrame()) return;
+  // VSTGUI's Control is Cmd on macOS, its Super is Ctrl there
+  const textkeys::Command command =
+    textkeys::commandFor(textkeys::letterOf(event.character), event.modifiers.has(ModifierKey::Control),
+                         event.modifiers.has(ModifierKey::Shift), event.modifiers.has(ModifierKey::Alt),
+                         event.modifiers.has(ModifierKey::Super));
+  if (command == textkeys::Command::None) return;
+  // a text box being typed in (it has the system's text field)
+  auto *edit = dynamic_cast<CTextEdit *>(frame->getFocusView());
+  if (!edit || !edit->getPlatformTextEdit()) return;
+  if (textfield::perform(frame->getPlatformFrame()->getPlatformRepresentation(), command)) event.consumed = true;
 }
 
 // ---------------------------------------------------------------------------

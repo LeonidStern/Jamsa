@@ -13,11 +13,13 @@
   Tests for the parts of the plug-in that need no network or host: the saved
   state, reading the built-in server's port mapping messages, following the
   host (lining the intervals up with its bars, voting for its tempo, the
-  editor's note on its tempo), the metronome's click, and what the editor's
-  controls show and take.
+  editor's note on its tempo), the metronome's click, what the editor's
+  controls show and take, and the text boxes' Cut, Copy, Paste and Select All
+  keys.
 
-  "plugin_unit_test clipboard" checks the Copy buttons' clipboard instead (on
-  Linux, with an X server: ctest runs it with xvfb-run).
+  "plugin_unit_test clipboard" checks the clipboard instead: the Copy buttons'
+  text, and the text a paste reads (on Linux, with an X server: ctest runs it
+  with xvfb-run).
 
 */
 
@@ -34,6 +36,7 @@
 #include "engine.h"
 #include "hostserver.h"
 #include "hostsync.h"
+#include "textkeys.h"
 #include "uitext.h"
 
 #if defined(__linux__)
@@ -844,6 +847,55 @@ static void test_uitext()
   for (int i = 1; i < NUM_BPI_CHOICES; i++) CHECK(BPI_CHOICES[i] > BPI_CHOICES[i - 1]);
 }
 
+static void test_textkeys()
+{
+  using namespace textkeys;
+
+  // Cmd (macOS) or Ctrl (elsewhere) with X, C, V, A; nothing else held
+  CHECK(commandFor('x', true, false, false, false) == Command::Cut);
+  CHECK(commandFor('c', true, false, false, false) == Command::Copy);
+  CHECK(commandFor('v', true, false, false, false) == Command::Paste);
+  CHECK(commandFor('a', true, false, false, false) == Command::SelectAll);
+  CHECK(commandFor('c', false, false, false, false) == Command::None); // typing a c
+  CHECK(commandFor('z', true, false, false, false) == Command::None);
+  CHECK(commandFor(0, true, false, false, false) == Command::None);
+  CHECK(commandFor('v', true, true, false, false) == Command::None);  // Shift: another shortcut
+  CHECK(commandFor('c', true, false, true, false) == Command::None);  // AltGr+C types a letter (Polish c-acute)
+  CHECK(commandFor('a', true, false, false, true) == Command::None);  // Cmd+Ctrl, Ctrl+Win
+  CHECK(commandFor('x', false, false, false, true) == Command::None); // Ctrl alone on macOS
+
+  // the letter of what a key types: either case, or the control character Ctrl types
+  CHECK(letterOf('c') == 'c' && letterOf('C') == 'c' && letterOf('v') == 'v' && letterOf('X') == 'x');
+  CHECK(letterOf(3) == 'c' && letterOf(22) == 'v' && letterOf(24) == 'x' && letterOf(1) == 'a');
+  CHECK(letterOf(0) == 0 && letterOf('1') == 0 && letterOf(' ') == 0 && letterOf(0x441) == 0 && letterOf(27) == 0);
+  CHECK(commandFor(letterOf(22), true, false, false, false) == Command::Paste); // a host that hands on Ctrl+V as 0x16
+
+  // the Latin letter of a key on macOS: a US or French layout types it; Russian and Greek
+  // type their own without Cmd (the second) and Latin with it (the first), or else its place
+  CHECK(latinLetter({ 'c', 'c' }, 'c') == 'c');
+  CHECK(latinLetter({ 'q', 'q' }, 'a') == 'q');      // AZERTY: the key where US has A is Q
+  CHECK(latinLetter({ 'a', 'a' }, 0) == 'a');        // and A is where US has Q
+  CHECK(latinLetter({ 'c', 0x441 }, 'c') == 'c');    // Russian with Cmd: c, then es
+  CHECK(latinLetter({ 0x441, 0x441 }, 'c') == 'c');  // a layout without Latin letters: the key's place
+  CHECK(latinLetter({ 0x3c8, 0x3c8 }, 'v') == 'v');  // Greek psi on the V key
+  CHECK(latinLetter({ 0, 0 }, 0) == 0);
+  CHECK(latinLetter({ 'V' }, 0) == 'v');
+  CHECK(macUsLetter(0x00) == 'a' && macUsLetter(0x07) == 'x' && macUsLetter(0x08) == 'c' && macUsLetter(0x09) == 'v');
+  CHECK(macUsLetter(0x01) == 0 && macUsLetter(0x24) == 0); // S, Return
+
+  // pasted into a box of one line
+  CHECK_EQ(oneLine("203.0.113.7:2049"), std::string("203.0.113.7:2049"));
+  CHECK_EQ(oneLine("203.0.113.7:2049\n"), std::string("203.0.113.7:2049"));     // copied with its line break
+  CHECK_EQ(oneLine("\r\n  ninbot.com:2049  \r\n"), std::string("ninbot.com:2049"));
+  CHECK_EQ(oneLine("first line\nsecond\r\n\r\nthird\rfourth"), std::string("first line second third fourth"));
+  CHECK_EQ(oneLine("  two  spaces  "), std::string("  two  spaces  "));        // one line keeps its spaces
+  CHECK_EQ(oneLine("a\tb"), std::string("a b"));
+  CHECK_EQ(oneLine("bell\x07 and \x7f"), std::string("bell and "));
+  CHECK_EQ(oneLine("\n\n"), std::string(""));
+  CHECK_EQ(oneLine(""), std::string(""));
+  CHECK_EQ(oneLine("J\xc3\xb6rg\n\xe2\x80\x94 hi"), std::string("J\xc3\xb6rg \xe2\x80\x94 hi")); // UTF-8 stays
+}
+
 #if defined(__linux__)
 // another program copies something: it takes the CLIPBOARD selection (and answers nobody)
 static bool take_clipboard_elsewhere(xcb_connection_t **keep)
@@ -876,6 +928,8 @@ static void test_clipboard()
   CHECK(clipboard::setText(lan));
   CHECK(clipboard::readX11(&got, 2.0) && got == lan);
   CHECK(clipboard::readX11(&got, 2.0) && got == lan); // pasted again
+  got.clear();
+  CHECK(clipboard::getText(&got) && got == lan);       // what a paste in a text box reads
 
   // copied again: the new text
   const std::string wan = "J\xc3\xb6rg's room \xc2\xb7 203.0.113.7:2049";
@@ -887,6 +941,7 @@ static void test_clipboard()
   CHECK(take_clipboard_elsewhere(&other));
   got = "?";
   CHECK(!clipboard::readX11(&got, 0.5)); // the other program doesn't answer
+  CHECK(!clipboard::getText(&got) && got == "?");
   CHECK(clipboard::setText(lan));
   CHECK(clipboard::readX11(&got, 2.0) && got == lan);
   if (other) xcb_disconnect(other);
@@ -901,6 +956,7 @@ static void test_clipboard()
   // the module is unloaded: it lets go; a copy after that works again
   clipboard::stopX11();
   CHECK(!clipboard::readX11(&got, 0.5));
+  CHECK(!clipboard::getText(&got)); // nobody has the clipboard: nothing to paste
   CHECK(clipboard::setText(wan));
   CHECK(clipboard::readX11(&got, 2.0) && got == wan);
   clipboard::stopX11();
@@ -930,6 +986,7 @@ int main(int argc, char **argv)
   test_host_note();
   test_click();
   test_uitext();
+  test_textkeys();
 
   // the same in a locale that writes 95,5
   const char *loc = nullptr;

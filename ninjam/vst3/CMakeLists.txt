@@ -188,6 +188,10 @@ smtg_add_vst3plugin(Jamsa
         source/uitext.h
         source/clipboard.cpp
         source/clipboard.h
+        source/textkeys.cpp
+        source/textkeys.h
+        source/textfield.cpp
+        source/textfield.h
         ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.cpp
         ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.h
 )
@@ -205,6 +209,8 @@ if(SMTG_LINUX)
 endif()
 
 if(SMTG_MAC)
+    # the clipboard's text and the text fields' Cut, Copy, Paste, Select All (Objective-C++)
+    target_sources(Jamsa PRIVATE source/macos.mm)
     smtg_target_set_bundle(Jamsa
         BUNDLE_IDENTIFIER io.github.leonidstern.jamsa.vst3
         COMPANY_NAME "LeonidStern/ninjam"

@@ -254,6 +254,7 @@ bool PLUGIN_API NinjamEditor::open(void *parent, const PlatformType &platformTyp
 #if SMTG_OS_LINUX
   g_openX11Frames ++;
 #endif
+  m_textShortcuts.attach(frame);
   styleMenus(frame, m_fonts.menu);
   layout();
   syncSettings();
@@ -267,6 +268,7 @@ void PLUGIN_API NinjamEditor::close()
 {
   if (frame)
   {
+    m_textShortcuts.detach();
     // the frame removes (and releases) all views, the license view too
     CFrame *f = frame;
     frame = nullptr;

@@ -24,6 +24,9 @@
 #include <thread>
 #else
 #include "vstgui/lib/cclipboard.h"
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #endif
 
 namespace ninjam_vst3 {
@@ -367,12 +370,55 @@ bool readX11(std::string *text, double timeoutSeconds)
   return ok;
 }
 
+bool getText(std::string *text)
+{
+  // the program that copied answers at once; a second is for a busy one
+  return readX11(text, 1.0);
+}
+
 #else
 
 bool setText(const std::string &text)
 {
   return VSTGUI::CClipboard::setString(text.c_str());
 }
+
+#if defined(_WIN32)
+bool getText(std::string *text)
+{
+  if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return false;
+  // the program that copies may have it open for a moment
+  bool open = false;
+  for (int attempt = 0; attempt < 5 && !open; attempt++)
+  {
+    open = OpenClipboard(nullptr) != 0;
+    if (!open) Sleep(10);
+  }
+  if (!open) return false;
+  bool ok = false;
+  if (HANDLE h = GetClipboardData(CF_UNICODETEXT))
+  {
+    if (const wchar_t *w = (const wchar_t *)GlobalLock(h))
+    {
+      const size_t max = GlobalSize(h) / sizeof(wchar_t);
+      size_t n = 0;
+      while (n < max && w[n]) n++;
+      std::string s;
+      const int len = n ? WideCharToMultiByte(CP_UTF8, 0, w, (int)n, nullptr, 0, nullptr, nullptr) : 0;
+      if (len > 0)
+      {
+        s.resize((size_t)len);
+        WideCharToMultiByte(CP_UTF8, 0, w, (int)n, &s[0], len, nullptr, nullptr);
+      }
+      if (text) *text = s;
+      ok = true;
+      GlobalUnlock(h);
+    }
+  }
+  CloseClipboard();
+  return ok;
+}
+#endif // getText() for macOS is in macos.mm
 
 #endif
 

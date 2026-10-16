@@ -184,6 +184,9 @@ private:
   bool m_licenseOpen = false;
   std::string m_licenseShown;
 
+  // Cut, Copy, Paste and Select All in the text boxes, while the frame is open
+  ui::TextShortcuts m_textShortcuts;
+
   // what the views show, to update them only on changes
   unsigned int m_usersRevision = ~0u, m_settingsRevision = ~0u;
   unsigned long long m_chatRevision = ~0ull;
