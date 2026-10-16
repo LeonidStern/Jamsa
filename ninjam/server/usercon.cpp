@@ -123,7 +123,7 @@ static void trimTransferList(WDL_PtrList<User_TransferState> *list, unsigned int
   }
 }
 
-User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_codec_mask_sent(-1), m_auth_privs(0), m_reserved(0), m_max_channels(0),
+User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_codec_mask_sent(-1), m_opus_kbps_sent(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
       m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0)
 {
   m_id = ++g_next_connection_id;
@@ -991,7 +991,8 @@ bool User_Connection::migrateToRoom(const char *p)
 User_Group::User_Group() : m_max_users(0), m_last_bpm(120), m_last_bpi(32), m_keepalive(0), 
   m_voting_threshold(110), m_voting_timeout(120),
   m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_allow_codecs(CLIENT_CAP_CODEC_OPUS), m_require_codec(0),
-  m_room_codec(CLIENT_CAP_CODEC_OPUS), m_room_codec_announced(-1), m_is_lobby_mode(0)
+  m_room_codec(CLIENT_CAP_CODEC_OPUS), m_room_codec_announced(-1), m_room_opus_kbps(0), m_room_opus_kbps_chosen(false),
+  m_is_lobby_mode(0)
 
 {
   m_logfp = NULL;
@@ -1201,12 +1202,14 @@ void User_Group::SendCodecMask()
     User_Connection *u = m_users.Get(x);
     if (u->m_auth_state <= 0) continue;
     n++;
-    if ((u->m_clientcaps & CLIENT_CAP_CODECS) && u->m_codec_mask_sent != codec)
+    if ((u->m_clientcaps & CLIENT_CAP_CODECS) && (u->m_codec_mask_sent != codec || u->m_opus_kbps_sent != m_room_opus_kbps))
     {
       mpb_server_codec_mask cm;
       cm.codecs = codec;
+      cm.opus_kbps = m_room_opus_kbps;
       u->Send(cm.build());
       u->m_codec_mask_sent = codec;
+      u->m_opus_kbps_sent = m_room_opus_kbps;
     }
   }
 
@@ -1274,6 +1277,39 @@ void User_Group::onCodecCommand(User_Connection *con, const char *arg)
   Broadcast(server_chat(buf));
 
   m_room_codec_announced = codec;
+  SendCodecMask();
+}
+
+void User_Group::onBitrateCommand(User_Connection *con, const char *arg)
+{
+  char buf[512];
+  char *end = NULL;
+  const long kbps = *arg ? strtol(arg,&end,10) : 0;
+  if (!*arg || !end || *end || kbps < MIN_OPUS_KBPS || kbps > MAX_OPUS_KBPS)
+  {
+    if (m_room_opus_kbps > 0)
+      snprintf(buf,sizeof(buf),"[server] the room's Opus bitrate is %d kbps. Change it with !bitrate N, from %d to %d",
+        m_room_opus_kbps,MIN_OPUS_KBPS,MAX_OPUS_KBPS);
+    else
+      snprintf(buf,sizeof(buf),"[server] the room has no Opus bitrate: everyone sends their own. Set one with !bitrate N, from %d to %d",
+        MIN_OPUS_KBPS,MAX_OPUS_KBPS);
+    con->Send(server_chat(buf));
+    return;
+  }
+  if (!(con->m_auth_privs & PRIV_VOTE))
+  {
+    con->Send(server_chat("[server] you don't have permission to change the room's audio"));
+    return;
+  }
+
+  m_room_opus_kbps = (int)kbps;
+  m_room_opus_kbps_chosen = true;
+  if (RoomCodec() == CLIENT_CAP_CODEC_OPUS)
+    snprintf(buf,sizeof(buf),"[server] %s set the room's Opus bitrate to %d kbps",display_name(con),m_room_opus_kbps);
+  else
+    snprintf(buf,sizeof(buf),"[server] %s set the room's Opus bitrate to %d kbps, for when the room plays Opus",
+      display_name(con),m_room_opus_kbps);
+  Broadcast(server_chat(buf));
   SendCodecMask();
 }
 
@@ -1538,12 +1574,22 @@ void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
       onCodecCommand(con,arg.Get());
       return;
     }
+    else if (str_begins_tok(p,"!bitrate"))
+    {
+      p += 8;
+      while (*p == ' ' || *p == '\t') p++;
+      WDL_FastString arg(p);
+      while (arg.GetLength() && (arg.Get()[arg.GetLength()-1] == ' ' || arg.Get()[arg.GetLength()-1] == '\t'))
+        arg.SetLen(arg.GetLength()-1);
+      onBitrateCommand(con,arg.Get());
+      return;
+    }
     else if (*p == '!')
     {
       mpb_chat_message newmsg;
       newmsg.parms[0]="PRIVMSG";
       newmsg.parms[1]="*";
-      newmsg.parms[2]="Unknown !command. Commands available: !vote, !topic, !codec";
+      newmsg.parms[2]="Unknown !command. Commands available: !vote, !topic, !codec, !bitrate";
       con->Send(newmsg.build());
       return;
     }

@@ -161,5 +161,10 @@ def codec_mask(msg):
     return struct.unpack("<I", msg[1][:4])[0]
 
 
+def mask_opus_kbps(msg):
+    """The room's Opus bitrate in a CODEC_MASK message, 0 when it has none."""
+    return struct.unpack("<I", msg[1][4:8])[0] if len(msg[1]) >= 8 else 0
+
+
 def chat_fields(payload):
     return [f.decode(errors="replace") for f in payload.split(b"\0")]
