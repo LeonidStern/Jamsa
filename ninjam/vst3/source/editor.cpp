@@ -1133,12 +1133,14 @@ void NinjamEditor::updateHostBar(const Snapshot &s)
     const std::string portNo = std::to_string(s.hostPort);
     const std::string here = s.hostLocalAddress.empty() ? std::string("this computer")
                                                         : "this computer (" + s.hostLocalAddress.substr(0, s.hostLocalAddress.rfind(':')) + ")";
-    if (forwarded)
+    if (forwarded || s.hostJoinedFromInternet)
     {
       port = "Port open";
       portColor = led = Colors::green();
       lit = true;
-      tip = "Your router forwards port " + portNo + ": players on the internet join at " + wan;
+      tip = forwarded ? "Your router forwards port " + portNo + ": players on the internet join at " + wan
+                      : "A player joined from the internet, so port " + portNo + " is open" +
+                          (wan.empty() ? std::string() : ": players join at " + wan);
     }
     else if (s.hostPortmapPending)
     {

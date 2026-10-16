@@ -265,6 +265,12 @@ void HostServer::parseLogLine(const std::string &line, State &st, bool *show)
       st.portmapPending = false;
     }
   }
+  else if (line.find(": Accepted user: ") != std::string::npos)
+  {
+    // "203.0.113.9: Accepted user: Ana": someone joined from that address. From an address on
+    // the internet, the port is open, whatever the router said.
+    if (isPublicIPv4(line.substr(0, line.find(": Accepted user: ")))) st.joinedFromInternet = true;
+  }
   else if (starts_with(line, "Error listening"))
   {
     // a port that was taken while starting; start() tries the next one
@@ -297,16 +303,9 @@ void HostServer::onLog(void *ctx, const char *text)
 // The public address, from a "what's my IP" service
 // ---------------------------------------------------------------------------
 
-bool HostServer::parseWhatsMyIpReply(const std::string &reply, std::string *ip)
+// four numbers from 0 to 255 with dots between, and nothing else
+static bool parse_ipv4(const std::string &t, int b[4])
 {
-  if (reply.compare(0, 5, "HTTP/") != 0) return false;
-  const size_t code = reply.find(' ');
-  if (code == std::string::npos || reply.compare(code + 1, 4, "200 ") != 0) return false;
-  const size_t body = reply.find("\r\n\r\n");
-  if (body == std::string::npos) return false;
-  std::string t = reply.substr(body + 4);
-  while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ')) t.pop_back();
-  // four numbers from 0 to 255 and nothing else
   int parts = 0, value = -1;
   for (char c : t)
   {
@@ -317,14 +316,40 @@ bool HostServer::parseWhatsMyIpReply(const std::string &reply, std::string *ip)
     }
     else if (c == '.' && value >= 0 && parts < 3)
     {
-      parts ++;
+      b[parts ++] = value;
       value = -1;
     }
     else return false;
   }
   if (parts != 3 || value < 0) return false;
+  b[3] = value;
+  return true;
+}
+
+bool HostServer::parseWhatsMyIpReply(const std::string &reply, std::string *ip)
+{
+  if (reply.compare(0, 5, "HTTP/") != 0) return false;
+  const size_t code = reply.find(' ');
+  if (code == std::string::npos || reply.compare(code + 1, 4, "200 ") != 0) return false;
+  const size_t body = reply.find("\r\n\r\n");
+  if (body == std::string::npos) return false;
+  std::string t = reply.substr(body + 4);
+  while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ')) t.pop_back();
+  int b[4];
+  if (!parse_ipv4(t, b)) return false;
   *ip = t;
   return true;
+}
+
+bool HostServer::isPublicIPv4(const std::string &addr)
+{
+  int b[4];
+  if (!parse_ipv4(addr, b)) return false;
+  return !(b[0] == 0 || b[0] == 10 || b[0] == 127 || b[0] >= 224 ||   // this network, private, loopback, multicast
+           (b[0] == 100 && b[1] >= 64 && b[1] < 128) ||               // the provider's NAT (100.64/10)
+           (b[0] == 169 && b[1] == 254) ||                            // link-local
+           (b[0] == 172 && b[1] >= 16 && b[1] < 32) ||                // private
+           (b[0] == 192 && b[1] == 168));                             // private
 }
 
 #ifdef _WIN32

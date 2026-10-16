@@ -60,6 +60,7 @@ public:
     std::string lookedUpAddress; // the public address with the port, from a "what's my IP" service: where
                                  // others join if the port is forwarded (the router may not say it is)
     bool lookupPending = false;  // still asking that service
+    bool joinedFromInternet = false; // a player joined from an address on the internet, so the port is open
     int users = 0;
   };
   State state();
@@ -71,6 +72,8 @@ public:
   static void parseLogLine(const std::string &line, State &st, bool *show);
   // the IPv4 address in a "what's my IP" service's HTTP reply ("HTTP/1.1 200 OK ... 89.114.98.123\n")
   static bool parseWhatsMyIpReply(const std::string &reply, std::string *ip);
+  // an IPv4 address on the internet, not a private, loopback or provider NAT one
+  static bool isPublicIPv4(const std::string &addr);
 
 private:
   HostServer() {}

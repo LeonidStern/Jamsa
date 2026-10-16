@@ -1033,6 +1033,7 @@ void Engine::pollHosting(Snapshot &snap)
     snap.hostPortmapPending = st.portmapPending;
     snap.hostLookedUpAddress = st.lookedUpAddress;
     snap.hostLookupPending = st.lookupPending;
+    snap.hostJoinedFromInternet = st.joinedFromInternet;
     snap.hostUsers = st.users;
     for (const std::string &m : HostServer::instance().messagesSince(&m_hostLogSerial))
       addChat(ChatLine::Server, "", m);
@@ -1303,6 +1304,7 @@ std::string Engine::command(const std::string &lineIn)
                s.opusKbps, s.roomOpusKbps);
     std::string out = buf;
     out += " lookedup=" + (s.hostLookedUpAddress.empty() ? std::string(s.hostLookupPending ? "?" : "-") : s.hostLookedUpAddress);
+    out += std::string(" joinedfrominternet=") + (s.hostJoinedFromInternet ? "1" : "0");
     return out;
   }
   if (verb == "users")

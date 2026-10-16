@@ -158,6 +158,24 @@ static void test_portmap_messages()
   HostServer::parseLogLine("Warning: could not open the log file", st, &show);
   CHECK(show);
 
+  // a player who joins from the internet shows the port is open, one from the local network doesn't
+  CHECK(!st.joinedFromInternet);
+  HostServer::parseLogLine("192.168.1.20: Accepted user: Ana", st, &show);
+  CHECK(!st.joinedFromInternet && !show);
+  HostServer::parseLogLine("127.0.0.1: Accepted user: Ana", st, &show);
+  CHECK(!st.joinedFromInternet);
+  HostServer::parseLogLine("203.0.113.9: Refusing user Ana, invalid login/password", st, &show);
+  CHECK(!st.joinedFromInternet);
+  HostServer::parseLogLine("203.0.113.9: Accepted user: Ana", st, &show);
+  CHECK(st.joinedFromInternet && !show);
+
+  CHECK(HostServer::isPublicIPv4("89.114.98.123"));
+  CHECK(HostServer::isPublicIPv4("172.32.0.1"));
+  CHECK(HostServer::isPublicIPv4("100.128.0.1"));
+  for (const char *a : { "10.0.0.5", "172.16.0.1", "172.31.255.255", "192.168.1.1", "127.0.0.1", "169.254.3.4",
+                         "100.64.0.9", "100.127.255.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "", "1.2.3", "a.b.c.d" })
+    CHECK(!HostServer::isPublicIPv4(a));
+
   // the public address from a "what's my IP" service
   std::string ip;
   CHECK(HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n89.114.98.123\n", &ip));

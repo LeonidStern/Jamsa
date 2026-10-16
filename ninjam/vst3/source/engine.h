@@ -127,6 +127,7 @@ struct Snapshot
   bool hostPortmapPending = false;
   std::string hostLookedUpAddress; // from a "what's my IP" service, for when the router doesn't say
   bool hostLookupPending = false;
+  bool hostJoinedFromInternet = false; // so the port is open, even if the router didn't say
   int hostUsers = 0;
   int hostedElsewherePort = 0; // another instance in this program hosts one
 
