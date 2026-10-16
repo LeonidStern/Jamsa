@@ -797,9 +797,20 @@ static void measure_sync(Host &host, const char *name, bool playing)
   auto s = host.status();
   const int bpi = atoi(s["bpi"].c_str()), len = atoi(s["len"].c_str());
   const std::vector<long> acc = metronome_beats(x, host.m_srate, true), beats = metronome_beats(x, host.m_srate, false);
-  double accentHz = 0, beatHz = 0;
-  for (long i : acc) accentHz += click_hz(x, i, host.m_srate) / acc.size();
-  for (long i : beats) beatHz += click_hz(x, i, host.m_srate) / beats.size();
+  // the pitch of the clicks whose first 20 ms are all there (the recording may end in one)
+  const long whole = (long)x.size() - host.m_srate / 50;
+  auto pitch = [&](const std::vector<long> &clicks) {
+    double sum = 0;
+    int n = 0;
+    for (long i : clicks)
+      if (i <= whole)
+      {
+        sum += click_hz(x, i, host.m_srate);
+        n++;
+      }
+    return n ? sum / n : 0.0;
+  };
+  const double accentHz = pitch(acc), beatHz = pitch(beats);
   double worst = 0;
   long gapErr = 0;
   std::string list;
