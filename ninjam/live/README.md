@@ -69,6 +69,9 @@ Tests (`tests/`):
   and duplicates, while the stream restarts and the source has xruns, and
   with stream messages. Also the other real-time changes below. `LIVE_RT_TRACE=1` prints where a
   counted call came from (glibc).
+- `live_unit_test [test]`: what Live adds to AOO: coupled stereo Opus and
+  its bitrate (encoded sizes, the decoder's channel layout, through the
+  source too).
 
 ## Changes from upstream
 
@@ -259,3 +262,27 @@ audio thread, which must not wait for a lock, the heap or the system.
 Not done here: the RT memory pool still falls back to the heap when it runs
 out (1 MB by default) or for a block larger than `large_alloc_limit`
 (64 KB); `live_rt_test` would count that.
+
+### Opus
+
+- `codec/opus.cpp`: the channels are paired into coupled Opus streams: a
+  stereo signal is one coupled (joint stereo) stream, mono stays one plain
+  stream, 3 channels are a coupled pair and a plain stream. Upstream sent
+  one plain mono stream per channel ("what's the point of coupled
+  streams?"): a stereo signal then spends the bitrate on two independent
+  streams with no mid/side coding, and the L = R signal Jamsa sends for a
+  mono input costs twice what it needs. **Our wire format is therefore no
+  longer interoperable with upstream AOO peers**: the decoder must use the
+  same layout, and nothing in `/start` says which one. Only Jamsa talks to
+  Jamsa.
+- `codec/aoo_opus.h`: `AooFormatOpus::bitrate` (bits per second,
+  `OPUS_AUTO` by default, set by `AooFormatOpus_init()`). The encoder
+  applies it in its setup, so the room's Live bitrate holds from the first
+  packet on and survives a new `setFormat()`; `OPUS_SET_BITRATE` through
+  `codecControl()` still changes it during a stream (the glue does that
+  when the room's bitrate changes, without restarting the stream). The
+  field is not serialized: `/start` is unchanged and the sink's format
+  doesn't have it. A bitrate Opus refuses fails the setup.
+- `codec/opus.cpp`, `OPUS_GET_BITRATE`: returns the bitrate last set
+  (`OPUS_AUTO` if none). Upstream returned `OPUS_AUTO` always, because the
+  multistream encoder's own getter was broken in Opus 1.3.2.

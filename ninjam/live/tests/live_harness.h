@@ -120,6 +120,7 @@ struct source_options
   int format_blocksize = 240;  // Opus frame: 5 ms at 48 kHz
   bool binary = true;
   bool add_sinks = true;       // add every sink to the source up front
+  int bitrate = 0;             // Opus bitrate in the format (0: Opus' default)
 };
 
 class session
@@ -161,6 +162,7 @@ public:
     source->setBinaryFormat(so.binary);
     AooFormatOpus fmt;
     AooFormatOpus_init(&fmt, 2, 48000, so.format_blocksize, OPUS_APPLICATION_RESTRICTED_LOWDELAY);
+    if (so.bitrate > 0) fmt.bitrate = so.bitrate;
     source->setFormat(fmt.header);
 
     for (size_t i = 0; i < sos.size(); i++)

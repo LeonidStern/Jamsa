@@ -108,6 +108,31 @@ bool validate_format(AooFormatOpus& f, bool loud = true)
     return true;
 }
 
+// Jamsa: the channels are paired into coupled (stereo) streams: 2 channels
+// make one coupled stream, a mono channel one plain stream (3 channels: one
+// coupled, one plain, and so on). Upstream used one plain stream per channel,
+// which spends the bitrate twice on a stereo signal and loses the joint
+// stereo coding. Both ends must agree, so this is not interoperable with
+// upstream AOO (only Jamsa talks to Jamsa).
+struct stream_layout {
+    int streams;
+    int coupled;
+    unsigned char mapping[256];
+};
+
+stream_layout make_layout(int nchannels) {
+    stream_layout l;
+    l.coupled = nchannels / 2;
+    l.streams = nchannels - l.coupled;
+    // channel i is decoded from stream channel i: the first 2*coupled are
+    // the coupled streams' left and right channels, the rest the plain ones
+    for (int i = 0; i < nchannels; ++i){
+        l.mapping[i] = i;
+    }
+    memset(l.mapping + nchannels, 255, 256 - nchannels);
+    return l;
+}
+
 template<typename T>
 T& as(void *p){
     return *reinterpret_cast<T *>(p);
@@ -125,6 +150,8 @@ struct Encoder : AooCodec {
     size_t size_ = 0;
     int sampleRate_ = 0;
     int applicationType_ = 0;
+    // Jamsa: the bitrate last set (OPUS_AUTO if none); see OPUS_GET_BITRATE
+    opus_int32 bitrate_ = OPUS_AUTO;
 #if AOO_SAMPLE_SIZE == 64
     int numChannels_ = 0;
     std::vector<float, aoo::allocator<float>> buffer_;
@@ -149,17 +176,12 @@ AooError AOO_CALL Encoder_setup(AooCodec *c, AooFormat *f) {
 
     print_format(*fmt);
 
-    // setup channel mapping
-    // only use decoupled streams (what's the point of coupled streams?)
+    // setup channel mapping (Jamsa: coupled streams, see make_layout())
     auto nchannels = fmt->header.numChannels;
-    unsigned char mapping[256];
-    for (int i = 0; i < nchannels; ++i){
-        mapping[i] = i;
-    }
-    memset(mapping + nchannels, 255, 256 - nchannels);
+    auto layout = make_layout(nchannels);
 
     // TODO: don't reallocate if size hasn't changed)
-    auto size = opus_multistream_encoder_get_size(nchannels, 0);
+    auto size = opus_multistream_encoder_get_size(layout.streams, layout.coupled);
     auto state = (OpusMSEncoder *)aoo::allocate(size);
     if (!state){
         return kAooErrorOutOfMemory;
@@ -167,11 +189,27 @@ AooError AOO_CALL Encoder_setup(AooCodec *c, AooFormat *f) {
 
     auto err = opus_multistream_encoder_init(
         state, fmt->header.sampleRate, nchannels,
-        nchannels, 0, mapping, fmt->applicationType);
+        layout.streams, layout.coupled, layout.mapping, fmt->applicationType);
     if (err != OPUS_OK){
         LOG_ERROR("Opus: opus_encoder_create() failed with error code " << err);
         aoo::deallocate(state, size);
         return kAooErrorBadArgument;
+    }
+
+    // Jamsa: the bitrate comes with the format, so that it holds from the
+    // first packet and survives a new setFormat() (OPUS_SET_BITRATE through
+    // codecControl() only lasts until then)
+    opus_int32 bitrate = OPUS_AUTO;
+    if (AOO_CHECK_FIELD(&fmt->header, AooFormatOpus, bitrate)) {
+        bitrate = fmt->bitrate;
+    }
+    if (bitrate != OPUS_AUTO) {
+        err = opus_multistream_encoder_ctl(state, OPUS_SET_BITRATE(bitrate));
+        if (err != OPUS_OK){
+            LOG_ERROR("Opus: bad bitrate " << bitrate);
+            aoo::deallocate(state, size);
+            return kAooErrorBadArgument;
+        }
     }
 
     if (enc->state_) {
@@ -182,6 +220,7 @@ AooError AOO_CALL Encoder_setup(AooCodec *c, AooFormat *f) {
     enc->size_ = size;
     enc->sampleRate_ = fmt->header.sampleRate;
     enc->applicationType_ = fmt->applicationType;
+    enc->bitrate_ = bitrate;
 #if AOO_SAMPLE_SIZE == 64
     enc->numChannels_ = nchannels;
     enc->buffer_.resize(nchannels * fmt->header.blockSize);
@@ -242,6 +281,7 @@ AooError AOO_CALL Encoder_control(
         if (err != OPUS_OK){
             return kAooErrorBadArgument;
         }
+        e->bitrate_ = bitrate;
         break;
     }
     case OPUS_GET_BITRATE_REQUEST:
@@ -251,9 +291,9 @@ AooError AOO_CALL Encoder_control(
     #if 1
         // This control is broken in opus_multistream_encoder (as of opus v1.3.2)
         // because it would always return the default bitrate.
-        // As a temporary workaround, we just return OPUS_AUTO unconditionally.
-        // LATER validate and cache the value instead.
-        *bitrate = OPUS_AUTO;
+        // Jamsa: return the value last set (OPUS_AUTO if none) instead of
+        // OPUS_AUTO unconditionally.
+        *bitrate = e->bitrate_;
     #else
         auto err = opus_multistream_encoder_ctl(
                     e->state_, OPUS_GET_BITRATE(bitrate));
@@ -353,24 +393,19 @@ AooError AOO_CALL Decoder_setup(AooCodec *c, AooFormat *f) {
 
     print_format(*fmt);
 
-    // setup channel mapping
-    // only use decoupled streams (what's the point of coupled streams?)
+    // setup channel mapping (Jamsa: coupled streams, see make_layout())
     auto nchannels = fmt->header.numChannels;
-    unsigned char mapping[256];
-    for (int i = 0; i < nchannels; ++i){
-        mapping[i] = i;
-    }
-    memset(mapping + nchannels, 255, 256 - nchannels);
+    auto layout = make_layout(nchannels);
 
     // TODO: don't reallocate if size hasn't changed)
-    auto size = opus_multistream_decoder_get_size(nchannels, 0);
+    auto size = opus_multistream_decoder_get_size(layout.streams, layout.coupled);
     auto state = (OpusMSDecoder *)aoo::allocate(size);
     if (!state){
         return kAooErrorOutOfMemory;
     }
     auto err = opus_multistream_decoder_init(
         state, fmt->header.sampleRate,
-        nchannels, nchannels, 0, mapping);
+        nchannels, layout.streams, layout.coupled, layout.mapping);
     if (err != OPUS_OK){
         LOG_ERROR("Opus: opus_decoder_create() failed with error code " << err);
         aoo::deallocate(state, size);

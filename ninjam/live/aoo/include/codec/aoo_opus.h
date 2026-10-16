@@ -35,6 +35,9 @@ typedef struct AooFormatOpus
      * `OPUS_APPLICATION_VOIP`
      */
     opus_int32 applicationType;
+    /** Jamsa: the encoder's bitrate in bits per second (`OPUS_AUTO` = Opus'
+     * default). Only the encoder reads it; it is not sent to the sink. */
+    opus_int32 bitrate;
 } AooFormatOpus;
 
 /*--------------------------------------------------*/
@@ -45,11 +48,12 @@ AOO_INLINE void AooFormatOpus_init(
         AooInt32 numChannels, AooInt32 sampleRate,
         AooInt32 blockSize, opus_int32 applicationType)
 {
-    AOO_STRUCT_INIT(&fmt->header, AooFormatOpus, applicationType);
+    AOO_STRUCT_INIT(&fmt->header, AooFormatOpus, bitrate);
     fmt->header.numChannels = numChannels;
     fmt->header.sampleRate = sampleRate;
     fmt->header.blockSize = blockSize;
     fmt->applicationType = applicationType;
+    fmt->bitrate = OPUS_AUTO;
     strcpy(fmt->header.codecName, kAooCodecOpus);
 }
 
