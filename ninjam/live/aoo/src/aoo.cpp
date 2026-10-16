@@ -21,6 +21,7 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <random>
@@ -39,8 +40,16 @@ int32_t get_random_id(){
 }
 
 AooError check_version(const char *version) {
-    int major, minor;
-    if (sscanf(version, "%d.%d", &major, &minor) != 2) {
+    // NB: no sscanf("%d"), whose behavior is undefined for numbers out of
+    // range; the string comes from the network.
+    char *end;
+    auto major = strtol(version, &end, 10);
+    if (end == version || *end != '.') {
+        return kAooErrorBadFormat;
+    }
+    auto minor_start = end + 1;
+    strtol(minor_start, &end, 10);
+    if (end == minor_start) {
         return kAooErrorBadFormat;
     }
     if (major == kAooVersionMajor){
@@ -125,14 +134,30 @@ AOO_API AooError AOO_CALL aoo_parsePattern(
         }
 
         // /aoo/source or /aoo/sink
+        // NB: the message comes from the network and is not NUL-terminated,
+        // so parse "/<id>" within 'size' (sscanf could read past the end, and
+        // overflowing "%d" is undefined).
         if (id) {
-            int skip = 0; // 'int' for sscanf
-            if (sscanf((const char *)(msg + count), "/%d%n", (int *)id, &skip) > 0) {
-                count += skip;
-            } else {
-                LOG_ERROR("aoo_parse_pattern: bad ID");
+            if (count >= size || msg[count] != '/') {
+                LOG_DEBUG("aoo_parse_pattern: bad ID");
                 return kAooErrorBadArgument;
             }
+            int32_t i = count + 1;
+            int64_t value = 0;
+            while (i < size && msg[i] >= '0' && msg[i] <= '9') {
+                value = value * 10 + (msg[i] - '0');
+                if (value > INT32_MAX) {
+                    LOG_DEBUG("aoo_parse_pattern: bad ID");
+                    return kAooErrorBadArgument;
+                }
+                i++;
+            }
+            if (i == count + 1) {
+                LOG_DEBUG("aoo_parse_pattern: bad ID");
+                return kAooErrorBadArgument;
+            }
+            *id = (AooId)value;
+            count = i;
         } else {
             return kAooErrorBadArgument;
         }

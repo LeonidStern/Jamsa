@@ -134,7 +134,9 @@ struct data_frame_storage {
 
     void add_frame(int32_t index, data_frame* frame);
 
-    void copy_frames(AooByte *buffer, size_t total_size);
+    // NB: false if the frames don't add up to 'total_size' (each frame's
+    // size comes from the network); never writes past 'total_size' bytes.
+    bool copy_frames(AooByte *buffer, size_t total_size);
 private:
     union data_union {
         // static vector for small frame count

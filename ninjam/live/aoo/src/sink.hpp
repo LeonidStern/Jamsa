@@ -275,6 +275,7 @@ private:
     int32_t latency_samples_ = 0;
     // stream messages
     stream_message_header *stream_messages_ = nullptr;
+    int32_t stream_message_bytes_ = 0; // scheduled, see sched_stream_message()
     double stream_samples_ = 0;
     int64_t process_samples_ = 0;
     void reset_stream();
@@ -437,6 +438,9 @@ private:
     void reset_sources();
 
     void handle_xrun(int32_t nsamples);
+
+    AooError do_handle_message(const AooByte *data, AooInt32 size,
+                               const void *address, AooAddrSize addrlen);
 
     AooError handle_start_message(const osc::ReceivedMessage& msg,
                                   const ip_address& addr);

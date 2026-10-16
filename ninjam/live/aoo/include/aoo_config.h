@@ -52,6 +52,22 @@
 #error "AOO_PACKET_SIZE must not exceed AOO_MAX_PACKET_SIZE"
 #endif
 
+/** \brief max. size of a block's data (encoded audio and stream messages)
+ * that a sink accepts; the block is assembled on the audio thread's stack */
+#ifndef AOO_MAX_BLOCK_DATA_SIZE
+# define AOO_MAX_BLOCK_DATA_SIZE 65536
+#endif
+
+/** \brief max. number of channels of a stream that a sink accepts */
+#ifndef AOO_MAX_STREAM_CHANNELS
+# define AOO_MAX_STREAM_CHANNELS 8
+#endif
+
+/** \brief max. bytes of stream messages a sink keeps scheduled per source */
+#ifndef AOO_MAX_PENDING_STREAM_MESSAGES_SIZE
+# define AOO_MAX_PENDING_STREAM_MESSAGES_SIZE 65536
+#endif
+
 /** \brief default size of the RT memory pool */
 #ifndef AOO_MEM_POOL_SIZE
  #define AOO_MEM_POOL_SIZE (1 << 20) /* 1 MB */

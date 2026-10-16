@@ -110,9 +110,10 @@ public:
         received_frames++;
     }
 
-    void copy_frames(AooByte* buffer) {
+    // false if the frames don't add up to total_size
+    bool copy_frames(AooByte* buffer) {
         assert(complete());
-        frames_.copy_frames(buffer, total_size);
+        return frames_.copy_frames(buffer, total_size);
     }
 
     int32_t resend_count() const { return num_tries_; }

@@ -9,6 +9,8 @@
 #   ninjam_live      static library: AOO's source and sink with Opus, and oscpack
 #   live_aoo_test    AOO's lock-free queue and RT memory pool under threads, and
 #                    the AOO bugs fixed in our copy
+#   live_fuzz_test   hostile and mangled packets into a running source and sinks
+#                    (build with -fsanitize=address,undefined to get the most out of it)
 #
 # The plug-in's build (ninjam/vst3) adds this folder after it has downloaded
 # Opus and registers the tests from vst3/tests. A build of this folder alone
@@ -170,7 +172,7 @@ endif()
 # ---------------------------------------------------------------------------
 function(ninjam_live_add_tests)
     set(dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/tests)
-    foreach(name live_aoo_test)
+    foreach(name live_aoo_test live_fuzz_test)
         add_executable(${name} ${dir}/${name}.cpp)
         target_compile_features(${name} PRIVATE cxx_std_17)
         target_link_libraries(${name} PRIVATE ninjam_live ninjam_live_aoo_internal)

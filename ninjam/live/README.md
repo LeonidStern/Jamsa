@@ -56,6 +56,13 @@ Tests (`tests/`):
   (ported from AOO's own tests, with real checks instead of printouts), and
   a test for each AOO bug we fixed, mostly through a source and sinks on a
   virtual clock and network (`live_harness.h`).
+- `live_fuzz_test [iterations] [seed] [test]`: a hand-made packet for each
+  hardening change below, then hostile datagrams into a running source and
+  three sinks: captured ones mutated, ones built field by field around every
+  limit, and random bytes, from the peers' addresses and from strangers'.
+  It checks that the outputs stay finite, that nothing logs at Error level,
+  and that a new stream plays normally afterwards. It matters most in a
+  build with `-fsanitize=address,undefined`.
 
 ## Changes from upstream
 
@@ -133,3 +140,76 @@ noted as such.
 `live_aoo_test` has a test for each of these that fails without the fix,
 except the flag, the denormal flush and `AOO_CALL`, which have no visible
 effect on our builds.
+
+### Hardening
+
+Everything AOO receives comes from the other players, through our server,
+so a broken or hostile client can send it anything. Our copy checks what a
+datagram says before anything sizes memory, indexes an array or reaches the
+audio thread with it. `live_fuzz_test` has a packet for each of these; the
+ones marked "(fuzzer)" were found by it.
+
+- `Sink`/`Source::handleMessage`: drop empty datagrams and ones larger than
+  `AOO_MAX_PACKET_SIZE`, and catch every exception (only oscpack's were
+  caught, anything else went up into the caller's receive loop).
+- `aoo_parsePattern`: read the ID with `sscanf`, past the end of a datagram
+  (they are not NUL-terminated), and `%d` overflow is undefined; it is now
+  parsed within the size. `check_version`: `strtol` instead of `sscanf`.
+- oscpack, `ReceivedMessage::Init` (fuzzer): the blob size checks built the
+  exception without throwing it, so a blob could claim more bytes than the
+  message has and the sink copied them (an out-of-bounds read). A message
+  with an empty type tag string and bytes after it took the message's last
+  byte for its type tags; an `i` there read the first argument through a
+  null pointer.
+- Sink `/data` (`check_data_packet()`): stream ID and sequence not negative;
+  channel onset 0..255 (a negative one added the stream into memory before
+  the output buffers, on the audio thread); block size up to
+  `AOO_MAX_BLOCK_DATA_SIZE` (64 KB; the block is put together with
+  `alloca`); 1 to 256 frames, the frame index below the count (it indexed
+  the frame array) and frame sizes within the block; stream message size a
+  multiple of 4 within the block; a sample rate that is finite and
+  positive. Binary `/data` read the time stamp before checking that the
+  packet holds it.
+- Sink jitter buffer: a frame whose frame count or sizes disagree with the
+  frames already received for its block is dropped, and the frames must add
+  up to the block size before they are copied (`copy_frames()` overflowed
+  the stack buffer on the audio thread otherwise).
+- `data_frame_storage::add_frame` (fuzzer): took `&nullptr->header`
+  (undefined; blocks of more than 6 frames).
+- Sample rates: one far from the nominal rate (more than 10 %) is replaced
+  by the nominal rate, and `dynamic_resampler::update()` ignores a step
+  outside half to twice the nominal one, or NaN (the resampler reads its
+  buffer by that step).
+- Sink `/start`: formats outside Opus' limits are rejected (1 to
+  `AOO_MAX_STREAM_CHANNELS` = 8 channels, Opus' sample rates, 2.5 to 60 ms
+  blocks) instead of being "fixed" by the codec; the channel count and block
+  size size `alloca` buffers on the audio thread. A rejected format also
+  forgets its format ID: a good format, a bad one, then the good one's ID
+  again ran with no decoder (a null pointer dereference). Latency, codec
+  delay and sample offset are clamped to 0..10 seconds (negative ones, and
+  sums that overflowed once resampled (fuzzer)).
+- Decoding: a packet of another frame size decodes into fewer samples; the
+  rest of the buffer was stack garbage (an assert in debug builds only). It
+  is now zero filled, like a block that fails to decode.
+- Stream messages: their headers were read without a bound; a message of
+  type `0xFFFF` (the sink's own stream time type) was later read as a time
+  stamp it didn't carry; a sink without a message handler called a null
+  pointer; and a source could keep any amount scheduled (now at most
+  `AOO_MAX_PENDING_STREAM_MESSAGES_SIZE`, 64 KB, per source).
+- Source: the count of a binary resend request was multiplied by 8 before
+  the size check (overflow with a 32-bit `size_t`); `/invite` with the
+  token -1 (fuzzer) added a sink without telling the user (an assert in
+  debug builds).
+- Opus `deserialize`: compared a signed size with `sizeof` (a negative size
+  passed).
+- Logging: what a peer can trigger logs at Warning or below (bad packets,
+  unknown blocks, versions, codecs), so with AOO's default level (Error) a
+  peer can't flood the log. That includes "jitter buffer not empty", which
+  upstream calls a bug but which also happens when buffering gives up with
+  blocks in the buffer (heavy loss, or a `/stop`).
+
+Not done here (the glue's receive thread filters by peer, ID and format
+first, see the spec): a cap on the sources a sink keeps (each new address
+and ID from the network creates one), on the resends one request can ask
+for, and on events queued while nobody polls. A forged `/stop` from a
+player's address still ends that player's stream, as AOO's protocol says.

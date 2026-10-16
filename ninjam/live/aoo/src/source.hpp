@@ -405,6 +405,9 @@ class Source final : public AooSource, rt_memory_pool_client {
     void handle_stop_request(const osc::ReceivedMessage& msg,
                               const ip_address& addr);
 
+    AooError do_handle_message(const AooByte *data, AooInt32 size,
+                               const void *address, AooAddrSize addrlen);
+
     void handle_data_request(const osc::ReceivedMessage& msg,
                              const ip_address& addr);
 

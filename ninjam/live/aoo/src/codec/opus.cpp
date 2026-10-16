@@ -480,8 +480,10 @@ AooError AOO_CALL deserialize(
         *fmtsize = AOO_STRUCT_SIZE(AooFormatOpus, applicationType);
         return kAooOk;
     }
-    if (size < sizeof(AooInt32)) {
-        LOG_ERROR("Opus: couldn't read format - not enough data!");
+    // Jamsa: compare as signed (a negative size passed), and the extension
+    // comes from the peer's /start: no error log
+    if (size < (AooInt32)sizeof(AooInt32)) {
+        LOG_WARNING("Opus: couldn't read format - not enough data!");
         return kAooErrorBadArgument;
     }
     if (*fmtsize < AOO_STRUCT_SIZE(AooFormatOpus, applicationType)) {

@@ -140,6 +140,8 @@ public:
   // the source's audio thread misses this many blocks (an xrun); its
   // network thread keeps going
   int source_skips = 0;
+  // pass the sinks a stream message handler (AOO allows none)
+  bool message_handler = true;
 
   session(const source_options &so, const std::vector<sink_options> &sos)
   {
@@ -199,7 +201,8 @@ public:
     return false;
   }
 
-  void tick()
+  // runs the node that is due next and returns its index
+  int tick()
   {
     // the node that is due first
     size_t k = 0;
@@ -225,12 +228,14 @@ public:
     else
     {
       AooSink *s = sinks[k - 1].get();
-      s->process(n.pointers.data(), n.blocksize, t, on_stream_message, &n);
+      s->process(n.pointers.data(), n.blocksize, t,
+        message_handler ? on_stream_message : nullptr, &n);
       sender ctx = { this, (int)k };
       s->send(send_function, &ctx);
       s->pollEvents();
       check_output(n);
     }
+    return (int)k;
   }
 
   // the RMS of a sink's last block, both channels
@@ -249,10 +254,15 @@ public:
   // hand a datagram to node 'to' now, as if node 'from' had sent it
   AooError inject(int from, int to, const AooByte *data, size_t size)
   {
+    return inject_from(nodes[from].addr, to, data, size);
+  }
+
+  // the same from any address
+  AooError inject_from(const sockaddr_in &a, int to, const AooByte *data, size_t size)
+  {
     // an exact-size heap copy, so ASan sees reads past the end
     std::unique_ptr<AooByte[]> copy(new AooByte[size ? size : 1]);
     if (size) memcpy(copy.get(), data, size);
-    const sockaddr_in &a = nodes[from].addr;
     if (to == 0) return source->handleMessage(copy.get(), (AooInt32)size, &a, sizeof(a));
     return sinks[to - 1]->handleMessage(copy.get(), (AooInt32)size, &a, sizeof(a));
   }

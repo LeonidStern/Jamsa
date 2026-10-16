@@ -613,8 +613,12 @@ void ReceivedMessage::Init( const char *message, osc_bundle_element_size_t size 
 
         if( *(typeTagsBegin_ + 1) == '\0' ){
             // zero length type tags
-            typeTagsBegin_ = end - 1;
-            typeTagsEnd_ = end - 1;
+            // Jamsa: point at the type tags' own '\0'. The message's last
+            // byte, used before, is '\0' only if nothing follows the type
+            // tags; otherwise the first argument read took that byte for
+            // its type and read from a null argument pointer.
+            typeTagsBegin_ = typeTagsBegin_ + 1;
+            typeTagsEnd_ = typeTagsBegin_;
             arguments_ = 0;
 
         }else{
@@ -689,14 +693,22 @@ void ReceivedMessage::Init( const char *message, osc_bundle_element_size_t size 
 
                     case BLOB_TYPE_TAG:
                         {
-                            if( argument + osc::OSC_SIZEOF_INT32 > end )
-                                MalformedMessageException( "arguments exceed message size" );
+                            // Jamsa: the two checks below built the exception
+                            // without throwing it, so a blob could claim more
+                            // bytes than the message has (out of bounds reads
+                            // by whoever reads the blob). Also compare sizes
+                            // instead of pointers, so that a huge blob size
+                            // can't wrap around.
+                            if( end - argument < (std::ptrdiff_t)osc::OSC_SIZEOF_INT32 )
+                                throw MalformedMessageException( "arguments exceed message size" );
                                 
                             // treat blob size as an unsigned int for the purposes of this calculation
                             uint32 blobSize = ToUInt32( argument );
-                            argument = argument + osc::OSC_SIZEOF_INT32 + RoundUp4( blobSize );
-                            if( argument > end )
-                                MalformedMessageException( "arguments exceed message size" );
+                            argument = argument + osc::OSC_SIZEOF_INT32;
+                            // (the message size is a multiple of 4, so is what is left)
+                            if( blobSize > (std::size_t)(end - argument) )
+                                throw MalformedMessageException( "arguments exceed message size" );
+                            argument = argument + RoundUp4( blobSize );
                         }
                         break;
                         

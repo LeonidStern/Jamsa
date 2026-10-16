@@ -146,7 +146,15 @@ void dynamic_resampler::reset() {
 }
 
 void dynamic_resampler::update(double srfrom, double srto) {
-    advance_ = srfrom / srto;
+    // NB: read() steps through the buffer by this much. A real sample rate
+    // only drifts a little from the nominal one; ignore anything else (a
+    // nonsense value from the network, a DLL thrown off by a clock jump).
+    auto nominal = 1.0 / ideal_ratio_;
+    auto advance = srfrom / srto;
+    if (!(advance >= nominal * 0.5 && advance <= nominal * 2.0)) {
+        advance = nominal;
+    }
+    advance_ = advance;
 #if AOO_DEBUG_RESAMPLER
     auto ratio = srto / srfrom;
     LOG_ALL("srfrom: " << srfrom << ", srto: " << srto << ", ratio: " << ratio);

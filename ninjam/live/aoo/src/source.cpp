@@ -481,20 +481,40 @@ AooError AOO_CALL aoo::Source::setup(
 AooError AOO_CALL aoo::Source::handleMessage(
         const AooByte *data, AooInt32 size,
         const void *address, AooAddrSize addrlen){
+    // NB: no sink sends more than AOO_MAX_PACKET_SIZE bytes at once
+    if (!data || size <= 0 || size > AOO_MAX_PACKET_SIZE) {
+        return kAooErrorBadFormat;
+    }
+    // NB: the message comes from the network: whatever goes wrong while
+    // handling it must not escape into the caller's receive loop.
+    try {
+        return do_handle_message(data, size, address, addrlen);
+    } catch (const std::exception& e) {
+        LOG_DEBUG("AooSource: exception in handle_message: " << e.what());
+        return kAooErrorBadFormat;
+    } catch (...) {
+        LOG_DEBUG("AooSource: unknown exception in handle_message");
+        return kAooErrorBadFormat;
+    }
+}
+
+AooError aoo::Source::do_handle_message(
+        const AooByte *data, AooInt32 size,
+        const void *address, AooAddrSize addrlen){
     AooMsgType type;
     AooId src;
     AooInt32 onset;
     auto err = aoo_parsePattern(data, size, &type, &src, &onset);
     if (err != kAooOk){
-        LOG_WARNING("AooSource: not an AoO message!");
+        LOG_DEBUG("AooSource: not an AoO message!");
         return kAooErrorBadArgument;
     }
     if (type != kAooMsgTypeSource){
-        LOG_WARNING("AooSource: not a source message!");
+        LOG_DEBUG("AooSource: not a source message!");
         return kAooErrorBadArgument;
     }
     if (src != id()){
-        LOG_WARNING("AooSource: wrong source ID!");
+        LOG_DEBUG("AooSource: wrong source ID!");
         return kAooErrorBadArgument;
     }
 
@@ -509,7 +529,7 @@ AooError AOO_CALL aoo::Source::handleMessage(
             handle_data_request(data + onset, size - onset, id, addr);
             return kAooOk;
         default:
-            LOG_WARNING("AooSink: unsupported binary message");
+            LOG_DEBUG("AooSource: unsupported binary message");
             return kAooErrorBadArgument;
         }
     } else {
@@ -534,12 +554,12 @@ AooError AOO_CALL aoo::Source::handleMessage(
             } else if (pattern == kAooMsgPong) {
                 handle_pong(msg, addr);
             } else {
-                LOG_WARNING("AooSource: unknown message " << pattern);
+                LOG_DEBUG("AooSource: unknown message " << pattern);
                 return kAooErrorNotImplemented;
             }
             return kAooOk;
         } catch (const osc::Exception& e){
-            LOG_ERROR("AooSource: exception in handle_message: " << e.what());
+            LOG_DEBUG("AooSource: exception in handle_message: " << e.what());
             return kAooErrorBadFormat;
         }
     }
@@ -2089,7 +2109,7 @@ void Source::resend_data(const sendfn &fn) {
                                 if (index < d.num_frames) {
                                     copy_frame(index);
                                 } else {
-                                    LOG_ERROR("AooSource: frame number " << index << " out of range!");
+                                    LOG_DEBUG("AooSource: frame number " << index << " out of range!");
                                 }
                             }
                         }
@@ -2190,9 +2210,9 @@ void Source::handle_start_request(const osc::ReceivedMessage& msg,
     // LATER handle this in the sink_desc (e.g. not sending data)
     if (auto err = check_version(version); err != kAooOk){
         if (err == kAooErrorVersionNotSupported) {
-            LOG_ERROR("AooSource: sink version not supported");
+            LOG_WARNING("AooSource: sink version not supported");
         } else {
-            LOG_ERROR("AooSource: bad sink version format");
+            LOG_WARNING("AooSource: bad sink version format");
         }
         return;
     }
@@ -2301,7 +2321,7 @@ void Source::handle_data_request(const AooByte *msg, int32_t n,
 {
     // check size (stream_id, count)
     if (n < 8){
-        LOG_ERROR("AooSource: binary data message too small!");
+        LOG_DEBUG("AooSource: binary data message too small!");
         return;
     }
 
@@ -2331,8 +2351,9 @@ void Source::handle_data_request(const AooByte *msg, int32_t n,
         if (sink->is_active()){
             // get pairs of sequence + frame
             int count = aoo::read_bytes<int32_t>(it);
-            if ((end - it) < (count * sizeof(int32_t) * 2)){
-                LOG_ERROR("AooSource: bad 'count' argument for binary data message!");
+            // NB: no multiplication that could overflow (32-bit size_t)
+            if (count < 0 || count > (end - it) / 8){
+                LOG_DEBUG("AooSource: bad 'count' argument for binary data message!");
                 return;
             }
             while (count--){
@@ -2362,6 +2383,14 @@ void Source::handle_invite(const osc::ReceivedMessage& msg,
     auto metadata = osc_read_metadata(it); // optional
 
     LOG_DEBUG("AooSource: handle invitation by " << addr << "|" << id);
+
+    // Jamsa: the token becomes the stream ID, so it can't be negative. A
+    // new sink starts with the invalid token (-1); an invitation with -1
+    // added the sink without telling the user (and failed an assert).
+    if (token < 0) {
+        LOG_DEBUG("AooSource: bad token for invitation");
+        return;
+    }
 
     event_ptr e1;
 

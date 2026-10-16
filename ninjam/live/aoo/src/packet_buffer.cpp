@@ -107,7 +107,8 @@ sent_block * history_buffer::find(int32_t seq){
     #endif
     }
 
-    LOG_ERROR("history buffer: couldn't find block " << seq);
+    // NB: debug only: a sink can ask for any block
+    LOG_DEBUG("history buffer: couldn't find block " << seq);
     return nullptr;
 }
 

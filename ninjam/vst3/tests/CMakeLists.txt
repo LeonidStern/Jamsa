@@ -13,6 +13,8 @@
 #                      tempo and intervals lead
 #   live_aoo_test      (ninjam/live) AOO's lock-free queue and RT memory pool under threads,
 #                      and the AOO bugs fixed in our copy
+#   live_fuzz_test     (ninjam/live) hostile and mangled packets into a running AOO source
+#                      and sinks
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp

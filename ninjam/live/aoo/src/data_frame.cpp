@@ -161,6 +161,10 @@ void data_frame_storage::clear(data_frame_allocator& alloc) {
 }
 
 bool data_frame_storage::has_frame(int32_t index) const {
+    // NB: the index comes from the network
+    if (index < 0 || index >= size_) {
+        return false;
+    }
     if (size_ > small_frame_limit) {
         // use bitset
         if (index < data_.l.bitset.size()) {
@@ -182,13 +186,16 @@ void data_frame_storage::add_frame(int32_t index, data_frame* frame) {
     frame->header.frame_index = index;
     if (size_ > small_frame_limit) {
         // add to linked list
-        if (auto tail = &data_.l.tail->header; tail && index > tail->frame_index) {
+        // Jamsa: test the pointers before taking a member's address
+        // (&nullptr->header is undefined, UBSan reports it)
+        auto tail = data_.l.tail ? &data_.l.tail->header : nullptr;
+        if (tail && index > tail->frame_index) {
             // a) append (this is the typical pattern!)
             frame->header.next = nullptr;
             tail->next = &frame->header;
             data_.l.tail = frame;
         } else {
-            auto ptr = &data_.l.head->header;
+            auto ptr = data_.l.head ? &data_.l.head->header : nullptr;
             if (ptr == nullptr || index < ptr->frame_index) {
                 // b) prepend
                 frame->header.next = ptr;
@@ -219,7 +226,7 @@ void data_frame_storage::add_frame(int32_t index, data_frame* frame) {
     }
 }
 
-void data_frame_storage::copy_frames(AooByte *buffer, size_t total_size) {
+bool data_frame_storage::copy_frames(AooByte *buffer, size_t total_size) {
     auto ptr = buffer;
     auto end = buffer + total_size;
     if (size_ > small_frame_limit) {
@@ -227,17 +234,23 @@ void data_frame_storage::copy_frames(AooByte *buffer, size_t total_size) {
         int index = 0;
         for (auto frame = data_.l.head; frame; frame = (data_frame*)frame->header.next, ++index) {
             assert(frame->header.frame_index == index);
+            if (frame->header.size > end - ptr) {
+                return false;
+            }
             memcpy(ptr, frame->data, frame->header.size);
             ptr += frame->header.size;
         }
     } else {
         // static array
         for (int i = 0; i < size_; ++i) {
+            if (!data_.vec[i] || data_.vec[i]->header.size > end - ptr) {
+                return false;
+            }
             memcpy(ptr, data_.vec[i]->data, data_.vec[i]->header.size);
             ptr += data_.vec[i]->header.size;
         }
     }
-    assert(ptr == end);
+    return ptr == end;
 }
 
 data_frame* data_frame_storage::find_frame(int32_t index) const {
