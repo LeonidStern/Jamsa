@@ -48,6 +48,7 @@ class Client:
         self.inbox = []  # messages read while waiting for something else
         self.last_send = time.time()
         self.udp = None  # the Live socket, see udp_open()
+        self.udp_connected = False
         self.live = None  # the latest Live state from the server, see wait_live()
 
     # framing
@@ -185,19 +186,26 @@ class Client:
         finally:
             self.inbox = kept + self.inbox
 
-    def udp_open(self, bind_host="127.0.0.1"):
-        """A UDP socket for Live, from bind_host (any 127.x address is this machine)."""
+    def udp_open(self, bind_host="127.0.0.1", connect=False):
+        """A UDP socket for Live, from bind_host (any 127.x address is this machine). With connect, it is
+        connect()ed to the server's address and port, as the plug-in's is: it then gets only what comes from there."""
         if self.udp:
             self.udp.close()
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.bind((bind_host, 0))
+        self.udp_connected = connect
+        if connect:
+            self.udp.connect((self.host, self.port))
         return self.udp
 
     def udp_send(self, data, port=None):
         """Sends a datagram to the server's UDP port (the TCP port unless given)."""
         if not self.udp:
             self.udp_open()
-        self.udp.sendto(data, (self.host, port or self.port))
+        if self.udp_connected and port in (None, self.port):
+            self.udp.send(data)
+        else:
+            self.udp.sendto(data, (self.host, port or self.port))
 
     def udp_recv(self, timeout=1.0):
         """The next datagram from the server, or None. Keeps the TCP connection alive meanwhile."""

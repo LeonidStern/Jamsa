@@ -45,6 +45,9 @@ class LiveRelay
 
     // Opens the UDP port (all interfaces) and starts the relay thread. Forgets every
     // player and room. Returns false if the port can't be opened, e.g. it is in use.
+    // Each player is answered from the address it sends to, where the system can say
+    // which that is (Linux, macOS, BSD, Windows); elsewhere a machine with more than one
+    // address answers from the one its routing table picks.
     bool Open(int port);
     void Close(); // stops the thread and closes the port; forgets everyone
     bool IsOpen() const;

@@ -16,6 +16,14 @@
 
 */
 
+#ifdef _WIN32
+// WSARecvMsg and WSASendMsg (see LIVE_PKTINFO below), before netinc.h, whose
+// windows.h would otherwise bring in the old winsock.h
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <mswsock.h>
+#endif
+
 #include "../../WDL/jnetlib/netinc.h"
 
 #include <stdio.h>
@@ -40,11 +48,29 @@ extern "C" BOOLEAN NTAPI SystemFunction036(PVOID buffer, ULONG length);
 #endif
 #else
 #include <poll.h>
+#include <sys/uio.h>
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #define LIVE_HAVE_ARC4RANDOM // arc4random_buf, in stdlib.h
 #elif defined(__linux__)
 #include <sys/syscall.h>
 #endif
+#endif
+
+// The relay answers each player from the address of this machine that the player sends
+// to. On a machine with more than one address (an extra IP on a VPS, wired and Wi-Fi on
+// one network), the routing table would otherwise pick the address replies come from,
+// and the player's socket (connect()ed to the server) or its router would drop every
+// reply from another one. IP_PKTINFO says which address a datagram came in on, and
+// picks the one a datagram goes out from; BSD has IP_RECVDSTADDR and IP_SENDSRCADDR.
+// Where neither works, the routing table picks, as for any UDP socket.
+#if defined(_WIN32)
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT >= 0x0600 // WSASendMsg: Vista and later
+#define LIVE_PKTINFO_WINSOCK
+#endif
+#elif (defined(__linux__) || defined(__APPLE__)) && defined(IP_PKTINFO)
+#define LIVE_PKTINFO
+#elif defined(IP_RECVDSTADDR) && defined(IP_SENDSRCADDR)
+#define LIVE_RECVDSTADDR
 #endif
 
 #include "liverelay.h"
@@ -96,6 +122,7 @@ struct Peer
   bool bound; // addr is where it last sent from
   bool fresh; // heard from in the last FRESH_SECONDS; PeerBound() and Generation() follow it
   struct sockaddr_in addr;
+  unsigned int local_ip; // the address of this machine that it sends to, 0 if not known
   double last_rx;
   double tokens_bytes, tokens_packets, tokens_time; // rate limit; tokens_time < 0 until the first datagram
 };
@@ -106,6 +133,14 @@ struct Room
   bool on;
   int kbps, frame;
   std::vector<unsigned int> peers;
+};
+
+// where a datagram is forwarded to
+struct Dest
+{
+  unsigned int id;
+  struct sockaddr_in addr;
+  unsigned int local_ip; // and from, see Peer
 };
 
 double now_seconds()
@@ -169,14 +204,43 @@ bool random_bytes(void *buf, size_t len)
 #endif
 }
 
+// the address a datagram was sent to, if a reply can come from it: not a broadcast or
+// multicast one (0 = let the routing table pick)
+unsigned int reply_address(unsigned int local_ip)
+{
+  const unsigned int h = ntohl(local_ip);
+  if (h == 0xffffffff || (h & 0xf0000000) == 0xe0000000) return 0;
+  return local_ip;
+}
+
+// whether a send failed because of the address it was sent from, e.g. one that is no
+// longer this machine's
+bool bad_source_address(int err)
+{
+#ifdef _WIN32
+  return err == WSAEINVAL || err == WSAEADDRNOTAVAIL;
+#else
+  return err == EINVAL || err == EADDRNOTAVAIL;
+#endif
+}
+
 } // namespace
 
 struct LiveRelay::State
 {
-  State() : sock(INVALID_SOCKET), port(0), stop(false), strict(true), generation(0) { }
+  State() : sock(INVALID_SOCKET), port(0), pktinfo(false), stop(false), strict(true), generation(0)
+  {
+#ifdef LIVE_PKTINFO_WINSOCK
+    wsarecvmsg = NULL;
+#endif
+  }
 
   SOCKET sock;
   int port;
+  bool pktinfo; // the socket says which address each datagram was sent to (LIVE_PKTINFO)
+#ifdef LIVE_PKTINFO_WINSOCK
+  LPFN_WSARECVMSG wsarecvmsg;
+#endif
   std::thread thread;
   std::atomic<bool> stop;
 
@@ -192,9 +256,11 @@ struct LiveRelay::State
   unsigned long long received, sent, dropped[NUM_DROPS];
 
   void Run();
-  void Handle(unsigned char *buf, int len, const struct sockaddr_in &from, double now);
+  int Receive(unsigned char *buf, int size, struct sockaddr_in *from, unsigned int *local_ip);
+  void Handle(unsigned char *buf, int len, const struct sockaddr_in &from, unsigned int local_ip, double now);
   void Housekeeping(double now);
-  void SendTo(const unsigned char *buf, int len, const struct sockaddr_in &to);
+  bool SendTo(const unsigned char *buf, int len, const struct sockaddr_in &to, unsigned int local_ip);
+  int SendFrom(const unsigned char *buf, int len, const struct sockaddr_in &to, unsigned int local_ip);
   bool TakeTokens(Peer &p, const Room *room, int len, double now);
 
   void LeaveRoom(unsigned int id, unsigned int room_id)
@@ -272,6 +338,28 @@ bool LiveRelay::Open(int port)
     closesocket(s);
     return false;
   }
+
+  // learn which address each datagram was sent to, to answer from it (see LIVE_PKTINFO);
+  // without it, the routing table picks
+  int on = 1;
+  st->pktinfo = false;
+#if defined(LIVE_PKTINFO) || defined(LIVE_PKTINFO_WINSOCK)
+  st->pktinfo = !setsockopt(s, IPPROTO_IP, IP_PKTINFO, (const char *)&on, sizeof(on));
+#elif defined(LIVE_RECVDSTADDR)
+  st->pktinfo = !setsockopt(s, IPPROTO_IP, IP_RECVDSTADDR, (const char *)&on, sizeof(on));
+#endif
+#ifdef LIVE_PKTINFO_WINSOCK
+  st->wsarecvmsg = NULL;
+  if (st->pktinfo)
+  {
+    GUID guid = WSAID_WSARECVMSG;
+    DWORD got = 0;
+    if (WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid), &st->wsarecvmsg, sizeof(st->wsarecvmsg),
+                 &got, NULL, NULL) || !st->wsarecvmsg)
+      st->pktinfo = false;
+  }
+#endif
+  (void)on;
 
   {
     std::lock_guard<std::mutex> lock(st->mutex);
@@ -437,8 +525,8 @@ void LiveRelay::State::Run()
       for (int i = 0; i < 256 && !stop; i ++)
       {
         struct sockaddr_in from;
-        socklen_t fromlen = sizeof(from);
-        const int n = (int)recvfrom(sock, (char *)buf, sizeof(buf), 0, (struct sockaddr *)&from, &fromlen);
+        unsigned int local_ip;
+        const int n = Receive(buf, sizeof(buf), &from, &local_ip);
         if (n < 0)
         {
           const int err = JNL_ERRNO;
@@ -455,8 +543,8 @@ void LiveRelay::State::Run()
 #endif
           break; // nothing more to read for now
         }
-        if (fromlen < (socklen_t)sizeof(from) || from.sin_family != AF_INET) continue;
-        Handle(buf, n, from, now_seconds());
+        if (from.sin_family != AF_INET) continue;
+        Handle(buf, n, from, reply_address(local_ip), now_seconds());
       }
     }
     const double now = now_seconds();
@@ -466,6 +554,91 @@ void LiveRelay::State::Run()
       next_housekeeping = now + 0.1;
     }
   }
+}
+
+// Reads a datagram: returns its length, or < 0 (JNL_ERRNO says why). from gets where it
+// came from (sin_family isn't AF_INET if that isn't an IPv4 address), local_ip the
+// address of this machine it was sent to (0 if not known).
+int LiveRelay::State::Receive(unsigned char *buf, int size, struct sockaddr_in *from, unsigned int *local_ip)
+{
+  memset(from, 0, sizeof(*from));
+  *local_ip = 0;
+  if (!pktinfo)
+  {
+    socklen_t fromlen = sizeof(*from);
+    const int n = (int)recvfrom(sock, (char *)buf, size, 0, (struct sockaddr *)from, &fromlen);
+    if (n >= 0 && fromlen < (socklen_t)sizeof(*from)) from->sin_family = AF_UNSPEC;
+    return n;
+  }
+
+#ifdef LIVE_PKTINFO_WINSOCK
+  WSABUF data;
+  data.buf = (char *)buf;
+  data.len = (ULONG)size;
+  union { WSACMSGHDR align; char space[WSA_CMSG_SPACE(sizeof(IN_PKTINFO))]; } control;
+  WSAMSG msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.name = (struct sockaddr *)from;
+  msg.namelen = sizeof(*from);
+  msg.lpBuffers = &data;
+  msg.dwBufferCount = 1;
+  msg.Control.buf = control.space;
+  msg.Control.len = sizeof(control.space);
+  DWORD n = 0;
+  if (wsarecvmsg(sock, &msg, &n, NULL, NULL)) return -1; // WSAEMSGSIZE for one too big, as with recvfrom
+  if (msg.namelen < (int)sizeof(*from)) from->sin_family = AF_UNSPEC;
+  for (WSACMSGHDR *c = WSA_CMSG_FIRSTHDR(&msg); c; c = WSA_CMSG_NXTHDR(&msg, c))
+  {
+    if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO && c->cmsg_len >= WSA_CMSG_LEN(sizeof(IN_PKTINFO)))
+    {
+      IN_PKTINFO pi;
+      memcpy(&pi, WSA_CMSG_DATA(c), sizeof(pi));
+      *local_ip = pi.ipi_addr.s_addr;
+    }
+  }
+  return (int)n;
+#elif defined(LIVE_PKTINFO) || defined(LIVE_RECVDSTADDR)
+  struct iovec data;
+  data.iov_base = buf;
+  data.iov_len = (size_t)size;
+#ifdef LIVE_PKTINFO
+  union { struct cmsghdr align; char space[CMSG_SPACE(sizeof(struct in_pktinfo))]; } control;
+#else
+  union { struct cmsghdr align; char space[CMSG_SPACE(sizeof(struct in_addr))]; } control;
+#endif
+  struct msghdr msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.msg_name = from;
+  msg.msg_namelen = sizeof(*from);
+  msg.msg_iov = &data;
+  msg.msg_iovlen = 1;
+  msg.msg_control = control.space;
+  msg.msg_controllen = sizeof(control.space);
+  const int n = (int)recvmsg(sock, &msg, 0);
+  if (n < 0) return n;
+  if (msg.msg_namelen < (socklen_t)sizeof(*from)) from->sin_family = AF_UNSPEC;
+  for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c))
+  {
+#ifdef LIVE_PKTINFO
+    if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO && c->cmsg_len >= CMSG_LEN(sizeof(struct in_pktinfo)))
+    {
+      struct in_pktinfo pi;
+      memcpy(&pi, CMSG_DATA(c), sizeof(pi));
+      *local_ip = pi.ipi_addr.s_addr;
+    }
+#else
+    if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_RECVDSTADDR && c->cmsg_len >= CMSG_LEN(sizeof(struct in_addr)))
+    {
+      struct in_addr a;
+      memcpy(&a, CMSG_DATA(c), sizeof(a));
+      *local_ip = a.s_addr;
+    }
+#endif
+  }
+  return n;
+#else
+  return -1; // pktinfo is never set without a way to read it
+#endif
 }
 
 bool LiveRelay::State::TakeTokens(Peer &p, const Room *room, int len, double now)
@@ -500,13 +673,102 @@ bool LiveRelay::State::TakeTokens(Peer &p, const Room *room, int len, double now
   return true;
 }
 
-void LiveRelay::State::SendTo(const unsigned char *data, int len, const struct sockaddr_in &to)
+// Sends from local_ip, the address of this machine the player sends to, when it is known
+// (else the routing table picks). Returns false if local_ip couldn't be used, e.g. it is
+// no longer this machine's; then the datagram went out from the routing table's choice.
+bool LiveRelay::State::SendTo(const unsigned char *data, int len, const struct sockaddr_in &to, unsigned int local_ip)
 {
+  bool local_ok = true;
+  if (pktinfo && local_ip)
+  {
+    const int n = SendFrom(data, len, to, local_ip);
+    if (n == len)
+    {
+      sent ++;
+      return true;
+    }
+    if (n >= 0 || !bad_source_address(JNL_ERRNO))
+    {
+      dropped[DROP_SEND_FAILED] ++; // e.g. the send buffer is full
+      return true;
+    }
+    local_ok = false;
+  }
   if (sendto(sock, (const char *)data, len, 0, (const struct sockaddr *)&to, sizeof(to)) == len) sent ++;
-  else dropped[DROP_SEND_FAILED] ++; // e.g. the send buffer is full
+  else dropped[DROP_SEND_FAILED] ++;
+  return local_ok;
 }
 
-void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr_in &from, double now)
+// sendto() from local_ip; returns what sendto() would
+int LiveRelay::State::SendFrom(const unsigned char *data, int len, const struct sockaddr_in &to, unsigned int local_ip)
+{
+#ifdef LIVE_PKTINFO_WINSOCK
+  WSABUF buf;
+  buf.buf = (char *)data;
+  buf.len = (ULONG)len;
+  union { WSACMSGHDR align; char space[WSA_CMSG_SPACE(sizeof(IN_PKTINFO))]; } control;
+  memset(&control, 0, sizeof(control));
+  WSAMSG msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.name = (struct sockaddr *)&to;
+  msg.namelen = sizeof(to);
+  msg.lpBuffers = &buf;
+  msg.dwBufferCount = 1;
+  msg.Control.buf = control.space;
+  msg.Control.len = sizeof(control.space);
+  WSACMSGHDR *c = WSA_CMSG_FIRSTHDR(&msg);
+  c->cmsg_level = IPPROTO_IP;
+  c->cmsg_type = IP_PKTINFO;
+  c->cmsg_len = WSA_CMSG_LEN(sizeof(IN_PKTINFO));
+  IN_PKTINFO pi;
+  memset(&pi, 0, sizeof(pi));
+  pi.ipi_addr.s_addr = local_ip; // the source address; interface 0: the routing table's
+  memcpy(WSA_CMSG_DATA(c), &pi, sizeof(pi));
+  DWORD n = 0;
+  if (WSASendMsg(sock, &msg, 0, &n, NULL, NULL)) return -1;
+  return (int)n;
+#elif defined(LIVE_PKTINFO) || defined(LIVE_RECVDSTADDR)
+  struct iovec buf;
+  buf.iov_base = (void *)data;
+  buf.iov_len = (size_t)len;
+#ifdef LIVE_PKTINFO
+  union { struct cmsghdr align; char space[CMSG_SPACE(sizeof(struct in_pktinfo))]; } control;
+#else
+  union { struct cmsghdr align; char space[CMSG_SPACE(sizeof(struct in_addr))]; } control;
+#endif
+  memset(&control, 0, sizeof(control));
+  struct msghdr msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.msg_name = (void *)&to;
+  msg.msg_namelen = sizeof(to);
+  msg.msg_iov = &buf;
+  msg.msg_iovlen = 1;
+  msg.msg_control = control.space;
+  msg.msg_controllen = sizeof(control.space);
+  struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+  c->cmsg_level = IPPROTO_IP;
+#ifdef LIVE_PKTINFO
+  c->cmsg_type = IP_PKTINFO;
+  c->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+  struct in_pktinfo pi;
+  memset(&pi, 0, sizeof(pi));
+  pi.ipi_spec_dst.s_addr = local_ip; // the source address; interface 0: the routing table's
+  memcpy(CMSG_DATA(c), &pi, sizeof(pi));
+#else
+  c->cmsg_type = IP_SENDSRCADDR;
+  c->cmsg_len = CMSG_LEN(sizeof(struct in_addr));
+  struct in_addr a;
+  a.s_addr = local_ip;
+  memcpy(CMSG_DATA(c), &a, sizeof(a));
+#endif
+  return (int)sendmsg(sock, &msg, 0);
+#else
+  (void)local_ip;
+  return (int)sendto(sock, (const char *)data, len, 0, (const struct sockaddr *)&to, sizeof(to));
+#endif
+}
+
+void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr_in &from, unsigned int local_ip, double now)
 {
   received ++;
   if (len > MAX_DATAGRAM)
@@ -525,7 +787,7 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
   const WDL_UINT64 key = get_le64(buf + 8);
   const unsigned int dest = get_le32(buf + 16);
 
-  struct sockaddr_in to[MAX_DESTS];
+  Dest to[MAX_DESTS];
   int nto = 0;
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -550,6 +812,7 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
     // the player is where its latest good datagram came from (its router may have
     // given it another port)
     p.addr = from;
+    p.local_ip = local_ip;
     p.bound = true;
     p.last_rx = now;
     if (!p.fresh)
@@ -588,7 +851,9 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
           dropped[DROP_NO_SUCH_PLAYER] ++;
           return;
         }
-        to[nto ++] = q->second.addr;
+        to[nto].id = dest;
+        to[nto].addr = q->second.addr;
+        to[nto ++].local_ip = q->second.local_ip;
       }
       else
       {
@@ -596,7 +861,12 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
         {
           if (room->peers[i] == sender) continue;
           std::map<unsigned int, Peer>::const_iterator q = peers.find(room->peers[i]);
-          if (q != peers.end() && q->second.may_send && q->second.bound && q->second.fresh) to[nto ++] = q->second.addr;
+          if (q != peers.end() && q->second.may_send && q->second.bound && q->second.fresh)
+          {
+            to[nto].id = q->first;
+            to[nto].addr = q->second.addr;
+            to[nto ++].local_ip = q->second.local_ip;
+          }
         }
       }
     }
@@ -611,7 +881,7 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
     ack[3] = TYPE_HELLO;
     put_le32(ack + 4, 0);
     memcpy(ack + 8, buf + CLIENT_HEADER, 8); // the client's timestamp
-    SendTo(ack, sizeof(ack), from);
+    SendTo(ack, sizeof(ack), from, local_ip); // from the address it was sent to
     return;
   }
 
@@ -622,7 +892,26 @@ void LiveRelay::State::Handle(unsigned char *buf, int len, const struct sockaddr
   out[2] = UDP_VERSION;
   out[3] = TYPE_DATA;
   put_le32(out + 4, sender);
-  for (int i = 0; i < nto; i ++) SendTo(out, len - (CLIENT_HEADER - SERVER_HEADER), to[i]);
+  // each from the address of this machine its player sends to
+  int failed = 0;
+  for (int i = 0; i < nto; i ++)
+  {
+    if (!SendTo(out, len - (CLIENT_HEADER - SERVER_HEADER), to[i].addr, to[i].local_ip))
+    {
+      if (failed != i) to[failed] = to[i];
+      failed ++;
+    }
+  }
+  if (failed)
+  {
+    // that address is gone: the routing table picks until the player is heard from again
+    std::lock_guard<std::mutex> lock(mutex);
+    for (int i = 0; i < failed; i ++)
+    {
+      std::map<unsigned int, Peer>::iterator q = peers.find(to[i].id);
+      if (q != peers.end() && q->second.local_ip == to[i].local_ip) q->second.local_ip = 0;
+    }
+  }
 }
 
 void LiveRelay::State::Housekeeping(double now)

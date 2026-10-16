@@ -398,6 +398,37 @@ class RelayTests(LiveTest):
         self.assertLess(out.count("[live]"), 10)
 
 
+class ServerAddressTests(LiveTest):
+    """A machine with more than one address answers each player from the one it sends to."""
+    extra_config = "Live on\n"
+
+    def setUp(self):
+        super().setUp()
+        try:
+            socket.create_connection(("127.0.0.2", self.server.port), timeout=1.0).close()
+        except OSError:
+            self.skipTest("can't reach this machine at 127.0.0.2")  # e.g. macOS, whose lo0 has only 127.0.0.1
+
+    def player(self, name):
+        """A Live player that connects to the server at 127.0.0.2, whose UDP socket is connect()ed there like the
+        plug-in's, so it drops whatever comes from another address (this machine's routing table picks 127.0.0.1)."""
+        c = Client(self.server.port, host="127.0.0.2")
+        self.clients.append(c)
+        self.assertTrue(c.login("anonymous:" + name, caps=CAP_LIVE | CAP_OPUS)[0])
+        self.assertIsNotNone(c.wait_live(), "no Live message")
+        c.udp_open(connect=True)
+        return c
+
+    def test_answers_come_from_the_address_players_send_to(self):
+        a = self.player("alice")
+        b = self.player("bob")
+        self.bind(a, b)
+        a.send_live(b"to everyone")
+        self.assertEqual(self.got(b), [(a.live["peer_id"], b"to everyone")])
+        b.send_live(b"to alice", dest=a.live["peer_id"])
+        self.assertEqual(self.got(a), [(b.live["peer_id"], b"to alice")])
+
+
 class RelayOffTests(LiveTest):
     def test_nothing_is_forwarded_while_live_is_off(self):
         a = self.live_client("alice")
