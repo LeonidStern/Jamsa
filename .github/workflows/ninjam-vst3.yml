@@ -312,6 +312,36 @@ jobs:
           build/bin/Release/validator "$UNZIPPED" 2>&1 | tee validator-unzipped.log
           grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator-unzipped.log
 
+      - name: Disk image
+        run: |
+          # The Mac download: a disk image with Jamsa.vst3 next to a shortcut to the VST3 folder,
+          # over a background that says to drag one onto the other (ninjam/vst3/packaging).
+          # dmgbuild lays it out in a read-write image; the bundle bit is set in there, for the
+          # reasons above, and then the image is compressed.
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install -q dmgbuild==1.6.7
+          "$RUNNER_TEMP/dmgbuild/bin/dmgbuild" -s ninjam/vst3/packaging/dmg_settings.py \
+            -D bundle="$BUNDLE" -D background=ninjam/vst3/packaging/dmg-background.png \
+            Jamsa "$RUNNER_TEMP/Jamsa-rw.dmg"
+          RW="$RUNNER_TEMP/dmg-rw"
+          hdiutil attach -nobrowse -noautoopen -mountpoint "$RW" "$RUNNER_TEMP/Jamsa-rw.dmg"
+          xattr -wx com.apple.FinderInfo 0000000000000000200000000000000000000000000000000000000000000000 "$RW/Jamsa.vst3"
+          hdiutil detach "$RW" || { sleep 5; hdiutil detach -force "$RW"; }
+          hdiutil convert "$RUNNER_TEMP/Jamsa-rw.dmg" -format UDZO -imagekey zlib-level=9 -o dist/Jamsa-vst3-macos.dmg
+          ls -l dist
+          # what someone gets: the shortcut, the layout, the bundle bit, a valid signature, a plug-in that loads
+          RO="$RUNNER_TEMP/dmg-check"
+          hdiutil attach -nobrowse -noautoopen -readonly -mountpoint "$RO" dist/Jamsa-vst3-macos.dmg
+          ls -la "$RO"
+          test "$(readlink "$RO/VST3 Plug-Ins")" = /Library/Audio/Plug-Ins/VST3
+          test -f "$RO/.DS_Store"
+          ls "$RO"/.background.*
+          test "$(xattr -px com.apple.FinderInfo "$RO/Jamsa.vst3" | tr -d ' \n' | cut -c17-20)" = 2000
+          codesign --verify --deep --verbose=2 "$RO/Jamsa.vst3"
+          build/bin/Release/validator "$RO/Jamsa.vst3" 2>&1 | tee validator-dmg.log
+          grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator-dmg.log
+          hdiutil detach "$RO"
+
       - uses: actions/upload-artifact@v4
         with:
           name: Jamsa-vst3-macos-universal
@@ -358,7 +388,8 @@ jobs:
           mkdir release
           (cd linux && zip -qr ../release/Jamsa-vst3-linux-x86_64.zip Jamsa.vst3)
           (cd windows && zip -q ../release/Jamsa-vst3-windows-x64.zip Jamsa.vst3)
-          cp macos/Jamsa-vst3-macos.zip release/ # zipped on the Mac, with the bundle bit (see the macos job)
+          # made on the Mac, with the bundle bit (see the macos job)
+          cp macos/Jamsa-vst3-macos.dmg macos/Jamsa-vst3-macos.zip release/
           ls -l release
 
       - name: Publish to the jamsa-latest release
@@ -370,4 +401,4 @@ jobs:
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Jamsa (latest build)" --notes "$NOTES" --latest
           fi
-          gh release upload "$TAG" release/*.zip --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber

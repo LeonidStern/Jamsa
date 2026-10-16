@@ -5,10 +5,11 @@
 #   build/bin/Release/validator build/VST3/Release/Jamsa.vst3
 #
 # Everything it needs is downloaded at configure time and linked statically: the
-# VST3 SDK with VSTGUI (MIT / BSD), Ogg, Opus and FLAC (BSD), and for the built-in
-# server miniupnpc and libnatpmp (BSD). To use local copies, pass
+# VST3 SDK with VSTGUI (MIT / BSD), Ogg, Opus and FLAC (BSD), Ableton Link (GPL v2
+# or later, header-only, with its asio-standalone) and for the built-in server
+# miniupnpc and libnatpmp (BSD). To use local copies, pass
 # -DFETCHCONTENT_SOURCE_DIR_<NAME>=/path for VST3SDK (with its vstgui4 folder),
-# OGG, OPUS, FLAC, MINIUPNP or LIBNATPMP.
+# OGG, OPUS, FLAC, LINK (with modules/asio-standalone), MINIUPNP or LIBNATPMP.
 #
 # The plug-in sends and plays Opus and FLAC only (NINJAM_NO_VORBIS): it sends
 # nothing in a room that uses Vorbis, and plays Vorbis intervals as silence.
@@ -121,6 +122,29 @@ endfunction()
 ninjam_fetch_codecs()
 
 # ---------------------------------------------------------------------------
+# Ableton Link (header-only): while Sync is on, Ableton Live (with its Link on)
+# follows the room's tempo, and its bars start with the intervals
+# ---------------------------------------------------------------------------
+FetchContent_Declare(link
+    GIT_REPOSITORY https://github.com/Ableton/link.git
+    GIT_TAG Link-4.1
+    GIT_SHALLOW TRUE
+    GIT_SUBMODULES modules/asio-standalone
+    SOURCE_SUBDIR include # no CMakeLists.txt there: download only, without Link's examples and tests
+)
+FetchContent_MakeAvailable(link)
+# AbletonLinkConfig.cmake defines the Ableton::Link target (include paths, platform and asio
+# definitions). It also sets CMAKE_CXX_STANDARD, which a function keeps to itself.
+function(ninjam_link_target)
+    include(${link_SOURCE_DIR}/AbletonLinkConfig.cmake)
+endfunction()
+ninjam_link_target()
+if(WIN32)
+    # Link's network code (its #pragma comment(lib) covers MSVC only)
+    set_property(TARGET Ableton::Link APPEND PROPERTY INTERFACE_LINK_LIBRARIES ws2_32 iphlpapi)
+endif()
+
+# ---------------------------------------------------------------------------
 # The NINJAM server from this repository, run on a background thread when the
 # user hosts a server (source/hostserver.cpp)
 # ---------------------------------------------------------------------------
@@ -180,6 +204,8 @@ smtg_add_vst3plugin(Jamsa
         source/hostserver.h
         source/hostsync.cpp
         source/hostsync.h
+        source/linksync.cpp
+        source/linksync.h
         source/editor.cpp
         source/editor.h
         source/views.cpp
@@ -188,16 +214,28 @@ smtg_add_vst3plugin(Jamsa
         source/uitext.h
         source/clipboard.cpp
         source/clipboard.h
+        source/textkeys.cpp
+        source/textkeys.h
+        source/textfield.cpp
+        source/textfield.h
         ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.cpp
         ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.h
 )
 target_compile_features(Jamsa PRIVATE cxx_std_17)
-target_link_libraries(Jamsa PRIVATE sdk vstgui_support ninjam_client ninjamsrv_embedded)
+target_link_libraries(Jamsa PRIVATE sdk vstgui_support ninjam_client ninjamsrv_embedded Ableton::Link)
+# asio makes some of its symbols visible to other modules unless told not to: this keeps Link's
+# and asio's code inside the plug-in, apart from the host's Link (Live's) and other plug-ins'
+target_compile_definitions(Jamsa PRIVATE ASIO_DISABLE_VISIBILITY=1)
 
 if(SMTG_LINUX)
-    # Export only the VST3 entry points, not the symbols of the libraries linked in,
-    # so they can't clash with another plug-in's copies in the host.
-    target_link_options(Jamsa PRIVATE "LINKER:--exclude-libs,ALL")
+    # Export only the VST3 entry points, not the symbols of the libraries linked in (nor the
+    # C++ library's templates, or Link's), so they can't clash with another plug-in's copies
+    # in the host.
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/jamsa_exports.map
+        "{\n  global: GetPluginFactory; ModuleEntry; ModuleExit;\n  local: *;\n};\n")
+    target_link_options(Jamsa PRIVATE "LINKER:--exclude-libs,ALL"
+        "LINKER:--version-script=${CMAKE_CURRENT_BINARY_DIR}/jamsa_exports.map")
+    set_property(TARGET Jamsa APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/jamsa_exports.map)
     # dlopen() keeps Pango loaded (see factory.cpp)
     target_link_libraries(Jamsa PRIVATE ${CMAKE_DL_LIBS})
     # the Copy buttons own X11's clipboard themselves (see clipboard.cpp); VSTGUI needs xcb too
@@ -205,6 +243,8 @@ if(SMTG_LINUX)
 endif()
 
 if(SMTG_MAC)
+    # the clipboard's text and the text fields' Cut, Copy, Paste, Select All (Objective-C++)
+    target_sources(Jamsa PRIVATE source/macos.mm)
     smtg_target_set_bundle(Jamsa
         BUNDLE_IDENTIFIER io.github.leonidstern.jamsa.vst3
         COMPANY_NAME "LeonidStern/ninjam"

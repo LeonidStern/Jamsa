@@ -32,6 +32,14 @@
   process() lines the intervals up with the host's bars, and the network
   thread votes the room to the host's tempo when it changes.
 
+  Ableton Link (linksync.h): while "Sync" is on in a room the plug-in is in
+  Link, and one instance in the program leads it: process() puts the room's
+  tempo and the intervals' beat on Link, so Live (with its Link on) follows
+  the room, and while Link has peers it leaves the intervals where they are
+  (no BarSync). The network thread still votes the room to the host's tempo
+  when it changes, and puts the room's tempo back on Link when the room
+  doesn't take it or another app set it (LinkTempoKeeper).
+
 */
 
 #ifndef _NINJAM_VST3_ENGINE_H_
@@ -51,6 +59,7 @@
 
 #include "click.h"
 #include "hostsync.h"
+#include "linksync.h"
 
 class NJClient;
 
@@ -120,11 +129,24 @@ struct Snapshot
   int tempoVotes = 0;        // votes for the host's tempo
   std::string syncNote;      // the host's tempo isn't the room's (see hostTempoNote)
 
+  // Ableton Link (linksync.h), while Sync is on in a room
+  LinkState linkState = LinkState::Off;
+  int linkPeers = 0;         // the other Link apps (Live, with its Link on)
+  double linkTempo = 0;      // the Link session's, 0 when not in Link
+  bool linkLeads = false;    // this instance leads Link, which has peers: Live's bars follow the intervals
+  bool linkAligned = false;  // the intervals start on Link's beat
+  double linkErrorMs = 0;    // the interval's beat minus Link's phase
+  double linkLatencyMs = 0;  // when the host's blocks are heard, after the plug-in's guess (Calibrator)
+  int linkJumps = 0, linkSteps = 0, linkRestores = 0;
+
   bool hosting = false;      // this instance hosts it
   bool hostBusy = false;     // starting or stopping
   int hostPort = 0;
   std::string hostPublicAddress, hostLocalAddress, hostNote;
   bool hostPortmapPending = false;
+  std::string hostLookedUpAddress; // from a "what's my IP" service, for when the router doesn't say
+  bool hostLookupPending = false;
+  bool hostJoinedFromInternet = false; // so the port is open, even if the router didn't say
   int hostUsers = 0;
   int hostedElsewherePort = 0; // another instance in this program hosts one
 
@@ -137,14 +159,14 @@ struct Settings
 {
   // the Opus bitrates (kbps) to pick from; 510 is libopus's stereo maximum
   static constexpr int OPUS_KBPS[] = { 64, 96, 128, 160, 256, 510 };
-  static constexpr int NUM_OPUS_KBPS = 6, DEFAULT_OPUS_KBPS = 128;
+  static constexpr int NUM_OPUS_KBPS = 6, DEFAULT_OPUS_KBPS = 510; // the best Opus there is, by default
   static int nearestOpusKbps(int kbps);
 
   std::string userName;
   std::string server;
   float inputVolume = 1.0f;
   float metronomeVolume = 0.5f;
-  bool metronomeMute = false;
+  bool metronomeMute = true; // off until you turn it on
   bool monitor = true;
   bool transmit = true;
   int opusKbps = DEFAULT_OPUS_KBPS; // what we send in Opus rooms; FLAC is lossless and ignores it
@@ -204,7 +226,7 @@ public:
   void setOpusKbps(int kbps);
   void setRoomCodec(const std::string &codec); // "opus" or "flac": the room's (!codec), while connected
   void setEditorSize(int width, int height);
-  void setFollowHostTempo(bool on);
+  void setFollowHostTempo(bool on); // Sync, and with it Ableton Link
   void setHostName(const std::string &name); // the host's name, for the editor
 
   enum RemoteField { RemoteVolume, RemotePan, RemoteMute, RemoteSolo };
@@ -213,12 +235,16 @@ public:
   // Text commands, for tests and automation (see plugin.cpp); returns the reply:
   //   connect host:port [name], disconnect, name X, host on|off, chat text (sent as typed),
   //   license accept|decline, transmit on|off, monitor on|off, metronome on|off,
-  //   bitrate 64|96|128|160|256|510, codec opus|flac, follow on|off, vote bpm|bpi N, status, users, chatlog,
-  //   syncnote, nextinterval
+  //   bitrate 64|96|128|160|256|510, codec opus|flac, follow on|off (Sync, with Link), vote bpm|bpi N,
+  //   status, users, chatlog, syncnote, nextinterval, synctip (the Sync button's tooltip)
   std::string command(const std::string &line);
 
   static std::string remoteKey(const std::string &user, int channel); // user without @address
   static std::string displayName(const std::string &user); // "alice@1.2.3.4" is "alice", "alice@1.2.3.4.2" "alice.2"
+  // the name a new instance starts with: the first name of the computer account's full name
+  // ("Leo Stern" is "Leo"), else its login name; "" if neither is known
+  static std::string defaultUserName();
+  static std::string firstName(const std::string &fullName); // "Leo Stern" is "Leo"
 
 private:
   void threadProc();
@@ -240,6 +266,8 @@ private:
   void pollHosting(Snapshot &snap);
   void checkCanSend(bool canSend);
   void followHostTempo();
+  void updateLink();
+  void releaseLink(); // stop leading Link, between two blocks
   void publish();
   int findUser(const std::string &name) const;
 
@@ -283,6 +311,9 @@ private:
   std::vector<float> m_bufL, m_bufR, m_spare;
   BarSync m_barSync;
   std::atomic<bool> m_follow { true }, m_barReset { false };
+  int64_t m_sampleTime = 0; // samples processed since setupProcessing()
+  std::unique_ptr<LinkSync> m_link;
+  std::atomic<bool> m_linkLeads { false }; // process() lines Link up with the intervals, and Link has peers
   // what the audio thread saw, for the network thread
   std::atomic<double> m_hostTempo { 0 }, m_barErrorMs { 0 };
   std::atomic<double> m_nextIntervalPpq { -1 };
@@ -304,6 +335,13 @@ private:
   double m_lastAudio = -10;
   TempoFollower m_tempoFollower;
   double m_noteSince = -1; // since when the host's tempo isn't the room's
+  // Link
+  bool m_armPending = false; // joined a room, or Sync went on: vote for the host's tempo, unless Live follows Link
+  LinkTempoKeeper m_linkKeeper;
+  LinkState m_linkState = LinkState::Off;
+  size_t m_linkPeers = 0;
+  double m_linkTempo = 0, m_lastLinkPoll = 0;
+  bool m_toldLinkHint = false, m_toldContested = false, m_toldLinkLeads = false;
 };
 
 } // namespace ninjam_vst3

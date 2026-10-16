@@ -171,7 +171,7 @@ private:
   ui::StripContainer *m_hostBar = nullptr;
   ui::FlatButton *m_host = nullptr;
   VSTGUI::CTextLabel *m_roomCount = nullptr, *m_hostHint = nullptr, *m_portText = nullptr;
-  ui::AddressBox *m_lan = nullptr, *m_wan = nullptr;
+  ui::AddressBox *m_wan = nullptr;
   ui::Led *m_portLed = nullptr;
 
   // the license, shown as a modal view while the server waits for an answer
@@ -184,6 +184,9 @@ private:
   bool m_licenseOpen = false;
   std::string m_licenseShown;
 
+  // Cut, Copy, Paste and Select All in the text boxes, while the frame is open
+  ui::TextShortcuts m_textShortcuts;
+
   // what the views show, to update them only on changes
   unsigned int m_usersRevision = ~0u, m_settingsRevision = ~0u;
   unsigned long long m_chatRevision = ~0ull;
@@ -195,7 +198,7 @@ private:
   bool m_syncing = false;       // setting controls from the engine: don't send them back
   ui::AddressBox *m_copied = nullptr; // says "Copied" until m_copiedUntil
   double m_copiedUntil = 0;
-  std::string m_lanShown, m_wanShown; // what the address boxes were laid out for
+  std::string m_wanShown; // what the address box was laid out for
 };
 
 } // namespace ninjam_vst3

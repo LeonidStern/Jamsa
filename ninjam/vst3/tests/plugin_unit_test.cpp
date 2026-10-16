@@ -13,11 +13,16 @@
   Tests for the parts of the plug-in that need no network or host: the saved
   state, reading the built-in server's port mapping messages, following the
   host (lining the intervals up with its bars, voting for its tempo, the
-  editor's note on its tempo), the metronome's click, and what the editor's
-  controls show and take.
+  editor's note on its tempo), the metronome's click, what the editor's
+  controls show and take, the text boxes' Cut, Copy, Paste and Select All
+  keys, and Ableton Link: the beat and phase math, when the blocks are heard
+  (the calibration), keeping the room's tempo on Link, the texts about it, and
+  one instance leading Link in real time while another in the same program
+  can't.
 
-  "plugin_unit_test clipboard" checks the Copy buttons' clipboard instead (on
-  Linux, with an X server: ctest runs it with xvfb-run).
+  "plugin_unit_test clipboard" checks the clipboard instead: the Copy buttons'
+  text, and the text a paste reads (on Linux, with an X server: ctest runs it
+  with xvfb-run).
 
 */
 
@@ -27,13 +32,17 @@
 #include <string.h>
 
 #include <algorithm>
+#include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "click.h"
 #include "engine.h"
 #include "hostserver.h"
 #include "hostsync.h"
+#include "linksync.h"
+#include "textkeys.h"
 #include "uitext.h"
 
 #if defined(__linux__)
@@ -94,16 +103,17 @@ static void test_state()
   Settings e;
   CHECK(e.deserialize(Settings().serialize()));
   CHECK(e.monitor && e.transmit && e.inputVolume == 1.0f && e.editorWidth == 0);
+  CHECK(Settings().metronomeMute); // the metronome starts off
   // the size of the editor before its 720 x 330 layout opens at the new default
   Settings older;
   CHECK(older.deserialize("NINJAM-VST3-STATE 1\neditor_size=960x640\n"));
   CHECK(older.editorWidth == 0 && older.editorHeight == 0);
-  CHECK_EQ(e.opusKbps, 128);
+  CHECK_EQ(e.opusKbps, 510);
 
   // the Opus bitrate is one of the choices: the nearest one, or the default for junk
   struct { const char *saved; int kbps; } bitrates[] = {
     { "64", 64 }, { "96", 96 }, { "160", 160 }, { "256", 256 }, { "510", 510 }, { "300", 256 }, { "999999999999", 510 },
-    { "-5", 64 }, { "abc", 128 }, { "", 128 }, { "128x", 128 },
+    { "-5", 64 }, { "abc", 510 }, { "", 510 }, { "128x", 510 }, { "128", 128 },
   };
   for (auto &b : bitrates)
   {
@@ -114,7 +124,7 @@ static void test_state()
   // a state saved before the bitrate was a setting
   Settings old;
   CHECK(old.deserialize("NINJAM-VST3-STATE 1\nuser=x\n"));
-  CHECK_EQ(old.opusKbps, 128);
+  CHECK_EQ(old.opusKbps, 510);
 
   // Sync (following the host): on by default, and in states saved before it was a setting
   CHECK(Settings().followHostTempo);
@@ -156,6 +166,40 @@ static void test_portmap_messages()
   CHECK(!show);
   HostServer::parseLogLine("Warning: could not open the log file", st, &show);
   CHECK(show);
+
+  // a player who joins from the internet shows the port is open, one from the local network doesn't
+  CHECK(!st.joinedFromInternet);
+  HostServer::parseLogLine("192.168.1.20: Accepted user: Ana", st, &show);
+  CHECK(!st.joinedFromInternet && !show);
+  HostServer::parseLogLine("127.0.0.1: Accepted user: Ana", st, &show);
+  CHECK(!st.joinedFromInternet);
+  HostServer::parseLogLine("203.0.113.9: Refusing user Ana, invalid login/password", st, &show);
+  CHECK(!st.joinedFromInternet);
+  HostServer::parseLogLine("203.0.113.9: Accepted user: Ana", st, &show);
+  CHECK(st.joinedFromInternet && !show);
+
+  CHECK(HostServer::isPublicIPv4("89.114.98.123"));
+  CHECK(HostServer::isPublicIPv4("172.32.0.1"));
+  CHECK(HostServer::isPublicIPv4("100.128.0.1"));
+  for (const char *a : { "10.0.0.5", "172.16.0.1", "172.31.255.255", "192.168.1.1", "127.0.0.1", "169.254.3.4",
+                         "100.64.0.9", "100.127.255.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "", "1.2.3", "a.b.c.d" })
+    CHECK(!HostServer::isPublicIPv4(a));
+
+  // the public address from a "what's my IP" service
+  std::string ip;
+  CHECK(HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n89.114.98.123\n", &ip));
+  CHECK_EQ(ip, "89.114.98.123");
+  CHECK(HostServer::parseWhatsMyIpReply("HTTP/1.0 200 OK\r\n\r\n203.0.113.7", &ip));
+  CHECK_EQ(ip, "203.0.113.7");
+  ip = "kept";
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 503 Service Unavailable\r\n\r\n1.2.3.4\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n\r\n<html>1.2.3.4</html>", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n\r\n1.2.3.256\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n\r\n1.2.3\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n\r\n2001:db8::1\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("", &ip));
+  CHECK_EQ(ip, "kept");
 }
 
 static bool near(double a, double b, double eps = 1e-9) { return fabs(a - b) <= eps; }
@@ -523,6 +567,12 @@ static void test_host_note()
   CHECK_EQ(hostTempoNote("Ableton Live 12", 95.004, 95, true), "");
   CHECK_EQ(hostTempoNote("Ableton Live 12", 0, 95, true), "");
   CHECK_EQ(hostTempoNote("Ableton Live 12", 120, 0, true), "");
+  // where Link would lead the host (Sync is on, and this instance leads Link or would)
+  CHECK_EQ(hostTempoNote("Ableton Live 12 Suite", 120, 95, true, true), "Live is at 120 BPM, the room at 95: turn on Link in Live, or set it to 95");
+  CHECK_EQ(hostTempoNote("Bitwig Studio", 120, 95, true, true),
+           "Bitwig Studio is at 120 BPM, the room at 95: turn on its Link if it has one, or set its tempo to 95");
+  CHECK_EQ(hostTempoNote("Ableton Live 12 Suite", 120, 95, false, true), "Live is at 120 BPM, the room at 95: set Live to 95, or turn on Sync");
+  CHECK_EQ(hostTempoNote("Ableton Live 12", 95, 95, true, true), "");
 
   // the transport bar's name for the host
   CHECK_EQ(hostChipName("Ableton Live 12 Suite"), "Live");
@@ -545,6 +595,506 @@ static void test_host_note()
   CHECK(bar == 9 && beat == 2 && !onBeat);
 }
 
+
+// ---------------------------------------------------------------------------
+// Ableton Link
+// ---------------------------------------------------------------------------
+
+static void test_link_math()
+{
+  using namespace linkmath;
+  CHECK(near(intervalBeat(0, 96000, 4), 0));
+  CHECK(near(intervalBeat(48000, 96000, 4), 2));
+  CHECK(near(intervalBeat(96000, 96000, 4), 4)); // the next interval starts with this sample
+  CHECK(near(intervalBeat(10, 0, 4), 0));
+
+  CHECK(near(wrapPhase(0.1, 4), 0.1));
+  CHECK(near(wrapPhase(3.9, 4), -0.1));
+  CHECK(near(wrapPhase(-3.9, 4), 0.1));
+  CHECK(near(wrapPhase(4.1, 4), 0.1));
+  CHECK(near(wrapPhase(6.1, 4), -1.9));
+  CHECK(near(wrapPhase(2.0, 4), -2.0)); // [-q/2, q/2)
+  CHECK(near(wrapPhase(-2.0, 4), -2.0));
+  CHECK(near(wrapPhase(15.999, 16), -0.001));
+  CHECK(near(wrapPhase(0.75, 1), -0.25));
+  CHECK(near(wrapPhase(1, 0), 0));
+
+  CHECK(near(beatsToMs(1, 120), 500));
+  CHECK(near(msToBeats(500, 120), 1));
+  CHECK(near(beatsToMs(4, 95), 4 * 60000.0 / 95));
+
+  // the room's interval start (beat 0) on Link: a jump to start with, or when the beat is far
+  // off; small steps for small errors
+  Correction c = phaseCorrection(msToBeats(0.1, 120), 120, true, 0);
+  CHECK(c.kind == Correction::Jump && near(c.shift, msToBeats(0.1, 120)));
+  c = phaseCorrection(msToBeats(-40, 120), 120, false, 1e9);
+  CHECK(c.kind == Correction::Jump && near(c.shift, msToBeats(-40, 120)));
+  c = phaseCorrection(msToBeats(0.3, 120), 120, false, 1e9);
+  CHECK(c.kind == Correction::None);
+  const double since = STEP_EVERY_MS + 1;
+  c = phaseCorrection(msToBeats(5, 120), 120, false, since);
+  CHECK(c.kind == Correction::Step && near(c.shift, msToBeats(STEP_MS, 120)));
+  c = phaseCorrection(msToBeats(-5, 120), 120, false, since);
+  CHECK(c.kind == Correction::Step && near(c.shift, -msToBeats(STEP_MS, 120)));
+  c = phaseCorrection(msToBeats(0.8, 120), 120, false, since);
+  CHECK(c.kind == Correction::Step && near(c.shift, msToBeats(0.8, 120)));
+  c = phaseCorrection(msToBeats(5, 120), 120, false, STEP_EVERY_MS - 100); // the last step was too recent
+  CHECK(c.kind == Correction::None);
+  c = phaseCorrection(msToBeats(29, 120), 120, false, since);
+  CHECK(c.kind == Correction::Step);
+  // a step only once Link shows the plug-in the network's changes again, not its own last one
+  CHECK(linkGraceMs() > 0 && STEP_EVERY_MS > linkGraceMs());
+
+  // The audio clock runs fast or slow against Link's (by up to 0.1%): after the first jump,
+  // steps keep the interval starts on Link's beats within a little more than a step, with no jump.
+  for (double ppm : { 50.0, -300.0, 1000.0 })
+  {
+    const double bpm = 95, bpi = 16, blockMs = 512 / 48.0;
+    double linkOffset = 1.2345; // Link's beat at time 0
+    double sinceStep = 1e9, worst = 0;
+    int jumps = 0, steps = 0;
+    for (int i = 0; i < 60 * 1000 * 10 / blockMs; i ++) // ten minutes
+    {
+      const double t = i * blockMs / 1000.0;
+      const double ours = fmod(t * (1 + ppm * 1e-6) * bpm / 60, bpi);
+      const double link = linkOffset + t * bpm / 60;
+      const double e = wrapPhase(ours - link, bpi);
+      if (i > 0) worst = std::max(worst, fabs(beatsToMs(e, bpm)));
+      const Correction k = phaseCorrection(e, bpm, i == 0, sinceStep);
+      sinceStep += blockMs;
+      if (k.kind == Correction::None) continue;
+      linkOffset += k.shift;
+      sinceStep = 0;
+      (k.kind == Correction::Jump ? jumps : steps)++;
+    }
+    printf("drift %+.0f ppm: %d jump, %d steps, worst %.2f ms\n", ppm, jumps, steps, worst);
+    CHECK_EQ(jumps, 1);
+    CHECK(steps > 0);
+    CHECK(worst < STEP_MS + DEADBAND_MS);
+  }
+
+  MoveCounter m;
+  CHECK(!m.add(0));
+  CHECK(!m.add(5));
+  CHECK(m.add(10)); // three in 20 seconds
+  m.reset();
+  CHECK(!m.add(0));
+  CHECK(!m.add(15));
+  CHECK(!m.add(30)); // the first is too old
+  CHECK(m.add(31));
+  CHECK(m.add(32));
+}
+
+// When blocks start on Link's clock (BlockClock), from the times process() is called: calls that
+// come late (a busy machine, a timer that wakes up late, the host catching up after a stall)
+// don't move it; the sound card's clock drifting from Link's does, and so does the sample count
+// losing time.
+static void test_block_clock()
+{
+  using linkmath::BlockClock;
+  const double srate = 48000, frames = 512, blockUs = frames * 1e6 / srate;
+  const double t0 = 5e9; // Link's clock at sample 0
+  unsigned int rng = 1;
+  auto uniform = [&]() {
+    rng = rng * 1103515245u + 12345u;
+    return ((rng >> 8) & 0xffff) / 65536.0;
+  };
+  const long minute = (long)(60 * srate / frames);
+
+  // calls 0.2 to 15 ms late (a 15.6 ms Windows timer), and 80 ms late every 2 seconds, then
+  // back to back until the host catches up: the clock stays within 1 ms of the earliest calls
+  // (the earliest of two seconds varies by about that here), far from a jump (JUMP_MS)
+  {
+    BlockClock c;
+    double lo = 1e18, hi = -1e18, late = 0;
+    for (long i = 0; i < minute; i ++)
+    {
+      const double nominal = i * blockUs;
+      late = std::max(late - blockUs, 0.0) + 200 + 15000 * uniform(); // what the stall left, and this call's
+      if (i % 188 == 100) late += 80000;
+      const double off = c.update(nominal, t0 + nominal + late, blockUs) - t0;
+      if (nominal >= 3e6)
+      {
+        lo = std::min(lo, off);
+        hi = std::max(hi, off);
+      }
+    }
+    printf("block clock, calls 0.2 to 15 ms late and stalls: %.3f to %.3f ms after the earliest\n", (lo - 200) / 1000,
+           (hi - 200) / 1000);
+    CHECK(lo >= 200 - 1 && hi - 200 < 1000);
+  }
+
+  // a sound card 100 ppm slow against Link's clock: it follows, a little behind (the window and
+  // the smoothing: a lag that stays the same, which the Calibrator takes up with the latency)
+  {
+    BlockClock c;
+    double worst = 0;
+    for (long i = 0; i < minute; i ++)
+    {
+      const double nominal = i * blockUs, drift = nominal * 100e-6;
+      const double off = c.update(nominal, t0 + nominal + drift + 200 + 2000 * uniform(), blockUs) - t0;
+      if (nominal >= 3e6) worst = std::max(worst, fabs(off - drift - 200));
+    }
+    printf("block clock, a sound card 100 ppm slow: %.3f ms behind at most\n", worst / 1000);
+    CHECK(worst < 400);
+  }
+
+  // the sample count loses 100 ms (the host dropped audio): there once the window is past
+  {
+    BlockClock c;
+    double off = 0;
+    long moved = -1;
+    for (long i = 0; i < minute / 2; i ++)
+    {
+      const double nominal = i * blockUs;
+      const double lost = i >= minute / 4 ? 100000 : 0;
+      off = c.update(nominal, t0 + nominal + lost + 200 + 1000 * uniform(), blockUs) - t0;
+      if (i < minute / 4) CHECK(off < 200 + 1000);
+      else if (moved < 0 && off > 100000) moved = i;
+    }
+    CHECK(moved > 0 && (moved - minute / 4) * blockUs <= (BlockClock::WINDOW_MS + 300) * 1000);
+    CHECK(fabs(off - 100000 - 200) < 1000);
+  }
+
+  // a first call 20 ms late doesn't stay; after reset() (a new sample rate) it starts again
+  {
+    BlockClock c;
+    CHECK(near(c.update(0, t0 + 20000, blockUs) - t0, 20000));
+    CHECK(near(c.update(blockUs, t0 + blockUs + 200, blockUs) - t0, 200));
+    c.reset();
+    CHECK(near(c.update(1e6, t0 + 3e6, blockUs) - t0, 2e6));
+  }
+}
+
+// Rounds of blocks into a Calibrator, as LinkSync feeds it: `residual(offset)` is how far the
+// host's beat is after Link's at the time the plug-in takes a block to be heard (its guess plus
+// the offset). Returns the rounds that moved the offset.
+template <typename F> static int calibrate(linkmath::Calibrator &c, int rounds, F residual, double noiseMs = 0.1)
+{
+  const double blockMs = 512 / 48.0;
+  int moved = 0;
+  unsigned int rng = 12345;
+  for (int r = 0; r < rounds; r ++)
+  {
+    const double res = residual(c.offsetMs());
+    for (double ms = 0; ms < linkmath::Calibrator::WINDOW_MS + blockMs; ms += blockMs)
+    {
+      rng = rng * 1103515245u + 12345u;
+      const double noise = ((rng >> 16) % 1000 / 999.0 - 0.5) * 2 * noiseMs;
+      if (c.add(res + noise, blockMs))
+      {
+        moved++;
+        break; // LinkSync waits for Link to line up at the new time, and settle
+      }
+    }
+  }
+  return moved;
+}
+
+static void test_calibrator()
+{
+  using linkmath::Calibrator;
+  // Live follows Link: its beat for a block is Link's when the block is really heard, 7.5 ms
+  // after the plug-in's guess. One round measures it, the next ones find it in line.
+  Calibrator c;
+  CHECK_EQ(calibrate(c, 1, [](double offset) { return 7.5 - offset; }), 1);
+  CHECK(fabs(c.offsetMs() - 7.5) < 0.2);
+  CHECK_EQ(calibrate(c, 5, [](double offset) { return 7.5 - offset; }), 0);
+  CHECK(!c.gaveUp() && c.rounds() == 1);
+  // heard before the guess (a host that passes an early position): a negative offset
+  Calibrator early;
+  calibrate(early, 4, [](double offset) { return -3.0 - offset; });
+  CHECK(fabs(early.offsetMs() + 3.0) < 0.2 && !early.gaveUp());
+  // a host that doesn't quite follow at once (it catches up on Link's move by 80% when measured):
+  // more rounds, still there
+  Calibrator slow;
+  double seen = 0;
+  calibrate(slow, 8, [&](double offset) {
+    seen += 0.8 * (offset - seen);
+    return 12.0 - seen;
+  });
+  CHECK(fabs(slow.offsetMs() - 12.0) < 0.6 && !slow.gaveUp());
+  printf("calibration: %.2f ms in %d rounds (a host that catches up on Link by 80%% when measured)\n", slow.offsetMs(), slow.rounds());
+  // in line: nothing moves
+  Calibrator none;
+  CHECK_EQ(calibrate(none, 5, [](double) { return 0.1; }), 0);
+  CHECK(near(none.offsetMs(), 0));
+
+  // The host's beat doesn't follow Link (its own Link is off, and another app is the peer):
+  // moving the time Link lines up at changes nothing, so the second round gives up, back to 0.
+  Calibrator off;
+  CHECK_EQ(calibrate(off, 2, [](double) { return 9.0; }), 2);
+  CHECK(off.gaveUp());
+  CHECK(near(off.offsetMs(), 0));
+  CHECK_EQ(calibrate(off, 3, [](double) { return 9.0; }), 0); // until reset()
+  off.reset();
+  CHECK(!off.gaveUp());
+
+  // a beat that moves within a round (a loop, the playhead): no round counts
+  Calibrator jumpy;
+  int moved = 0;
+  for (int r = 0; r < 5; r ++)
+    for (int i = 0; i < 100; i ++)
+      if (jumpy.add(i < 50 ? 5.0 : 9.0, 512 / 48.0)) moved++;
+  CHECK_EQ(moved, 0);
+  CHECK(near(jumpy.offsetMs(), 0));
+  // skipped blocks start the round again
+  Calibrator skipped;
+  for (int i = 0; i < 1000; i ++)
+  {
+    if (skipped.add(5.0, 512 / 48.0)) moved++;
+    if (i % 50 == 49) skipped.skip();
+  }
+  CHECK_EQ(moved, 0);
+  // never more than MAX_MS from the guess
+  Calibrator far;
+  calibrate(far, 1, [](double offset) { return 95.0 - offset; });
+  CHECK(far.offsetMs() <= Calibrator::MAX_MS);
+}
+
+static void test_tempo_keeper()
+{
+  typedef LinkTempoKeeper::Action A;
+  const double D = LinkTempoKeeper::DELAY + 0.05;
+  // update() every 50 ms from `from` to `to` with the same inputs, until it acts (the plug-in
+  // puts the room's tempo back on Link then): the action, with its time
+  struct Took { double t; A a; };
+  auto run = [](LinkTempoKeeper &k, double from, double to, double link, double room, int server, double host, double hostChanged,
+                size_t peers = 1) {
+    std::vector<Took> out;
+    for (double t = from; t < to - 1e-9 && out.empty(); t += 0.05)
+    {
+      const A a = k.update(t, link, room, server, host, hostChanged, peers);
+      if (a.kind != A::None) out.push_back({ t, a });
+    }
+    return out;
+  };
+
+  LinkTempoKeeper k;
+  // Link has the room's tempo, and Live follows it: nothing
+  CHECK(run(k, 0, 5, 120, 120, 120, 120, -100).empty());
+  // no peers: nobody to lead
+  CHECK(run(k, 5, 10, 133, 120, 120, 120, -100, 0).empty());
+
+  // another app sets Link's tempo, and the host (whose Link is off) stays at the room's: Link
+  // gets the room's back, DELAY later
+  auto a = run(k, 10, 12, 133, 120, 120, 120, -100);
+  CHECK(a.size() == 1 && a[0].a.why == A::Foreign && a[0].t >= 10 + LinkTempoKeeper::DELAY - 1e-6 && a[0].t < 10 + D);
+  // the same when the host doesn't say its tempo
+  a = run(k, 12, 14, 133, 120, 120, 0, -100);
+  CHECK(a.size() == 1 && a[0].a.why == A::Foreign);
+
+  // the plug-in joined Live's Link session, which has Live's tempo, the one Live has had all
+  // along: the room's goes to Link (no vote)
+  a = run(k, 40, 42, 133, 120, 120, 133, -100);
+  CHECK(a.size() == 1 && a[0].a.why == A::Earlier);
+
+  // the room's tempo changes (a vote passed): Link gets it at the next interval, so nothing
+  CHECK(run(k, 42, 60, 120, 120, 100, 120, -100).empty());
+
+  // Live's tempo is dragged to 130: nothing while it moves, nor while the vote for it waits
+  LinkTempoKeeper v;
+  CHECK(run(v, 0, 1, 130, 120, 120, 130, 0.9).empty());
+  CHECK(run(v, 1, 2, 130, 120, 120, 130, 0.9).empty()); // still (the TempoFollower votes at 1.9)
+  v.voted(1.9, 130);
+  CHECK(run(v, 2, 1.9 + LinkTempoKeeper::VOTE_WAIT - 0.05, 130, 120, 120, 130, 0.9).empty());
+  // the room takes it: Link gets it at the next interval
+  CHECK(run(v, 6.85, 20, 130, 120, 130, 130, 0.9).empty());
+  CHECK(run(v, 20, 25, 130, 130, 130, 130, 0.9).empty());
+  CHECK_EQ(v.restores(), 0);
+  // later Live goes to 130.3, the room's BPM: back to the room's (the vote for 130 was taken)
+  a = run(v, 30, 33, 130.3, 130, 130, 130.3, 29.9);
+  CHECK(a.size() == 1 && a[0].a.why == A::SameBpm);
+
+  // a vote the room doesn't take: back to the room's VOTE_WAIT after it
+  LinkTempoKeeper n;
+  CHECK(run(n, 0, 1.5, 130, 120, 120, 130, 0.5).empty());
+  n.voted(1.5, 130);
+  a = run(n, 1.5, 10, 130, 120, 120, 130, 0.5);
+  CHECK(a.size() == 1 && a[0].a.why == A::NotTaken);
+  if (!a.empty()) CHECK(a[0].t >= 1.5 + LinkTempoKeeper::VOTE_WAIT - 1e-6 && a[0].t < 1.5 + LinkTempoKeeper::VOTE_WAIT + 0.06);
+  // dragged again to the same tempo: a vote again (the TempoFollower), and the wait again
+  n.voted(12, 130);
+  CHECK(run(n, 12, 16.9, 130, 120, 120, 130, 11).empty());
+
+  // a tempo that rounds to the room's, or one no room can have: no vote, back to the room's once
+  // the host's tempo is still
+  LinkTempoKeeper r;
+  CHECK(run(r, 0, 1.2, 120.3, 120, 120, 120.3, 0).empty());
+  a = run(r, 1.2, 3, 120.3, 120, 120, 120.3, 0);
+  CHECK(a.size() == 1 && a[0].a.why == A::SameBpm && a[0].t >= LinkTempoKeeper::HOLD - 1e-6);
+  a = run(r, 3, 6, 30, 120, 120, 30, 2.9);
+  CHECK(a.size() == 1 && a[0].a.why == A::OutOfRange);
+  a = run(r, 6, 9, 420, 120, 120, 420, 5.9);
+  CHECK(a.size() == 1 && a[0].a.why == A::OutOfRange);
+  CHECK_EQ(r.restores(), 3);
+  CHECK(!r.contested());
+
+  // something keeps putting its own tempo on Link: after FOREIGN_RESTORES restores in
+  // FOREIGN_WINDOW seconds, the plug-in stops leading Link
+  LinkTempoKeeper f;
+  int restores = 0;
+  for (int i = 0; i < 6; i ++)
+  {
+    const double t = i * 3.0;
+    restores += (int)run(f, t, t + 1, 99, 120, 120, 120, -100).size();
+    CHECK(run(f, t + 1, t + 3, 120, 120, 120, 120, -100).empty());
+  }
+  CHECK_EQ(restores, LinkTempoKeeper::FOREIGN_RESTORES);
+  CHECK(f.contested());
+  f.reset();
+  CHECK(!f.contested());
+  // spread out over more than the window, it's not a fight
+  LinkTempoKeeper g;
+  for (int i = 0; i < 6; i ++)
+  {
+    const double t = i * 12.0;
+    CHECK_EQ(run(g, t, t + 1, 99, 120, 120, 120, -100).size(), (size_t)1);
+  }
+  CHECK(!g.contested());
+}
+
+static void test_link_texts()
+{
+  CHECK_EQ(linkHint("Ableton Live 12 Suite"), "Turn on Link in Live: then Live takes the room's tempo, and its bars start with the intervals.");
+  CHECK_EQ(linkHint("Bitwig Studio"),
+           "Turn on Link in Bitwig Studio if it has Link: then it takes the room's tempo, and its bars start with the intervals.");
+  CHECK_EQ(linkHint(""), "Turn on Link in your DAW if it has Link: then it takes the room's tempo, and its bars start with the intervals.");
+
+  const std::string live = "Ableton Live 12 Suite";
+  const std::string plain = "Sync with Live: when you change its tempo, vote the room to it; and while it plays, start the "
+                            "intervals on its bars (a multiple of BPI beats from bar 1)";
+  CHECK_EQ(syncTooltip(live, LinkState::Off, 0), plain);
+  CHECK_EQ(syncTooltip(live, LinkState::Leading, 1),
+           "Sync with Live through Link: Live takes the room's tempo, and its bars start with the intervals; when you change "
+           "Live's tempo, you vote the room to it");
+  // out of a room (not in Link yet)
+  CHECK_EQ(syncTooltip(live, LinkState::Waiting, 0),
+           plain + ". In a room, with Link on in Live, Live takes the room's tempo instead, and its bars start with the intervals");
+  CHECK_EQ(syncTooltip("Bitwig Studio", LinkState::Waiting, 0),
+           "Sync with Bitwig Studio: when you change its tempo, vote the room to it; and while it plays, start the intervals on "
+           "its bars (a multiple of BPI beats from bar 1). In a room, with Link on in Bitwig Studio (if it has Link), it takes the "
+           "room's tempo instead, and its bars start with the intervals");
+  // no Link app: say to turn it on in Live
+  CHECK_EQ(syncTooltip(live, LinkState::Leading, 0),
+           "Turn on Link in Live: then Live takes the room's tempo, and its bars start with the intervals. Until then, Sync votes "
+           "the room to Live's tempo when you change it, and starts the intervals on its bars while it plays");
+  CHECK_EQ(syncTooltip(live, LinkState::OtherInstance, 1), plain + ". Another Jamsa in this set leads Link");
+  CHECK_EQ(syncTooltip(live, LinkState::Contested, 1),
+           plain + ". Another app on the network keeps leading Link, so this one stopped: turn Sync off and on to lead it again");
+  CHECK_EQ(syncTooltip(live, LinkState::Unavailable, 0), plain + ". Link couldn't start here");
+  CHECK_EQ(syncTooltip("REAPER", LinkState::Leading, 1).compare(0, 31, "Sync with REAPER through Link: "), 0);
+}
+
+// Link for real (Link's own threads, in this program): one instance leads it, and the room's
+// tempo and intervals go to it in real time; a second instance can't lead it at the same time,
+// and leads it once the first stops. Link is on only while an instance uses it.
+static void test_link_sync()
+{
+  CHECK(!LinkSync::enabledInProgram());
+  {
+    LinkSync a, b;
+    CHECK(!a.drive()); // Sync is off: not in Link
+    CHECK(!LinkSync::enabledInProgram() && a.numPeers() == 0 && a.sessionTempo() == 0);
+    a.use(true);
+    b.use(true);
+    CHECK(LinkSync::enabledInProgram() && a.inUse() && b.inUse());
+    CHECK(LinkSync::enabledFor() >= 0 && LinkSync::enabledFor() < 5);
+    CHECK(a.drive() && a.driving());
+    CHECK(a.drive()); // again: still
+    CHECK(!b.drive() && !b.driving());
+    CHECK(LinkSync::otherInstanceDrives(&b) && !LinkSync::otherInstanceDrives(&a));
+
+    const int srate = 48000, frames = 480;
+    LinkSync::Block block;
+    block.frames = frames;
+    block.sampleRate = srate;
+    LinkSync::Interval iv;
+    iv.running = true;
+    iv.bpi = 4;
+    iv.bpm = 100;
+    iv.len = 60 * srate * iv.bpi / 100;
+    iv.pos = 1234;
+    LinkSync::Host host; // a host that doesn't say where it is
+    int leads = 0, blocks = 0;
+    // in real time, with calls late now and then (a timer that wakes up late, a busy machine),
+    // and the next ones back to back until it catches up
+    auto run = [&](LinkSync &l, double seconds) {
+      const auto start = std::chrono::steady_clock::now();
+      for (int i = 0; i < seconds * srate / frames; i ++)
+      {
+        leads += l.process(block, iv, host) ? 1 : 0;
+        blocks++;
+        block.sampleTime += frames;
+        iv.pos += frames;
+        if (iv.pos >= iv.len) iv.pos -= iv.len;
+        std::this_thread::sleep_until(start + std::chrono::microseconds((long long)((i + 1) * 1e6 * frames / srate)));
+        if (i % 7 == 3) std::this_thread::sleep_for(std::chrono::milliseconds(i % 21 == 3 ? 40 : 12));
+      }
+    };
+    run(a, 1.0);
+    CHECK(near(a.sessionTempo(), 100, 1e-6));
+    CHECK(a.jumps() >= 1);
+    CHECK(a.aligned());
+    CHECK(fabs(a.lastErrorMs()) < 2.0);
+    // Link leads the host's bars only with another Link app (Live with its Link on) there
+    CHECK(a.numPeers() > 0 ? leads > 0 : leads == 0);
+    printf("Link: tempo %.3f, error %.3f ms, %d jumps, %d steps, %d peers\n", a.sessionTempo(), a.lastErrorMs(), a.jumps(), a.steps(),
+           (int)a.numPeers());
+
+    // the other instance's process() leaves Link alone
+    CHECK(!b.process(block, iv, host));
+    CHECK_EQ(b.jumps(), 0);
+
+    // the room's tempo and BPI change at an interval: Link follows, and the beat lines up again
+    const int jumps = a.jumps();
+    iv.bpm = 120;
+    iv.bpi = 8;
+    iv.len = 60 * srate * iv.bpi / 120;
+    iv.pos = 0;
+    run(a, 1.0);
+    CHECK(near(a.sessionTempo(), 120, 1e-6));
+    CHECK_EQ(a.jumps(), jumps + 1);
+    CHECK(a.aligned());
+
+    // the room's tempo back on Link (after something else changed it)
+    a.restoreTempo();
+    CHECK(a.restorePending());
+    run(a, 0.2);
+    CHECK(!a.restorePending());
+    CHECK(near(a.sessionTempo(), 120, 1e-6));
+
+    // no intervals (not in a room yet, or no audio): Link is left alone
+    iv.running = false;
+    CHECK(!a.process(block, iv, host));
+    iv.running = true;
+
+    // the first stops leading; the second leads from where Link is
+    a.release();
+    CHECK(!a.driving() && !LinkSync::otherInstanceDrives(&b));
+    CHECK(!a.process(block, iv, host));
+    CHECK(b.drive());
+    iv.bpm = 90;
+    iv.len = 60 * srate * iv.bpi / 90;
+    iv.pos = 0;
+    run(b, 0.5);
+    CHECK(near(b.sessionTempo(), 90, 1e-6));
+    CHECK(near(a.sessionTempo(), 90, 1e-6)); // one Link in the program
+    CHECK(b.jumps() >= 1 && b.aligned());
+
+    // Sync off in both: not in Link at all
+    a.use(false);
+    CHECK(LinkSync::enabledInProgram());
+    b.use(false); // also stops leading it
+    CHECK(!b.driving() && !LinkSync::enabledInProgram() && b.sessionTempo() == 0);
+    CHECK(!LinkSync::otherInstanceDrives(nullptr));
+    // and again
+    a.use(true);
+    CHECK(LinkSync::enabledInProgram() && a.drive());
+  }
+  CHECK(!LinkSync::enabledInProgram()); // the last instance gone
+}
+
 static void test_names()
 {
   CHECK_EQ(Engine::displayName("alice@1.2.3.x"), "alice");
@@ -557,6 +1107,26 @@ static void test_names()
   CHECK_EQ(Engine::displayName("guest@::ffff:127.0.0.1"), "guest");
   CHECK_EQ(Engine::remoteKey("Guest@127.0.0.1.2", 0), "guest.2/0");
   CHECK_EQ(Engine::remoteKey("Alice@1.2.3.x", 2), "alice/2");
+
+  // the name a new instance starts with, from the computer account
+  CHECK_EQ(Engine::firstName("Leo Stern"), "Leo");
+  CHECK_EQ(Engine::firstName("  J\xc3\xb6rg  M\xc3\xbcller "), "J\xc3\xb6rg");
+  CHECK_EQ(Engine::firstName("leo"), "leo");
+  CHECK_EQ(Engine::firstName("leo@example.com"), "leo");
+  CHECK_EQ(Engine::firstName(""), "");
+  CHECK_EQ(Engine::firstName(std::string(40, 'a')), std::string(32, 'a'));
+  CHECK(!Engine::defaultUserName().empty()); // the test runs as some account
+  {
+    Engine en;
+    const std::string def = en.getSettings().userName;
+    CHECK_EQ(def, Engine::defaultUserName());
+    Settings saved; // a set saved before a name was typed keeps the default
+    en.setSettings(saved);
+    CHECK_EQ(en.getSettings().userName, def);
+    saved.userName = "typed";
+    en.setSettings(saved);
+    CHECK_EQ(en.getSettings().userName, "typed");
+  }
 }
 
 // The click, rendered as the engine does: in blocks of any size that stop at the end of each
@@ -787,6 +1357,57 @@ static void test_uitext()
   // the BPI list holds the room's usual choices, in order
   CHECK_EQ((int)(sizeof(BPI_CHOICES) / sizeof(BPI_CHOICES[0])), NUM_BPI_CHOICES);
   for (int i = 1; i < NUM_BPI_CHOICES; i++) CHECK(BPI_CHOICES[i] > BPI_CHOICES[i - 1]);
+  CHECK_EQ(BPI_CHOICES[0], 2); // the server's least
+  CHECK_EQ(BPI_CHOICES[NUM_BPI_CHOICES - 1], 64); // and its most
+}
+
+static void test_textkeys()
+{
+  using namespace textkeys;
+
+  // Cmd (macOS) or Ctrl (elsewhere) with X, C, V, A; nothing else held
+  CHECK(commandFor('x', true, false, false, false) == Command::Cut);
+  CHECK(commandFor('c', true, false, false, false) == Command::Copy);
+  CHECK(commandFor('v', true, false, false, false) == Command::Paste);
+  CHECK(commandFor('a', true, false, false, false) == Command::SelectAll);
+  CHECK(commandFor('c', false, false, false, false) == Command::None); // typing a c
+  CHECK(commandFor('z', true, false, false, false) == Command::None);
+  CHECK(commandFor(0, true, false, false, false) == Command::None);
+  CHECK(commandFor('v', true, true, false, false) == Command::None);  // Shift: another shortcut
+  CHECK(commandFor('c', true, false, true, false) == Command::None);  // AltGr+C types a letter (Polish c-acute)
+  CHECK(commandFor('a', true, false, false, true) == Command::None);  // Cmd+Ctrl, Ctrl+Win
+  CHECK(commandFor('x', false, false, false, true) == Command::None); // Ctrl alone on macOS
+
+  // the letter of what a key types: either case, or the control character Ctrl types
+  CHECK(letterOf('c') == 'c' && letterOf('C') == 'c' && letterOf('v') == 'v' && letterOf('X') == 'x');
+  CHECK(letterOf(3) == 'c' && letterOf(22) == 'v' && letterOf(24) == 'x' && letterOf(1) == 'a');
+  CHECK(letterOf(0) == 0 && letterOf('1') == 0 && letterOf(' ') == 0 && letterOf(0x441) == 0 && letterOf(27) == 0);
+  CHECK(commandFor(letterOf(22), true, false, false, false) == Command::Paste); // a host that hands on Ctrl+V as 0x16
+
+  // the Latin letter of a key on macOS: a US or French layout types it; Russian and Greek
+  // type their own without Cmd (the second) and Latin with it (the first), or else its place
+  CHECK(latinLetter({ 'c', 'c' }, 'c') == 'c');
+  CHECK(latinLetter({ 'q', 'q' }, 'a') == 'q');      // AZERTY: the key where US has A is Q
+  CHECK(latinLetter({ 'a', 'a' }, 0) == 'a');        // and A is where US has Q
+  CHECK(latinLetter({ 'c', 0x441 }, 'c') == 'c');    // Russian with Cmd: c, then es
+  CHECK(latinLetter({ 0x441, 0x441 }, 'c') == 'c');  // a layout without Latin letters: the key's place
+  CHECK(latinLetter({ 0x3c8, 0x3c8 }, 'v') == 'v');  // Greek psi on the V key
+  CHECK(latinLetter({ 0, 0 }, 0) == 0);
+  CHECK(latinLetter({ 'V' }, 0) == 'v');
+  CHECK(macUsLetter(0x00) == 'a' && macUsLetter(0x07) == 'x' && macUsLetter(0x08) == 'c' && macUsLetter(0x09) == 'v');
+  CHECK(macUsLetter(0x01) == 0 && macUsLetter(0x24) == 0); // S, Return
+
+  // pasted into a box of one line
+  CHECK_EQ(oneLine("203.0.113.7:2049"), std::string("203.0.113.7:2049"));
+  CHECK_EQ(oneLine("203.0.113.7:2049\n"), std::string("203.0.113.7:2049"));     // copied with its line break
+  CHECK_EQ(oneLine("\r\n  ninbot.com:2049  \r\n"), std::string("ninbot.com:2049"));
+  CHECK_EQ(oneLine("first line\nsecond\r\n\r\nthird\rfourth"), std::string("first line second third fourth"));
+  CHECK_EQ(oneLine("  two  spaces  "), std::string("  two  spaces  "));        // one line keeps its spaces
+  CHECK_EQ(oneLine("a\tb"), std::string("a b"));
+  CHECK_EQ(oneLine("bell\x07 and \x7f"), std::string("bell and "));
+  CHECK_EQ(oneLine("\n\n"), std::string(""));
+  CHECK_EQ(oneLine(""), std::string(""));
+  CHECK_EQ(oneLine("J\xc3\xb6rg\n\xe2\x80\x94 hi"), std::string("J\xc3\xb6rg \xe2\x80\x94 hi")); // UTF-8 stays
 }
 
 #if defined(__linux__)
@@ -821,6 +1442,8 @@ static void test_clipboard()
   CHECK(clipboard::setText(lan));
   CHECK(clipboard::readX11(&got, 2.0) && got == lan);
   CHECK(clipboard::readX11(&got, 2.0) && got == lan); // pasted again
+  got.clear();
+  CHECK(clipboard::getText(&got) && got == lan);       // what a paste in a text box reads
 
   // copied again: the new text
   const std::string wan = "J\xc3\xb6rg's room \xc2\xb7 203.0.113.7:2049";
@@ -832,6 +1455,7 @@ static void test_clipboard()
   CHECK(take_clipboard_elsewhere(&other));
   got = "?";
   CHECK(!clipboard::readX11(&got, 0.5)); // the other program doesn't answer
+  CHECK(!clipboard::getText(&got) && got == "?");
   CHECK(clipboard::setText(lan));
   CHECK(clipboard::readX11(&got, 2.0) && got == lan);
   if (other) xcb_disconnect(other);
@@ -846,6 +1470,7 @@ static void test_clipboard()
   // the module is unloaded: it lets go; a copy after that works again
   clipboard::stopX11();
   CHECK(!clipboard::readX11(&got, 0.5));
+  CHECK(!clipboard::getText(&got)); // nobody has the clipboard: nothing to paste
   CHECK(clipboard::setText(wan));
   CHECK(clipboard::readX11(&got, 2.0) && got == wan);
   clipboard::stopX11();
@@ -875,6 +1500,13 @@ int main(int argc, char **argv)
   test_host_note();
   test_click();
   test_uitext();
+  test_textkeys();
+  test_link_math();
+  test_block_clock();
+  test_calibrator();
+  test_tempo_keeper();
+  test_link_texts();
+  test_link_sync();
 
   // the same in a locale that writes 95,5
   const char *loc = nullptr;

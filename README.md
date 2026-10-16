@@ -6,11 +6,11 @@ Jam online from Ableton Live, or any other VST3 host. Jamsa is a [NINJAM](https:
 
 | System | Download |
 |---|---|
-| Windows 10 and 11 (64-bit) | [Jamsa-vst3-windows-x64.zip](https://github.com/LeonidStern/ninjam/releases/download/jamsa-latest/Jamsa-vst3-windows-x64.zip) |
-| macOS 12 and later (Apple silicon and Intel) | [Jamsa-vst3-macos.zip](https://github.com/LeonidStern/ninjam/releases/download/jamsa-latest/Jamsa-vst3-macos.zip) |
-| Linux (x86-64) | [Jamsa-vst3-linux-x86_64.zip](https://github.com/LeonidStern/ninjam/releases/download/jamsa-latest/Jamsa-vst3-linux-x86_64.zip) |
+| Windows 10 and 11 (64-bit) | [Jamsa-vst3-windows-x64.zip](https://github.com/LeonidStern/Jamsa/releases/download/jamsa-latest/Jamsa-vst3-windows-x64.zip) |
+| macOS 12 and later (Apple silicon and Intel) | [Jamsa-vst3-macos.dmg](https://github.com/LeonidStern/Jamsa/releases/download/jamsa-latest/Jamsa-vst3-macos.dmg) |
+| Linux (x86-64) | [Jamsa-vst3-linux-x86_64.zip](https://github.com/LeonidStern/Jamsa/releases/download/jamsa-latest/Jamsa-vst3-linux-x86_64.zip) |
 
-These are the newest builds from `main`, in the [jamsa-latest release](https://github.com/LeonidStern/ninjam/releases/tag/jamsa-latest). CI builds and tests them on every push.
+These are the newest builds from `main`, in the [jamsa-latest release](https://github.com/LeonidStern/Jamsa/releases/tag/jamsa-latest). CI builds and tests them on every push.
 
 ## Install
 
@@ -19,16 +19,16 @@ Jamsa is one `Jamsa.vst3`. On Windows that's a single file; on macOS and Linux i
 **Windows**
 1. Unzip the download.
 2. Copy `Jamsa.vst3` to `C:\Program Files\Common Files\VST3`.
-3. In Ableton, open Settings (Preferences in Live 11), then Plug-Ins. Turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
+3. Rescan plug-ins in your DAW. In Ableton Live, open Settings (Preferences in Live 11), then Plug-Ins: turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
 
 **macOS**
-1. Double-click the zip to unzip it.
-2. Move `Jamsa.vst3` to `~/Library/Audio/Plug-Ins/VST3` (or `/Library/Audio/Plug-Ins/VST3` for all users).
-3. The build isn't notarized by Apple, so macOS blocks it until you remove the download flag. In Terminal, run:
+1. Open `Jamsa-vst3-macos.dmg`.
+2. Drag `Jamsa.vst3` onto the *VST3 Plug-Ins* folder next to it. That folder is `/Library/Audio/Plug-Ins/VST3`, where most plug-in installers put theirs; if it isn't there yet, make it in Finder first.
+3. The build isn't notarized by Apple, so macOS blocks it until you remove the download flag. In Terminal, run this once:
    ```
-   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Jamsa.vst3
+   xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Jamsa.vst3
    ```
-4. In Ableton, open Settings (Preferences in Live 11), then Plug-Ins. Turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
+4. Rescan plug-ins in your DAW. In Ableton Live, open Settings (Preferences in Live 11), then Plug-Ins: turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
 
 **Linux**
 1. Unzip the download into `~/.vst3`, so you have `~/.vst3/Jamsa.vst3`.
@@ -38,21 +38,21 @@ The editor uses X11. It needs the usual desktop libraries: xcb, cairo, pango and
 
 ## Play
 
-1. Put Jamsa on an audio track with your instrument or microphone as the input, and set monitoring to In.
-2. **To host**, click **Host** in the bottom bar. Use **Copy** to send players outside your network the WAN address. Players on your own network use the LAN address.
+1. Put Jamsa on an audio track with your instrument or microphone as the input, and turn on the track's input monitoring (in Live, set Monitor to In).
+2. **To host**, click **Host** in the bottom bar, and use **Copy** to send players the WAN address.
 3. **To join**, type the address under Server and click **Connect**.
 4. These settings belong to the room, so changing one changes it for everyone:
    - **BPM**: drag it, or double-click and type.
-   - **BPI**: beats per interval.
+   - **BPI**: beats per interval, 2 to 64. A room starts at 4.
    - **Codec**: Opus, or lossless FLAC, which needs several times the bandwidth.
-   - **Opus bitrate**: 64 to 510 kbps.
-5. **Sync** lets Ableton lead. When you change Ableton's tempo, the room follows, and intervals start on Ableton's bars.
+   - **Opus bitrate**: 64 to 510 kbps. A new Jamsa starts at 510, the best Opus sounds.
+5. **Sync** keeps your DAW and the room in time, in any VST3 host. When you change your DAW's tempo, you vote the room to it, and while it plays, intervals start on its bars. If your DAW has Ableton Link, turn Link on there too: then the room's tempo moves your DAW's, whoever votes. In Live that's the Link button at the top left (if it isn't there, turn on *Show Link Toggle* in Live's Link settings).
 6. You can also type room commands in the chat: `!vote bpm 120`, `!vote bpi 16`, `!codec opus` or `!codec flac`, and `!bitrate 128`.
 
 Hosting tips:
-- Jamsa asks your router to forward its port (UPnP or NAT-PMP). If the router doesn't allow that, forward TCP port 2049 to your computer yourself (Jamsa tries ports 2049 to 2058).
-- The host's connection sends every player everyone else's audio. With 4 players at 128 kbps, that's about 1.2 Mbit/s of upload.
-- The room closes when the host closes Ableton. For a room that stays up, run the server on a machine that's always on (see below).
+- Jamsa asks your router to forward its port (UPnP or NAT-PMP). If the router doesn't allow that, forward TCP port 2049 to your computer yourself (Jamsa tries ports 2049 to 2058). The WAN address still shows: Jamsa asks a "what's my IP" service (api.ipify.org) for it. Jamsa can't see a port you forwarded yourself, so it says *Forward port* until the first player joins from the internet, then *Port open*.
+- The host's connection sends every player everyone else's audio. With 4 players at 510 kbps, that's about 4.6 Mbit/s of upload; at 128 kbps, about 1.2 Mbit/s.
+- The room closes when the host closes their DAW. For a room that stays up, run the server on a machine that's always on (see below).
 
 ## Build from source
 

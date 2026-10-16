@@ -25,6 +25,7 @@
   - BeatCells: one cell per beat of the interval
   - AddressBox: an address and its Copy button
   - TextLinesView: wrapped scrolling text (chat, license)
+  - TextShortcuts: Cut, Copy, Paste and Select All in the text boxes
 
 */
 
@@ -36,6 +37,8 @@
 #include <vector>
 
 #include "vstgui/vstgui.h"
+
+#include "textfield.h"
 
 namespace ninjam_vst3 {
 namespace ui {
@@ -330,6 +333,24 @@ private:
   bool m_wrapped = false, m_startAtTop = false;
   CCoord m_wrapWidth = -1;
   int m_scroll = 0; // visual lines away from the newest (or from the top, with startAtTop)
+};
+
+// Cut, Copy, Paste and Select All (Cmd+X, C, V, A on macOS, Ctrl elsewhere) in the frame's
+// text boxes while one is typed in: the keys the system's text field doesn't do by itself
+// in a host (see textfield.h). The catcher takes them before the host does; the keyboard
+// hook gets those that reach the frame anyway (the host hands them on with
+// IPlugView::onKeyDown, or the window gives them to VSTGUI's view).
+class TextShortcuts : public IKeyboardHook
+{
+public:
+  ~TextShortcuts() override { detach(); }
+  void attach(CFrame *frame); // once it is open
+  void detach();              // before it closes
+  void onKeyboardEvent(KeyboardEvent &event, CFrame *frame) override;
+
+private:
+  CFrame *m_frame = nullptr;
+  textfield::ShortcutCatcher m_catcher;
 };
 
 CTextLabel *makeLabel(const CRect &size, const std::string &text, CFontRef font, CColor color, CHoriTxtAlign align = kLeftText);

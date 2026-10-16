@@ -25,8 +25,8 @@ namespace ninjam_vst3 {
 namespace uitext {
 
 constexpr int BPM_MIN = 40, BPM_MAX = 240;           // what the BPM box votes for
-constexpr int BPI_CHOICES[] = { 4, 8, 12, 16, 24, 32, 48, 64 };
-constexpr int NUM_BPI_CHOICES = 8;
+constexpr int BPI_CHOICES[] = { 2, 4, 8, 12, 16, 24, 32, 48, 64 }; // 2 to 64, as the server allows
+constexpr int NUM_BPI_CHOICES = 9;
 constexpr double PIXELS_PER_BPM = 2.0;               // dragging the BPM box up or down (4 times as far with Shift)
 constexpr int METER_SEGMENTS = 7;
 
