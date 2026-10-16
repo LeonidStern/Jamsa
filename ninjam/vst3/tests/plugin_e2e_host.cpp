@@ -47,6 +47,7 @@
     PHASE two END a_hears_snr=<dB> b_hears_snr=<dB> b_host_refused=<0|1> b_got_chat=<0|1> a_users=<n> b_users=<n>
                   a_name=<alice's name> b_name=<bob's> a_sees=<who alice hears, as shown> b_sees=<who bob hears>
                   a_state=<state> b_state=<state> (at the end) a_link=<alice's Link state> b_link=<bob's>
+                  b_after_ms=<how long after alice's intervals bob's start, about half an interval>
     PHASE room END start_kbps=<the room's at first> a_kbps=<alice sends> b_kbps=<bob sends> a_own=<alice's own>
                    b_own=<bob's own> b_saw_note=<0|1> flac=<alice's room>/<alice sends> opus=<the same, after>
                    start_bpi=<the room's BPI at first> least_bpi=<after a vote for 2>
@@ -650,6 +651,20 @@ static int jam_two_instances(Host &a, Host &b)
     const bool refused = a.runUntil(nullptr, 5.0, [&]() {
       return contains(b.command("chatlog"), "already hosts a server (port " + port + ")");
     }) && b.status()["hosting"] == "0";
+    // Bob joins halfway into one of alice's 1 second intervals (240 BPM and 4 BPI, from her next
+    // one on), so that his start half an interval after hers. Each instance plays the other's
+    // interval from its own next one that starts once the first 8 KB of it are in (NJClient's
+    // prebuffer: at 510 kbps that is 130 ms of audio, in about 200 ms after it started). Joining
+    // right after the votes, bob's intervals started 140 to 220 ms after alice's (the steps from her
+    // joining to there take about as long each time): about when hers got in. The one time hers
+    // got in a little later than his started, he had none to play, an interval of silence, and
+    // played hers an interval later from then on.
+    const int ilen = (int)lround(60.0 / 240 * 4 * a.m_srate);
+    a.runUntil(nullptr, 5.0, [&]() {
+      auto s = a.status();
+      const int pos = atoi(s["pos"].c_str());
+      return atoi(s["len"].c_str()) == ilen && pos >= ilen / 2 && pos < ilen * 5 / 8;
+    });
     b.command("connect localhost:" + port);
     if (!a.runUntil(nullptr, 30.0, [&]() {
           auto sa = a.status(), sb = b.status();
@@ -660,11 +675,14 @@ static int jam_two_instances(Host &a, Host &b)
       return fail(b, "bob did not join alice's server, or the tempo did not change");
     a.command("chat hello from alice");
 
-    const int ilen = (int)lround(60.0 / 240 * 4 * a.m_srate);
     if (!a.runUntil(nullptr, 10.0, [&]() { return atoi(a.status()["len"].c_str()) == ilen && atoi(b.status()["len"].c_str()) == ilen; }))
       return fail(a, "the intervals did not get to 1 second");
     const double interval = (double)ilen / a.m_srate;
     a.run(nullptr, interval * 2.2);
+    // how long after alice's intervals bob's start, by the positions each last published (within
+    // about 40 ms)
+    const int a1 = atoi(a.status()["pos"].c_str()), bp = atoi(b.status()["pos"].c_str()), a2 = atoi(a.status()["pos"].c_str());
+    const double bAfterMs = fmod((a2 >= a1 ? (a1 + a2) / 2.0 : a1) - bp + 2.0 * ilen, (double)ilen) * 1000.0 / a.m_srate;
     printf("PHASE two BEGIN\n");
     a.clearHeard();
     b.clearHeard();
@@ -686,10 +704,10 @@ static int jam_two_instances(Host &a, Host &b)
     };
     auto sa = a.status(), sb = b.status();
     printf("PHASE two END a_hears_snr=%.1f b_hears_snr=%.1f b_host_refused=%d b_got_chat=%d a_users=%s b_users=%s a_name=%s b_name=%s "
-           "a_sees=%s b_sees=%s a_state=%s b_state=%s a_link=%s b_link=%s\n",
+           "a_sees=%s b_sees=%s a_state=%s b_state=%s a_link=%s b_link=%s b_after_ms=%.0f\n",
            aSnr, bSnr, refused ? 1 : 0, gotChat ? 1 : 0, sa["users"].c_str(), sb["users"].c_str(), sa["user"].c_str(), sb["user"].c_str(),
            shown(a.command("users")).c_str(), shown(b.command("users")).c_str(), sa["state"].c_str(), sb["state"].c_str(),
-           sa["link"].c_str(), sb["link"].c_str());
+           sa["link"].c_str(), sb["link"].c_str(), bAfterMs);
 
     // bob changes the room's bitrate, then its codec; alice's changes too, her own setting doesn't
     const std::string startKbps = a.status()["roomkbps"];
