@@ -342,27 +342,6 @@ jobs:
           grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator-dmg.log
           hdiutil detach "$RO"
 
-      - name: Screenshot the disk image in Finder (temporary, to check the layout)
-        continue-on-error: true
-        run: |
-          sudo mkdir -p /Library/Audio/Plug-Ins/VST3 # as on a Mac with plug-ins, so the shortcut has a folder icon
-          hdiutil attach -noautoopen -mountpoint /Volumes/Jamsa dist/Jamsa-vst3-macos.dmg
-          open /Volumes/Jamsa
-          sleep 8
-          screencapture -x "$RUNNER_TEMP/light.png"
-          if osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'; then
-            sleep 5
-            screencapture -x "$RUNNER_TEMP/dark.png"
-          fi
-          for f in light dark; do
-            [ -f "$RUNNER_TEMP/$f.png" ] || continue
-            sips -s format jpeg -s formatOptions 70 "$RUNNER_TEMP/$f.png" --out "$RUNNER_TEMP/$f.jpg" >/dev/null
-            echo "BEGIN-SHOT-$f"
-            base64 -i "$RUNNER_TEMP/$f.jpg" | fold -w 2000
-            echo "END-SHOT-$f"
-          done
-          hdiutil detach /Volumes/Jamsa || true
-
       - uses: actions/upload-artifact@v4
         with:
           name: Jamsa-vst3-macos-universal
