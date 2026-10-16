@@ -27,11 +27,20 @@ void deallocate(void *ptr, size_t);
 namespace detail {
 
 // TODO: explain why the bitset needs to be tagged
+//
+// NB: the struct must not have padding bytes. With {T bits; uint16_t tag}
+// and T = uint32_t, two bytes are padding; libstdc++ 13+ clears the padding of
+// the expected and desired values in compare_exchange_weak(), but not of the
+// value already stored, so the CAS in update_bitset() never succeeds when that
+// padding is not zero (any pool not in zero-initialized static memory) and the
+// pool livelocks. The tag therefore has the same type as the bits; it still
+// only holds 16 bits (see the constructor).
+// The alignment lets compilers inline the CAS instead of calling libatomic.
 template<typename T>
-struct tagged_bitset {
+struct alignas(2 * sizeof(T)) tagged_bitset {
     static constexpr size_t width = sizeof(T) * CHAR_BIT;
     T bits;
-    uint16_t tag; // always uint16_t, so we get the same behavior across platforms
+    T tag; // always 16 bits, so we get the same behavior across platforms
 
     tagged_bitset(T bits_ = 0, uint16_t tag_ = 0) noexcept
         : bits(bits_), tag(tag_) {}
@@ -243,6 +252,8 @@ class rt_memory_pool : std::allocator_traits<Alloc>::template rebind_alloc<char>
 
     using bitset = std::conditional_t<std::atomic<detail::tagged_bitset<uint32_t>>::is_always_lock_free,
                                       detail::tagged_bitset<uint32_t>, detail::tagged_bitset<uint16_t>>;
+    static_assert(std::has_unique_object_representations_v<bitset>,
+                  "tagged_bitset must not have padding (see above)");
 public:
     static constexpr size_t max_pool_size = detail::max_index_value;
 
