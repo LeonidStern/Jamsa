@@ -695,12 +695,20 @@ void NinjamEditor::layoutMixer(const CRect &pane)
     x += txW + 2;
     place(m_in, CRect(x, 4, x + inW, ROW_H - 4));
     x += inW + 4;
-    place(m_myName, CRect(x, 0, std::max(x + 10, c.name1), ROW_H));
-    // the two boxes end where the solo buttons do; the volume makes room for them
-    const CCoord boxW = std::max({ textWidth(m_fonts.small, "Opus"), textWidth(m_fonts.small, "FLAC"),
-                                   textWidth(m_fonts.small, "510k") }) + 18;
-    const CCoord bitrate0 = c.solo1 - boxW, codec0 = bitrate0 - 4 - boxW;
-    place(m_inputVolume, CRect(c.vol0, 4, std::max(c.vol0 + 30, std::min(c.vol1, codec0 - 5)), ROW_H - 4));
+    // the two boxes end where the solo buttons do, each as wide as its longest text (a room the
+    // plug-in can't send in plays Vorbis); MenuBox draws 4 + the text + 3 + its arrow (7) + 4
+    auto boxW = [&](std::initializer_list<const char *> texts) {
+      CCoord w = 0;
+      for (const char *t : texts) w = std::max(w, textWidth(m_fonts.small, t));
+      return w + 18;
+    };
+    const CCoord codecW = boxW({ "Opus", "FLAC", "Vorbis" }), bitrateW = boxW({ "510k" });
+    const CCoord bitrate0 = c.solo1 - bitrateW, codec0 = bitrate0 - 4 - codecW;
+    // the volume makes room for them, and keeps the others' 50 px at least: in a narrow mixer
+    // it starts further left, and the name gives way
+    const CCoord vol1 = std::min(c.vol1, codec0 - 5), vol0 = std::max(x + 10, std::min(c.vol0, vol1 - 50));
+    place(m_myName, CRect(x, 0, std::max(x + 10, std::min(c.name1, vol0 - 5)), ROW_H));
+    place(m_inputVolume, CRect(vol0, 4, std::max(vol0 + 30, vol1), ROW_H - 4));
     place(m_codec, CRect(codec0, 2, bitrate0 - 4, ROW_H - 2));
     place(m_bitrate, CRect(bitrate0, 2, c.solo1, ROW_H - 2));
     place(m_myMeter, CRect(c.level0, 0, c.level1, ROW_H));
@@ -801,11 +809,13 @@ void NinjamEditor::update()
                                   : "The room's codec, Opus or FLAC: in a room, pick one to switch everyone");
     selectEntry(m_codec, s.roomCodec == "FLAC" ? 1 : connected && s.roomCodec == "Opus" ? 0 : -1);
 
-    // the bitrate: the room's (picking one changes it for everyone), else your own; FLAC is lossless
-    const bool flac = connected && s.roomCodec == "FLAC";
-    m_bitrate->setEnabled(!flac);
-    m_bitrate->setShown(flac ? "\xe2\x80\x94" : uitext::kbpsText(s.sendKbps));
+    // the bitrate: the room's (picking one changes it for everyone), else your own; FLAC is lossless,
+    // and in a room the plug-in can't send in it means nothing
+    const bool flac = connected && s.roomCodec == "FLAC", mute = connected && !s.canSend;
+    m_bitrate->setEnabled(!flac && !mute);
+    m_bitrate->setShown(flac || mute ? "\xe2\x80\x94" : uitext::kbpsText(s.sendKbps));
     if (flac) setTooltip(m_bitrate, "The room plays FLAC, which is lossless: the bitrate is for when it plays Opus");
+    else if (mute) setTooltip(m_bitrate, "This room plays " + s.roomCodec + ": the plug-in can't send here");
     else if (s.roomOpusKbps > 0)
       setTooltip(m_bitrate, "The room's Opus bitrate: pick one to change it for everyone; it applies from the next interval");
     else if (connected)
