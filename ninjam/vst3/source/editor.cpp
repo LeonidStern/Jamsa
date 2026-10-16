@@ -52,7 +52,6 @@ enum Tags
   kTagClick,
   kTagChat,
   kTagHost,
-  kTagCopyLan,
   kTagCopyWan,
   kTagAccept,
   kTagDecline,
@@ -516,7 +515,7 @@ void NinjamEditor::buildViews()
   m_chatEdit = makeEdit(z, this, kTagChat, f.chat, "Chat, !vote bpm 120, /me \xe2\x80\xa6");
   m_chatPane->addView(m_chatEdit);
 
-  // host bar: Host  3 in room  LAN [..][Copy]  WAN [..][Copy]          (o) Port open
+  // host bar: Host  3 in room  WAN [..][Copy]                          (o) Port open
   m_hostBar = new StripContainer(z, Colors::strip());
   m_root->addView(m_hostBar);
   m_host = new FlatButton(z, this, kTagHost, "Host", FlatButton::Toggle, f.button);
@@ -526,11 +525,8 @@ void NinjamEditor::buildViews()
   m_hostBar->addView(m_roomCount);
   m_hostHint = makeLabel(z, "", f.label, Colors::label());
   m_hostBar->addView(m_hostHint);
-  m_lan = new AddressBox(z, this, kTagCopyLan, f, "LAN");
-  m_lan->setTooltipText("Where players in your local network join");
-  m_hostBar->addView(m_lan);
   m_wan = new AddressBox(z, this, kTagCopyWan, f, "WAN");
-  m_wan->setTooltipText("Where players on the internet join, once your router forwards the port");
+  m_wan->setTooltipText("Where players on the internet join, once the port is forwarded to this computer");
   m_hostBar->addView(m_wan);
   m_portLed = new Led(z);
   m_hostBar->addView(m_portLed);
@@ -751,10 +747,6 @@ void NinjamEditor::layoutHostBar(CCoord w, CCoord)
     const CCoord countW = textWidth(m_fonts.value, m_roomCount->getText().getString()) + 2;
     place(m_roomCount, CRect(x, 0, x + countW, HOSTBAR_H));
     x += countW + 8;
-    const CCoord room = portLeft - 15 - x; // for both addresses
-    const CCoord lanW = std::min(m_lan->preferredWidth(), std::max<CCoord>(80, room / 2 - 2));
-    place(m_lan, CRect(x, y0, x + lanW, y1));
-    x += lanW + 4;
     const CCoord wanW = std::min(m_wan->preferredWidth(), std::max<CCoord>(80, portLeft - 15 - x));
     place(m_wan, CRect(x, y0, x + wanW, y1));
   }
@@ -1115,7 +1107,6 @@ void NinjamEditor::updateHostBar(const Snapshot &s)
   bool relayout = s.hosting != m_hosting;
   m_hosting = s.hosting;
   setVisible(m_roomCount, s.hosting);
-  setVisible(m_lan, s.hosting);
   setVisible(m_wan, s.hosting);
   setVisible(m_hostHint, !s.hosting);
 
@@ -1130,33 +1121,40 @@ void NinjamEditor::updateHostBar(const Snapshot &s)
       setLabel(m_roomCount, count);
       relayout = true;
     }
-    const std::string lan = s.hostLocalAddress, wan = s.hostPublicAddress;
-    m_lan->setAddress(lan, "not known");
-    m_wan->setAddress(wan, s.hostPortmapPending ? "waiting for the router" : "not known");
-    if (lan != m_lanShown || wan != m_wanShown)
+    // the router's word for the public address, else a "what's my IP" service's
+    const bool forwarded = !s.hostPublicAddress.empty();
+    const std::string wan = forwarded ? s.hostPublicAddress : s.hostLookedUpAddress;
+    m_wan->setAddress(wan, s.hostLookupPending || s.hostPortmapPending ? "looking it up\xe2\x80\xa6" : "not known");
+    if (wan != m_wanShown)
     {
-      m_lanShown = lan;
       m_wanShown = wan;
       relayout = true;
     }
-    if (!wan.empty())
+    const std::string portNo = std::to_string(s.hostPort);
+    const std::string here = s.hostLocalAddress.empty() ? std::string("this computer")
+                                                        : "this computer (" + s.hostLocalAddress.substr(0, s.hostLocalAddress.rfind(':')) + ")";
+    if (forwarded)
     {
       port = "Port open";
       portColor = led = Colors::green();
       lit = true;
-      tip = "Your router forwards port " + std::to_string(s.hostPort) + ": players on the internet join at " + wan;
+      tip = "Your router forwards port " + portNo + ": players on the internet join at " + wan;
     }
     else if (s.hostPortmapPending)
     {
       port = "Asking the router\xe2\x80\xa6";
-      tip = "Asking your router to forward port " + std::to_string(s.hostPort);
+      tip = "Asking your router to forward port " + portNo;
     }
     else
     {
-      port = "Port not forwarded";
+      // the router didn't open it: maybe it is forwarded by hand, which nothing here can see
+      port = "Forward port " + portNo;
       portColor = led = Colors::yellow();
       lit = true;
-      tip = s.hostNote.empty() ? "Your router didn't forward the port: only your local network can join" : s.hostNote;
+      tip = "Your router didn't open port " + portNo + " for Jamsa. Forward port " + portNo + " (TCP) to " + here +
+            " in your router's settings" + (wan.empty() ? std::string() : ", and players on the internet join at " + wan) +
+            ". If it's forwarded already, they can join now.";
+      if (!s.hostNote.empty()) tip += " (The router said: " + s.hostNote + ")";
     }
   }
   else
@@ -1344,9 +1342,6 @@ void NinjamEditor::valueChanged(CControl *control)
       m_hostPending = true;
       m_hostPendingSince = now_seconds();
       engine().setHosting(v > 0.5f);
-      return;
-    case kTagCopyLan:
-      if (v > 0.5f) copyAddress(m_lan);
       return;
     case kTagCopyWan:
       if (v > 0.5f) copyAddress(m_wan);

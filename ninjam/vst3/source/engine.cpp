@@ -18,6 +18,18 @@
 #include <algorithm>
 #include <chrono>
 
+#if defined(_WIN32)
+#define SECURITY_WIN32
+#include <windows.h>
+#include <security.h>
+#include <lm.h>
+#pragma comment(lib, "secur32.lib")
+#pragma comment(lib, "netapi32.lib")
+#else
+#include <pwd.h>
+#include <unistd.h>
+#endif
+
 #include "njclient.h"
 #include "mpb.h"
 #include "hostserver.h"
@@ -222,6 +234,59 @@ std::string Engine::displayName(const std::string &user)
   return user.substr(0, at);
 }
 
+std::string Engine::firstName(const std::string &fullName)
+{
+  std::string n = trim(fullName);
+  n = n.substr(0, n.find_first_of(" \t,@")); // a full name's first word; a login that is an email address, its name
+  if (n.size() > 32) n.resize(32);
+  return n;
+}
+
+#if defined(_WIN32)
+static std::string utf8(const wchar_t *w)
+{
+  const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+  if (n <= 1) return "";
+  std::string s((size_t)n - 1, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], n, nullptr, nullptr);
+  return s;
+}
+#endif
+
+std::string Engine::defaultUserName()
+{
+  std::string full, login;
+#if defined(_WIN32)
+  // a domain account's display name, else a local or Microsoft account's full name
+  wchar_t buf[256];
+  ULONG n = 256;
+  if (GetUserNameExW(NameDisplay, buf, &n)) full = utf8(buf);
+  wchar_t name[257];
+  DWORD ln = 257;
+  if (GetUserNameW(name, &ln))
+  {
+    login = utf8(name);
+    USER_INFO_10 *info = nullptr;
+    if (trim(full).empty() && NetUserGetInfo(nullptr, name, 10, (LPBYTE *)&info) == NERR_Success && info)
+    {
+      if (info->usri10_full_name) full = utf8(info->usri10_full_name);
+      NetApiBufferFree(info);
+    }
+  }
+#else
+  // the account's full name is the first field of its GECOS ("Leo Stern,,,")
+  struct passwd pw, *found = nullptr;
+  char buf[4096];
+  if (getpwuid_r(getuid(), &pw, buf, sizeof(buf), &found) == 0 && found)
+  {
+    if (pw.pw_gecos) full = std::string(pw.pw_gecos).substr(0, std::string(pw.pw_gecos).find(','));
+    if (pw.pw_name) login = pw.pw_name;
+  }
+#endif
+  const std::string first = firstName(full);
+  return first.empty() ? firstName(login) : first;
+}
+
 std::string Engine::remoteKey(const std::string &user, int channel)
 {
   std::string n = displayName(user);
@@ -231,6 +296,7 @@ std::string Engine::remoteKey(const std::string &user, int channel)
 
 Engine::Engine()
 {
+  m_settings.userName = defaultUserName();
   m_client.reset(new NJClient);
   m_client->LicenseAgreementCallback = licenseCallback;
   m_client->LicenseAgreement_User = this;
@@ -402,7 +468,9 @@ void Engine::setSettings(const Settings &s)
 {
   {
     std::lock_guard<std::mutex> lock(m_settingsMutex);
+    const std::string name = m_settings.userName;
     m_settings = s;
+    if (m_settings.userName.empty()) m_settings.userName = name; // a set saved before you typed one keeps the default
     m_settingsRevision ++;
   }
   m_inputGain = s.inputVolume;
@@ -963,6 +1031,8 @@ void Engine::pollHosting(Snapshot &snap)
     snap.hostLocalAddress = st.localAddress;
     snap.hostNote = st.portmapNote;
     snap.hostPortmapPending = st.portmapPending;
+    snap.hostLookedUpAddress = st.lookedUpAddress;
+    snap.hostLookupPending = st.lookupPending;
     snap.hostUsers = st.users;
     for (const std::string &m : HostServer::instance().messagesSince(&m_hostLogSerial))
       addChat(ChatLine::Server, "", m);
@@ -1231,7 +1301,9 @@ std::string Engine::command(const std::string &lineIn)
       snprintf(buf + n, sizeof(buf) - n, " follow=%d hosttempo=%.3f bars=%s barerr=%.3f barfixes=%d tempovotes=%d ownkbps=%d roomkbps=%d",
                s.followTempo ? 1 : 0, s.hostTempo, bar_state_name(s.barState), s.barErrorMs, s.barFixes, s.tempoVotes,
                s.opusKbps, s.roomOpusKbps);
-    return buf;
+    std::string out = buf;
+    out += " lookedup=" + (s.hostLookedUpAddress.empty() ? std::string(s.hostLookupPending ? "?" : "-") : s.hostLookedUpAddress);
+    return out;
   }
   if (verb == "users")
   {

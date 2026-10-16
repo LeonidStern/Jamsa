@@ -125,6 +125,8 @@ struct Snapshot
   int hostPort = 0;
   std::string hostPublicAddress, hostLocalAddress, hostNote;
   bool hostPortmapPending = false;
+  std::string hostLookedUpAddress; // from a "what's my IP" service, for when the router doesn't say
+  bool hostLookupPending = false;
   int hostUsers = 0;
   int hostedElsewherePort = 0; // another instance in this program hosts one
 
@@ -144,7 +146,7 @@ struct Settings
   std::string server;
   float inputVolume = 1.0f;
   float metronomeVolume = 0.5f;
-  bool metronomeMute = false;
+  bool metronomeMute = true; // off until you turn it on
   bool monitor = true;
   bool transmit = true;
   int opusKbps = DEFAULT_OPUS_KBPS; // what we send in Opus rooms; FLAC is lossless and ignores it
@@ -219,6 +221,10 @@ public:
 
   static std::string remoteKey(const std::string &user, int channel); // user without @address
   static std::string displayName(const std::string &user); // "alice@1.2.3.4" is "alice", "alice@1.2.3.4.2" "alice.2"
+  // the name a new instance starts with: the first name of the computer account's full name
+  // ("Leo Stern" is "Leo"), else its login name; "" if neither is known
+  static std::string defaultUserName();
+  static std::string firstName(const std::string &fullName); // "Leo Stern" is "Leo"
 
 private:
   void threadProc();

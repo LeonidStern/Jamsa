@@ -94,6 +94,7 @@ static void test_state()
   Settings e;
   CHECK(e.deserialize(Settings().serialize()));
   CHECK(e.monitor && e.transmit && e.inputVolume == 1.0f && e.editorWidth == 0);
+  CHECK(Settings().metronomeMute); // the metronome starts off
   // the size of the editor before its 720 x 330 layout opens at the new default
   Settings older;
   CHECK(older.deserialize("NINJAM-VST3-STATE 1\neditor_size=960x640\n"));
@@ -156,6 +157,22 @@ static void test_portmap_messages()
   CHECK(!show);
   HostServer::parseLogLine("Warning: could not open the log file", st, &show);
   CHECK(show);
+
+  // the public address from a "what's my IP" service
+  std::string ip;
+  CHECK(HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n89.114.98.123\n", &ip));
+  CHECK_EQ(ip, "89.114.98.123");
+  CHECK(HostServer::parseWhatsMyIpReply("HTTP/1.0 200 OK\r\n\r\n203.0.113.7", &ip));
+  CHECK_EQ(ip, "203.0.113.7");
+  ip = "kept";
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 503 Service Unavailable\r\n\r\n1.2.3.4\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n\r\n<html>1.2.3.4</html>", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n\r\n1.2.3.256\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n\r\n1.2.3\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n\r\n2001:db8::1\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("HTTP/1.1 200 OK\r\n", &ip));
+  CHECK(!HostServer::parseWhatsMyIpReply("", &ip));
+  CHECK_EQ(ip, "kept");
 }
 
 static bool near(double a, double b, double eps = 1e-9) { return fabs(a - b) <= eps; }
@@ -557,6 +574,26 @@ static void test_names()
   CHECK_EQ(Engine::displayName("guest@::ffff:127.0.0.1"), "guest");
   CHECK_EQ(Engine::remoteKey("Guest@127.0.0.1.2", 0), "guest.2/0");
   CHECK_EQ(Engine::remoteKey("Alice@1.2.3.x", 2), "alice/2");
+
+  // the name a new instance starts with, from the computer account
+  CHECK_EQ(Engine::firstName("Leo Stern"), "Leo");
+  CHECK_EQ(Engine::firstName("  J\xc3\xb6rg  M\xc3\xbcller "), "J\xc3\xb6rg");
+  CHECK_EQ(Engine::firstName("leo"), "leo");
+  CHECK_EQ(Engine::firstName("leo@example.com"), "leo");
+  CHECK_EQ(Engine::firstName(""), "");
+  CHECK_EQ(Engine::firstName(std::string(40, 'a')), std::string(32, 'a'));
+  CHECK(!Engine::defaultUserName().empty()); // the test runs as some account
+  {
+    Engine en;
+    const std::string def = en.getSettings().userName;
+    CHECK_EQ(def, Engine::defaultUserName());
+    Settings saved; // a set saved before a name was typed keeps the default
+    en.setSettings(saved);
+    CHECK_EQ(en.getSettings().userName, def);
+    saved.userName = "typed";
+    en.setSettings(saved);
+    CHECK_EQ(en.getSettings().userName, "typed");
+  }
 }
 
 // The click, rendered as the engine does: in blocks of any size that stop at the end of each

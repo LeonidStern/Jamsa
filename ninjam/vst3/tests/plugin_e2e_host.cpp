@@ -885,6 +885,9 @@ int main(int argc, char **argv)
     return fail(host, "the plug-in did not start its server and join it");
   const std::string port = host.status()["port"];
   printf("PORT %s\n", port.c_str());
+  // the public address, from the "what's my IP" service (the test's own, JAMSA_WHATSMYIP)
+  host.runUntil(nullptr, 10.0, [&]() { return host.status()["lookedup"] != "?"; });
+  printf("LOOKEDUP %s\n", host.status()["lookedup"].c_str());
 
   // short intervals: a single vote passes on this server (as the editor's BPM and BPI boxes send them)
   host.command("vote bpm 240");

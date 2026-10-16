@@ -17,6 +17,11 @@
   with !bitrate (at first the host's own), up to 8 users,
   and the router is asked to forward the port (UPnP-IGD or NAT-PMP).
 
+  While it runs, a "what's my IP" service on the internet is asked for this
+  computer's public address, for when the router doesn't say (no UPnP or NAT-PMP,
+  or a port forwarded by hand): JAMSA_WHATSMYIP=host:port/path points it elsewhere
+  (the tests), and JAMSA_WHATSMYIP=off turns it off.
+
   Ports 2049 to 2058 are tried in turn. start() and stop() block (stop waits for
   the router to remove the forward), so call them off the UI and audio threads.
 
@@ -25,8 +30,10 @@
 #ifndef _NINJAM_VST3_HOSTSERVER_H_
 #define _NINJAM_VST3_HOSTSERVER_H_
 
+#include <atomic>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ninjam_vst3 {
@@ -50,6 +57,9 @@ public:
     std::string portmapNote;     // why there is no public address (the last thing the port mapper said)
     bool portmapPending = false; // still asking the router
     std::string localAddress;    // this machine's address in the local network, with the port
+    std::string lookedUpAddress; // the public address with the port, from a "what's my IP" service: where
+                                 // others join if the port is forwarded (the router may not say it is)
+    bool lookupPending = false;  // still asking that service
     int users = 0;
   };
   State state();
@@ -59,9 +69,14 @@ public:
 
   // parses a server log line; public for the tests
   static void parseLogLine(const std::string &line, State &st, bool *show);
+  // the IPv4 address in a "what's my IP" service's HTTP reply ("HTTP/1.1 200 OK ... 89.114.98.123\n")
+  static bool parseWhatsMyIpReply(const std::string &reply, std::string *ip);
 
 private:
   HostServer() {}
+  ~HostServer();
+  void lookUpPublicAddress(int port);
+  void stopLookup();
   static void onLog(void *ctx, const char *text);
   static std::string writeConfig(int port, int opusKbps);
 
@@ -70,6 +85,8 @@ private:
   State m_state;
   std::vector<std::string> m_messages;
   unsigned long long m_serial = 0;
+  std::thread m_lookup; // asks the "what's my IP" service; joined by stop()
+  std::atomic<bool> m_lookupStop { false };
 };
 
 // the address of this machine in its local network ("192.168.1.20"), or "" if not known

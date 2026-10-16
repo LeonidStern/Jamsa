@@ -7,13 +7,15 @@ default) to FLAC and back, switched by typing !codec into the plug-in's chat, an
 plug-in's Opus bitrate goes from 128 to 256 and 510 kbps, last with 16 second intervals. This
 script also joins the server at the protocol level: it checks that a client that only plays
 Vorbis is refused, and it watches the codec and size of every interval the plug-in uploads.
+The plug-in also asks a "what's my IP" service for the host bar's WAN address (this script's own,
+so no test asks the real one).
 
 test_two_instances: two instances of the plug-in in one process, as two tracks in a DAW, both
-with the default name. One hosts the server; the other can't host a second one in the same
-process, is told to join it, joins as "guest.2" (the server lets one name in twice), and they
-hear each other, chat and both stay in. The second changes the room's Opus bitrate and codec,
-which changes what the first sends too. Then the first stops its server, the second hosts one
-(at its own bitrate), and the first joins that.
+with the default name (the computer account's first name). One hosts the server; the other can't
+host a second one in the same process, is told to join it, joins as "name.2" (the server lets one
+name in twice), and they hear each other, chat and both stay in. The second changes the room's
+Opus bitrate and codec, which changes what the first sends too. Then the first stops its server,
+the second hosts one (at its own bitrate), and the first joins that.
 
 test_host_sync: the host leads. The test host passes a tempo and a transport (ProcessContext) as
 Ableton does. The room follows the host's tempo when the plug-in joins and when the host's tempo
@@ -34,6 +36,7 @@ Run by hand:
   NINJAMSRV=../../server/ninjamsrv NJCLIENT_E2E_VORBIS=../../tests/njclient_e2e_vorbis \\
   python3 -m unittest -v test_plugin_e2e
 """
+import http.server
 import os
 import queue
 import re
@@ -64,12 +67,54 @@ OPUS_SIZES = {"opus": (128, 1.0), "opus_again": (128, 1.0), "opus256": (256, 1.0
               "opus510_long": (510, 16.0)}
 
 
+def default_user_name():
+    """The name a new instance starts with (Engine::defaultUserName), as the server shows it."""
+    import pwd
+    pw = pwd.getpwuid(os.getuid())
+    def first(full):
+        return re.split(r"[ \t,@]", full.strip())[0][:32]
+    name = first(pw.pw_gecos.split(",")[0]) or first(pw.pw_name)
+    # what the server does to characters it doesn't allow in names (usercon.cpp)
+    return "".join(c if (c.isascii() and c.isalnum()) or c in "-_@." else "_" for c in name.encode().decode("latin-1"))
+
+
+class WhatsMyIp(http.server.BaseHTTPRequestHandler):
+    """A "what's my IP" service for the plug-in to ask (JAMSA_WHATSMYIP), so the tests never
+    ask the real one on the internet."""
+    ADDRESS = "203.0.113.7"
+
+    def do_GET(self):
+        body = (self.ADDRESS + "\n").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+_whatsmyip = None
+
+
+def whatsmyip_env():
+    global _whatsmyip
+    if _whatsmyip is None:
+        _whatsmyip = http.server.ThreadingHTTPServer(("127.0.0.1", 0), WhatsMyIp)
+        threading.Thread(target=_whatsmyip.serve_forever, daemon=True).start()
+    env = dict(os.environ)
+    env["JAMSA_WHATSMYIP"] = "127.0.0.1:%d/" % _whatsmyip.server_address[1]
+    return env
+
+
 class Run:
     """A plugin_e2e_host process, its output lines and a watcher of what the server relays."""
 
     def __init__(self, args):
         self.proc = subprocess.Popen([HOST, PLUGIN, "48000", "512"] + args, stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                     env=whatsmyip_env())
         self.lines = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
         self.output = []
@@ -179,6 +224,10 @@ class PluginEndToEndTest(unittest.TestCase):
             m = run.wait_for_line(r"PORT (\d+)$", 30)
             self.assertIsNotNone(m, run.log())
             port = int(m.group(1))
+            # the host bar's WAN address, when the router doesn't say: from the "what's my IP" service
+            m = run.wait_for_line(r"LOOKEDUP (\S+)$", 15)
+            self.assertIsNotNone(m, run.log())
+            self.assertEqual(m.group(1), "%s:%d" % (WhatsMyIp.ADDRESS, port), run.log())
 
             # the built-in server requires Opus: a client that only plays Vorbis is refused
             old = Client(port)
@@ -253,10 +302,11 @@ class PluginEndToEndTest(unittest.TestCase):
         self.assertEqual(two.get("b_got_chat"), "1", log)
         self.assertEqual((two.get("a_users"), two.get("b_users")), ("1", "1"), log)
         # one name twice, from one address: the second is name.2, and neither drops the other
-        self.assertEqual((two.get("a_name"), two.get("b_name")), ("guest", "guest.2"), log)
-        self.assertEqual((two.get("a_sees"), two.get("b_sees")), ("guest.2", "guest"), log)
+        name = default_user_name()
+        self.assertEqual((two.get("a_name"), two.get("b_name")), (name, name + ".2"), log)
+        self.assertEqual((two.get("a_sees"), two.get("b_sees")), (name + ".2", name), log)
         self.assertEqual((two.get("a_state"), two.get("b_state")), ("connected", "connected"), log)
-        self.assertIn("guest@127.0.0.1.2/0 ", log)  # the name the server gave the second
+        self.assertIn(name + "@127.0.0.1.2/0 ", log)  # the name the server gave the second
         # the room's bitrate and codec: bob changes them for both; the room starts at the host's own bitrate
         self.assertEqual(room.get("start_kbps"), "128", log)
         self.assertEqual((room.get("a_kbps"), room.get("b_kbps")), ("256", "256"), log)
