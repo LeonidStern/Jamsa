@@ -112,6 +112,7 @@ private:
   void updateHostBar(const Snapshot &s);
   void updateLicense(const Snapshot &s);
   void syncSettings();
+  void selectEntry(ui::MenuBox *menu, int index);
   void connectOrDisconnect();
   void sendChatLine();
   void copyAddress(ui::AddressBox *box);
@@ -154,6 +155,7 @@ private:
   ui::FlatButton *m_tx = nullptr, *m_in = nullptr;
   VSTGUI::CTextLabel *m_myName = nullptr;
   ui::FaderBox *m_inputVolume = nullptr;
+  ui::MenuBox *m_codec = nullptr;
   ui::MenuBox *m_bitrate = nullptr;
   ui::SegmentMeter *m_myMeter = nullptr;
   VSTGUI::CScrollView *m_players = nullptr;

@@ -497,7 +497,7 @@ void Engine::sendChat(const std::string &text)
         addChat(ChatLine::Private, "-> " + who, what);
       }
     }
-    else addChat(ChatLine::Error, "", "Unknown command. Commands: /me, /msg name text, /topic, /bpm, /bpi, /kick, /admin; !vote bpm 120, !vote bpi 16 and !codec opus|flac go to the server as typed.");
+    else addChat(ChatLine::Error, "", "Unknown command. Commands: /me, /msg name text, /topic, /bpm, /bpi, /kick, /admin; !vote bpm 120, !vote bpi 16, !codec opus|flac and !bitrate 128 go to the server as typed.");
   });
 }
 
@@ -562,11 +562,40 @@ void Engine::setMetronome(float volume, bool mute)
 
 void Engine::setOpusKbps(int kbps)
 {
+  const int k = Settings::nearestOpusKbps(kbps);
   {
     std::lock_guard<std::mutex> lock(m_settingsMutex);
-    m_settings.opusKbps = Settings::nearestOpusKbps(kbps);
+    m_settings.opusKbps = k;
   }
-  post([this]() { applyLocalSettings(); });
+  post([this, k]() {
+    // a server that sets the room's bitrate: the room's changes, for everyone
+    const int room = m_state == ConnState::Connected ? m_client->GetRoomOpusKbps() : 0;
+    if (room > 0 && room != k) m_client->ChatMessage_Send("MSG", ("!bitrate " + std::to_string(k)).c_str());
+    applyLocalSettings();
+  });
+}
+
+void Engine::setRoomCodec(const std::string &codec)
+{
+  if (codec != "opus" && codec != "flac") return;
+  post([this, codec]() {
+    if (m_state == ConnState::Connected) m_client->ChatMessage_Send("MSG", ("!codec " + codec).c_str());
+  });
+}
+
+int Engine::sendKbps()
+{
+  const int room = m_state == ConnState::Connected ? m_client->GetRoomOpusKbps() : 0;
+  return room > 0 ? room : getSettings().opusKbps;
+}
+
+void Engine::applySendKbps()
+{
+  // NJClient starts a new encoder at the next interval when the bitrate changes
+  const int want = sendKbps();
+  int kbps = 0;
+  m_client->GetLocalChannelInfo(0, nullptr, &kbps, nullptr);
+  if (kbps != want) m_client->SetLocalChannelInfo(0, nullptr, false, 0, true, want, false, false);
 }
 
 void Engine::setEditorSize(int width, int height)
@@ -659,6 +688,7 @@ void Engine::threadProc()
       if (m_client->Run()) break; // nonzero: nothing more to do for now
 
     updateConnection();
+    applySendKbps(); // the room's bitrate may have changed
     followHostTempo();
 
     const double t = now_seconds();
@@ -683,11 +713,9 @@ void Engine::applyLocalSettings()
   m_clickVolume = s.metronomeMute ? 0.0f : s.metronomeVolume;
   m_client->SetLocalChannelMonitoring(0, true, 1.0f, true, 0.0f, true, !s.monitor, false, false);
 
-  // NJClient starts a new encoder at the next interval when the bitrate changes
-  int kbps = 0;
+  applySendKbps();
   bool bcast = false;
-  m_client->GetLocalChannelInfo(0, nullptr, &kbps, &bcast);
-  if (kbps != s.opusKbps) m_client->SetLocalChannelInfo(0, nullptr, false, 0, true, s.opusKbps, false, false);
+  m_client->GetLocalChannelInfo(0, nullptr, nullptr, &bcast);
   if (bcast != s.transmit)
   {
     m_client->SetLocalChannelInfo(0, nullptr, false, 0, false, 0, true, s.transmit);
@@ -828,7 +856,7 @@ void Engine::doSetHosting(bool on)
   if (on)
   {
     std::string err;
-    if (HostServer::instance().start(this, &err))
+    if (HostServer::instance().start(this, getSettings().opusKbps, &err))
     {
       m_hosting = true;
       m_hostLogSerial = 0;
@@ -950,6 +978,7 @@ void Engine::publish()
   snap.status = m_statusText.empty() ? "Not connected" : m_statusText;
   snap.server = m_server;
   snap.opusKbps = getSettings().opusKbps;
+  snap.sendKbps = sendKbps();
   if (m_state == ConnState::Connected || m_state == ConnState::Connecting)
   {
     snap.userName = displayName(m_client->GetUser() ? m_client->GetUser() : "");
@@ -961,6 +990,7 @@ void Engine::publish()
     if (m_state == ConnState::Connected)
     {
       snap.roomCodec = codec_name(m_client->GetCodecMask());
+      snap.roomOpusKbps = m_client->GetRoomOpusKbps();
       const unsigned int upload = m_client->GetUploadCodec();
       if (upload) snap.uploadCodec = fourcc_text(upload);
       snap.canSend = upload != 0;
@@ -1151,6 +1181,12 @@ std::string Engine::command(const std::string &lineIn)
     setOpusKbps(k);
     return "ok";
   }
+  if (verb == "codec")
+  {
+    if (arg != "opus" && arg != "flac") return "error: codec opus or codec flac";
+    setRoomCodec(arg);
+    return "ok";
+  }
   if (verb == "follow") { setFollowHostTempo(arg == "on" || arg == "1"); return "ok"; }
   if (verb == "vote")
   {
@@ -1188,12 +1224,13 @@ std::string Engine::command(const std::string &lineIn)
     const int n = snprintf(buf, sizeof(buf), "state=%s server=%s user=%s bpm=%.1f bpi=%d pos=%d len=%d codec=%s upload=%s kbps=%d users=%d hosting=%d port=%d public=%s local=%s license=%d audio=%d",
                            state_name(s.state), s.server.c_str(), s.userName.c_str(), s.bpm, s.bpi, s.intervalPos, s.intervalLength,
                            s.roomCodec.empty() ? "-" : s.roomCodec.c_str(), s.uploadCodec.empty() ? "-" : s.uploadCodec.c_str(),
-                           s.opusKbps, (int)s.users.size(), s.hosting ? 1 : 0, s.hostPort,
+                           s.sendKbps, (int)s.users.size(), s.hosting ? 1 : 0, s.hostPort,
                            s.hostPublicAddress.empty() ? "-" : s.hostPublicAddress.c_str(),
                            s.hostLocalAddress.empty() ? "-" : s.hostLocalAddress.c_str(), s.licensePending ? 1 : 0, s.audioRunning ? 1 : 0);
     if (n > 0 && n < (int)sizeof(buf))
-      snprintf(buf + n, sizeof(buf) - n, " follow=%d hosttempo=%.3f bars=%s barerr=%.3f barfixes=%d tempovotes=%d",
-               s.followTempo ? 1 : 0, s.hostTempo, bar_state_name(s.barState), s.barErrorMs, s.barFixes, s.tempoVotes);
+      snprintf(buf + n, sizeof(buf) - n, " follow=%d hosttempo=%.3f bars=%s barerr=%.3f barfixes=%d tempovotes=%d ownkbps=%d roomkbps=%d",
+               s.followTempo ? 1 : 0, s.hostTempo, bar_state_name(s.barState), s.barErrorMs, s.barFixes, s.tempoVotes,
+               s.opusKbps, s.roomOpusKbps);
     return buf;
   }
   if (verb == "users")

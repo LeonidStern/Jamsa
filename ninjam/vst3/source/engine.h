@@ -95,7 +95,9 @@ struct Snapshot
   std::string roomCodec;     // "Opus", "FLAC" or "Vorbis" while connected
   std::string uploadCodec;   // what we send ('OPUS' or 'FLAC'), empty when the room has neither
   bool canSend = true;       // false in a Vorbis room (or on a server without Opus): nothing is sent
-  int opusKbps = 0;          // the Opus bitrate asked for (it applies from the next interval)
+  int opusKbps = 0;          // your own Opus bitrate (Settings::opusKbps)
+  int roomOpusKbps = 0;      // the room's, while connected to a server that sets one; 0: none
+  int sendKbps = 0;          // what you send in Opus rooms: the room's, else your own (from the next interval)
   float localPeak[2] = { 0, 0 };
 
   std::vector<RemoteUserView> users;
@@ -197,7 +199,10 @@ public:
   void setTransmit(bool on);
   void setMonitor(bool on);
   void setMetronome(float volume, bool mute);
-  void setOpusKbps(int kbps); // one of Settings::OPUS_KBPS; it applies from the next interval
+  // One of Settings::OPUS_KBPS: your own, and in a room whose server sets one for everyone
+  // (see mpb.h), the room's too (!bitrate N). It applies from the next interval.
+  void setOpusKbps(int kbps);
+  void setRoomCodec(const std::string &codec); // "opus" or "flac": the room's (!codec), while connected
   void setEditorSize(int width, int height);
   void setFollowHostTempo(bool on);
   void setHostName(const std::string &name); // the host's name, for the editor
@@ -208,7 +213,7 @@ public:
   // Text commands, for tests and automation (see plugin.cpp); returns the reply:
   //   connect host:port [name], disconnect, name X, host on|off, chat text (sent as typed),
   //   license accept|decline, transmit on|off, monitor on|off, metronome on|off,
-  //   bitrate 64|96|128|160|256|510, follow on|off, vote bpm|bpi N, status, users, chatlog,
+  //   bitrate 64|96|128|160|256|510, codec opus|flac, follow on|off, vote bpm|bpi N, status, users, chatlog,
   //   syncnote, nextinterval
   std::string command(const std::string &line);
 
@@ -228,6 +233,8 @@ private:
   void clientDisconnect();
   void doSetHosting(bool on);
   void applyLocalSettings();
+  int sendKbps();       // the Opus bitrate to send: the room's, else your own
+  void applySendKbps(); // sets the local channel's bitrate to it
   void updateConnection();
   void updateUsers(Snapshot &snap);
   void pollHosting(Snapshot &snap);

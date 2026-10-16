@@ -57,6 +57,7 @@ enum Tags
   kTagAccept,
   kTagDecline,
   kTagBitrate,
+  kTagCodec,
   kTagSync,
   kTagBpm,
   kTagBpi,
@@ -480,6 +481,10 @@ void NinjamEditor::buildViews()
   m_inputVolume->setDefaultValue(gainToSlider(1.0f));
   m_inputVolume->setTooltipText("The volume of what you send (double-click for 0 dB)");
   m_myRow->addView(m_inputVolume);
+  m_codec = new MenuBox(z, this, kTagCodec, f.small);
+  m_codec->addEntry("Opus"); // the order of CODEC_CHOICES
+  m_codec->addEntry("FLAC");
+  m_myRow->addView(m_codec);
   m_bitrate = new MenuBox(z, this, kTagBitrate, f.small);
   for (int k : Settings::OPUS_KBPS) m_bitrate->addEntry(uitext::kbpsText(k).c_str());
   m_myRow->addView(m_bitrate);
@@ -680,7 +685,7 @@ void NinjamEditor::layoutMixer(const CRect &pane)
   place(m_colPan, CRect(x0 + c.pan0 - 4, PAD, x0 + c.pan1 + 4, PAD + COLS_H));
   place(m_colLevel, CRect(x0 + c.level0, PAD, x0 + c.level1, PAD + COLS_H));
 
-  // your channel: TX IN name | volume | (no pan) | bitrate | meter
+  // your channel: TX IN name | volume | the room's codec and bitrate | meter
   CCoord y = PAD + COLS_H + 2;
   place(m_myRow, CRect(x0, y, x0 + rw, y + ROW_H));
   {
@@ -691,8 +696,13 @@ void NinjamEditor::layoutMixer(const CRect &pane)
     place(m_in, CRect(x, 4, x + inW, ROW_H - 4));
     x += inW + 4;
     place(m_myName, CRect(x, 0, std::max(x + 10, c.name1), ROW_H));
-    place(m_inputVolume, CRect(c.vol0, 4, c.vol1, ROW_H - 4));
-    place(m_bitrate, CRect(c.mute0, 2, c.solo1, ROW_H - 2));
+    // the two boxes end where the solo buttons do; the volume makes room for them
+    const CCoord boxW = std::max({ textWidth(m_fonts.small, "Opus"), textWidth(m_fonts.small, "FLAC"),
+                                   textWidth(m_fonts.small, "510k") }) + 18;
+    const CCoord bitrate0 = c.solo1 - boxW, codec0 = bitrate0 - 4 - boxW;
+    place(m_inputVolume, CRect(c.vol0, 4, std::max(c.vol0 + 30, std::min(c.vol1, codec0 - 5)), ROW_H - 4));
+    place(m_codec, CRect(codec0, 2, bitrate0 - 4, ROW_H - 2));
+    place(m_bitrate, CRect(bitrate0, 2, c.solo1, ROW_H - 2));
     place(m_myMeter, CRect(c.level0, 0, c.level1, ROW_H));
   }
   y += ROW_H + ROW_GAP;
@@ -783,12 +793,30 @@ void NinjamEditor::update()
     if (name.empty()) name = "You";
     setLabel(m_myName, name, true);
     m_myMeter->setPeak(std::max(s.localPeak[0], s.localPeak[1]));
-    // FLAC is lossless: the bitrate is for Opus rooms
+    // the room's codec: picking one switches everyone (!codec), so only in a room
+    m_codec->setEnabled(connected);
+    m_codec->setShown(connected && !s.roomCodec.empty() ? s.roomCodec : "\xe2\x80\x94");
+    setTooltip(m_codec, connected ? "The room's codec: pick Opus or FLAC to switch everyone (FLAC is lossless and needs "
+                                    "several times the bandwidth)"
+                                  : "The room's codec, Opus or FLAC: in a room, pick one to switch everyone");
+    selectEntry(m_codec, s.roomCodec == "FLAC" ? 1 : connected && s.roomCodec == "Opus" ? 0 : -1);
+
+    // the bitrate: the room's (picking one changes it for everyone), else your own; FLAC is lossless
     const bool flac = connected && s.roomCodec == "FLAC";
     m_bitrate->setEnabled(!flac);
-    m_bitrate->setShown(flac ? "FLAC" : uitext::kbpsText(s.opusKbps));
-    setTooltip(m_bitrate, flac ? "The room plays FLAC, which is lossless: the bitrate is for rooms that play Opus"
-                               : "The bitrate you send in rooms that play Opus; a change applies from the next interval");
+    m_bitrate->setShown(flac ? "\xe2\x80\x94" : uitext::kbpsText(s.sendKbps));
+    if (flac) setTooltip(m_bitrate, "The room plays FLAC, which is lossless: the bitrate is for when it plays Opus");
+    else if (s.roomOpusKbps > 0)
+      setTooltip(m_bitrate, "The room's Opus bitrate: pick one to change it for everyone; it applies from the next interval");
+    else if (connected)
+      setTooltip(m_bitrate, "The Opus bitrate you send: this server doesn't set one for the room");
+    else setTooltip(m_bitrate, "Your Opus bitrate: the room's when you host, and what you send where the server doesn't set one");
+    {
+      int index = -1;
+      for (int i = 0; i < Settings::NUM_OPUS_KBPS; i ++)
+        if (Settings::OPUS_KBPS[i] == s.sendKbps) index = i;
+      selectEntry(m_bitrate, index);
+    }
     std::string tx = "Transmit: send your input to the room";
     if (connected && !s.canSend) tx += " (this room plays " + s.roomCodec + ": the plug-in can't send here)";
     else if (connected && !s.uploadCodec.empty()) tx += " (you send " + codecFromFourcc(s.uploadCodec) + ")";
@@ -966,13 +994,15 @@ void NinjamEditor::syncSettings()
   setControlValue(m_sync, st.followHostTempo ? 1.0f : 0.0f);
   setControlValue(m_inputVolume, gainToSlider(st.inputVolume));
   setControlValue(m_clickVolume, gainToSlider(st.metronomeVolume));
-  for (int i = 0; i < Settings::NUM_OPUS_KBPS; i ++)
-    if (Settings::OPUS_KBPS[i] == st.opusKbps && m_bitrate->getCurrentIndex() != i)
-    {
-      m_syncing = true;
-      m_bitrate->setValue((float)i);
-      m_syncing = false;
-    }
+}
+
+// checks entry `index` of a menu (none for -1) without it counting as a pick
+void NinjamEditor::selectEntry(ui::MenuBox *menu, int index)
+{
+  if (index < 0 || menu->getCurrentIndex() == index) return;
+  m_syncing = true;
+  menu->setValue((float)index); // (setCurrent() leaves the value, which the menu checks, as it was)
+  m_syncing = false;
 }
 
 void NinjamEditor::rebuildRows(const Snapshot &s)
@@ -1261,6 +1291,15 @@ void NinjamEditor::valueChanged(CControl *control)
     {
       const int i = m_bitrate->getCurrentIndex();
       if (i >= 0 && i < Settings::NUM_OPUS_KBPS) engine().setOpusKbps(Settings::OPUS_KBPS[i]);
+      return;
+    }
+    case kTagCodec:
+    {
+      const int i = m_codec->getCurrentIndex();
+      Snapshot s;
+      engine().getSnapshot(s);
+      const char *codec = i == 1 ? "FLAC" : "Opus";
+      if (i >= 0 && s.state == ConnState::Connected && s.roomCodec != codec) engine().setRoomCodec(i == 1 ? "flac" : "opus");
       return;
     }
     case kTagInputVolume: engine().setInputVolume(sliderToGain(v)); return;

@@ -11,8 +11,9 @@ Vorbis is refused, and it watches the codec and size of every interval the plug-
 test_two_instances: two instances of the plug-in in one process, as two tracks in a DAW, both
 with the default name. One hosts the server; the other can't host a second one in the same
 process, is told to join it, joins as "guest.2" (the server lets one name in twice), and they
-hear each other, chat and both stay in. Then the first stops its server, the second hosts one,
-and the first joins that.
+hear each other, chat and both stay in. The second changes the room's Opus bitrate and codec,
+which changes what the first sends too. Then the first stops its server, the second hosts one
+(at its own bitrate), and the first joins that.
 
 test_host_sync: the host leads. The test host passes a tempo and a transport (ProcessContext) as
 Ableton does. The room follows the host's tempo when the plug-in joins and when the host's tempo
@@ -245,7 +246,7 @@ class PluginEndToEndTest(unittest.TestCase):
         log = run.log()
         self.assertEqual(run.proc.returncode, 0, log)
         self.assertIn("DONE", run.output, log)
-        two, swap = results.get("two", {}), results.get("swap", {})
+        two, room, swap = results.get("two", {}), results.get("room", {}), results.get("swap", {})
         self.assertEqual(two.get("b_host_refused"), "1", "told to join the server already in this process\n" + log)
         self.assertGreater(float(two["a_hears_snr"]), MIN_SNR["opus"], log)
         self.assertGreater(float(two["b_hears_snr"]), MIN_SNR["opus"], log)
@@ -256,6 +257,13 @@ class PluginEndToEndTest(unittest.TestCase):
         self.assertEqual((two.get("a_sees"), two.get("b_sees")), ("guest.2", "guest"), log)
         self.assertEqual((two.get("a_state"), two.get("b_state")), ("connected", "connected"), log)
         self.assertIn("guest@127.0.0.1.2/0 ", log)  # the name the server gave the second
+        # the room's bitrate and codec: bob changes them for both; the room starts at the host's own bitrate
+        self.assertEqual(room.get("start_kbps"), "128", log)
+        self.assertEqual((room.get("a_kbps"), room.get("b_kbps")), ("256", "256"), log)
+        self.assertEqual((room.get("a_own"), room.get("b_own")), ("128", "256"), log)
+        self.assertEqual(room.get("b_saw_note"), "1", log)
+        self.assertEqual((room.get("flac"), room.get("opus")), ("FLAC/FLAC", "Opus/OPUS"), log)
+        self.assertEqual(swap.get("a_kbps"), "256", "bob hosts at his own bitrate\n" + log)
         self.assertEqual(swap.get("b_dropped"), "1", "the joined instance leaves when the server stops\n" + log)
         self.assertEqual(swap.get("b_hosting"), "1", "the other instance can host once the first stopped\n" + log)
         self.assertEqual((swap.get("a_state"), swap.get("a_users")), ("connected", "1"), log)

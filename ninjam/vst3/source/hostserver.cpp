@@ -33,7 +33,8 @@ namespace ninjam_vst3 {
 static const size_t MAX_MESSAGES = 200;
 
 // Anyone can join without an account, any player can change BPM and BPI (a single
-// vote passes) or switch the room to Opus or FLAC (!codec), and the server asks the
+// vote passes), switch the room to Opus or FLAC (!codec) or change its Opus bitrate
+// (!bitrate, at first the host's own), and the server asks the
 // router to forward its port. Two players with one name from one address (two
 // instances in a DAW that both keep the default name) both stay: the second is name.2.
 static const char *CONFIG =
@@ -51,6 +52,7 @@ static const char *CONFIG =
     "SetVotingVoteTimeout 60\n"
     "AllowCodecs opus flac\n"
     "RequireCodec opus\n" // older clients (Vorbis only) are refused, so the room never falls back to Vorbis
+    "OpusBitrate %d\n"
     "PortMapping yes\n";
 
 HostServer &HostServer::instance()
@@ -59,7 +61,7 @@ HostServer &HostServer::instance()
   return s;
 }
 
-std::string HostServer::writeConfig(int port)
+std::string HostServer::writeConfig(int port, int opusKbps)
 {
   std::string dir;
 #ifdef _WIN32
@@ -78,13 +80,13 @@ std::string HostServer::writeConfig(int port)
 
   FILE *fp = fopen(path.c_str(), "w");
   if (!fp) return std::string();
-  fprintf(fp, CONFIG, port);
+  fprintf(fp, CONFIG, port, opusKbps);
   const bool ok = !ferror(fp);
   fclose(fp);
   return ok ? path : std::string();
 }
 
-bool HostServer::start(const void *owner, std::string *error)
+bool HostServer::start(const void *owner, int opusKbps, std::string *error)
 {
   std::lock_guard<std::mutex> busy(m_startStop);
   {
@@ -113,7 +115,7 @@ bool HostServer::start(const void *owner, std::string *error)
   for (int i = 0; i < PORTS_TO_TRY; i ++)
   {
     const int port = FIRST_PORT + i;
-    const std::string cfg = writeConfig(port);
+    const std::string cfg = writeConfig(port, opusKbps);
     if (cfg.empty())
     {
       err = "Could not write the server's settings to the temporary folder.";
