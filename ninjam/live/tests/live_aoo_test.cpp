@@ -19,19 +19,28 @@
   order its producer pushed it; no two blocks of the pool overlap; a block
   freed is reused rather than taken again from the pool's memory.
 
+  Then one test per AOO bug fixed in our copy (README.md, "Bugs fixed"),
+  each failing without its fix, most of them through a source and sinks on
+  the virtual network of live_harness.h.
+
 */
 
 #include "common/lockfree.hpp"
 #include "common/sync.hpp"
+#include "memory.hpp"
+#include "resampler.hpp"
 #include "rt_memory_pool.hpp"
 
+#include "live_harness.h"
 #include "testutil.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <random>
 #include <thread>
 #include <vector>
@@ -123,15 +132,20 @@ static void test_queue_threads(int producers, double seconds)
 }
 
 static std::atomic<long> g_queue_allocations{0};
+static long g_queue_allocation_limit = LONG_MAX;
 
-// std::allocator that counts its allocations
+// std::allocator that counts its allocations and throws past a limit
 template<typename T>
 struct counting_allocator
 {
   typedef T value_type;
   counting_allocator() {}
   template<typename U> counting_allocator(const counting_allocator<U> &) {}
-  T *allocate(size_t n) { g_queue_allocations++; return std::allocator<T>().allocate(n); }
+  T *allocate(size_t n)
+  {
+    if (++g_queue_allocations > g_queue_allocation_limit) throw std::bad_alloc();
+    return std::allocator<T>().allocate(n);
+  }
   void deallocate(T *p, size_t n) { std::allocator<T>().deallocate(p, n); }
   template<typename U> bool operator==(const counting_allocator<U> &) const { return true; }
   template<typename U> bool operator!=(const counting_allocator<U> &) const { return false; }
@@ -164,6 +178,24 @@ static void test_queue_reserve()
   CHECK_EQ(g_queue_allocations.load(), 1L);
   int v;
   while (queue.pop(v)) {}
+
+  // Fixed: asking for fewer nodes than are already free made the count
+  // wrap around, and reserve() allocated until memory ran out.
+  // (The limit keeps the broken version from eating all memory.)
+  g_queue_allocations = 0;
+  g_queue_allocation_limit = 1000;
+  bool threw = false;
+  try { queue.reserve(8); }
+  catch (const std::bad_alloc &) { threw = true; }
+  CHECK(!threw);
+  CHECK_EQ(g_queue_allocations.load(), 0L);
+  g_queue_allocations = 0;
+  threw = false;
+  try { queue.reserve(20); } // 17 free, so 3 more
+  catch (const std::bad_alloc &) { threw = true; }
+  CHECK(!threw);
+  CHECK_EQ(g_queue_allocations.load(), 3L);
+  g_queue_allocation_limit = LONG_MAX;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,9 +363,145 @@ static void test_pool_exhausted()
   if (big) pool.deallocate(big, 100000);
 }
 
+// ---------------------------------------------------------------------------
+// AOO bugs fixed in our copy
+// ---------------------------------------------------------------------------
+
+using namespace live_harness;
+
+static bool run_until_active(session &s, int node, double seconds)
+{
+  return s.run_until([&]() { return s.nodes[node].stream_active > 0; }, seconds);
+}
+
+// The resampler kept its buffer when only the channel count changed, but the
+// buffer's layout depends on it: writes before the block, and a bad free.
+static void test_resampler_channels()
+{
+  aoo::dynamic_resampler r;
+  // (7 * 2.5 + 3) * 2 channels == (3 * 2.5 + 3) * 4 channels samples
+  r.setup(7, 7, false, 48000, 48000, true, 2, kAooResampleCubic);
+  r.setup(3, 3, false, 48000, 48000, true, 4, kAooResampleCubic);
+  AooSample in[3 * 4], out[3 * 4];
+  for (int i = 0; i < 12; i++) { in[i] = (AooSample)(i + 1); out[i] = 0; }
+  CHECK(r.write(in, 3));
+  CHECK(r.read(out, 3));
+  bool same = true;
+  for (int i = 0; i < 12; i++) if (out[i] != in[i]) same = false;
+  CHECK(same);
+}
+
+// The allocators' converting assignment fell off its end without a return.
+static void test_allocator_assignment()
+{
+  aoo::allocator<int> a;
+  aoo::allocator<char> b;
+  CHECK(&(a = b) == &a);
+  aoo::rt_allocator<int> c;
+  aoo::rt_allocator<char> d;
+  CHECK(&(c = d) == &c);
+}
+
+// AooSource::getSinkChannelOffset() set the offset (to the caller's variable)
+// instead of getting it; AooSink::getDynamicResampling() took its result by
+// value.
+static void test_getters()
+{
+  session s(source_options(), { sink_options() });
+  const AooEndpoint sink = s.nodes[1].endpoint();
+  CHECK_EQ(s.source->setSinkChannelOffset(sink, 1), kAooOk);
+  AooInt32 offset = -1;
+  CHECK_EQ(s.source->getSinkChannelOffset(sink, offset), kAooOk);
+  CHECK_EQ(offset, 1);
+  offset = -1;
+  s.source->getSinkChannelOffset(sink, offset);
+  CHECK_EQ(offset, 1);
+
+  AooBool on = kAooFalse;
+  s.sinks[0]->setDynamicResampling(kAooTrue);
+  CHECK_EQ(s.sinks[0]->getDynamicResampling(on), kAooOk);
+  CHECK(on == kAooTrue);
+  s.sinks[0]->setDynamicResampling(kAooFalse);
+  s.sinks[0]->getDynamicResampling(on);
+  CHECK(on == kAooFalse);
+}
+
+// The sink ran a codec control for its decoder through the encoder's
+// control function, on the decoder's state: the Opus decoder's latency came
+// back as the encoder's (120 samples), and setters wrote into the decoder.
+static void test_sink_codec_control()
+{
+  session s(source_options(), { sink_options() });
+  s.start();
+  CHECK(run_until_active(s, 1, 2.0));
+  const AooEndpoint source = s.nodes[0].endpoint();
+  AooInt32 latency = -1;
+  CHECK_EQ(s.sinks[0]->codecControl(kAooCodecOpus, kAooCodecCtlGetLatency,
+    (AooIntPtr)&source, &latency, sizeof(latency)), kAooOk);
+  CHECK_EQ(latency, 0);
+  AooInt32 encoder_latency = -1;
+  CHECK_EQ(s.source->codecControl(kAooCodecOpus, kAooCodecCtlGetLatency, 0,
+    &encoder_latency, sizeof(encoder_latency)), kAooOk);
+  CHECK_EQ(encoder_latency, 120); // 2.5 ms at 48 kHz
+}
+
+// When the source's audio thread misses blocks it sends empty "xrun" blocks
+// to fill the time. In the OSC format the sink took them for one-frame
+// blocks that never completed: dropped, and asked for again and again.
+static void test_xrun_blocks(bool binary)
+{
+  source_options so;
+  so.binary = binary;
+  session s(so, { sink_options() });
+  s.start();
+  CHECK(run_until_active(s, 1, 2.0));
+  s.run(0.5);
+  const int dropped = s.nodes[1].dropped;
+  s.source_skips = 30; // 40 ms
+  s.run(30 * 64 / 48000.0);
+  s.source->reportXRun(30 * 64);
+  s.run(1.0);
+  CHECK(s.nodes[1].xrun > 0);
+  CHECK_EQ(s.nodes[1].dropped, dropped);
+  CHECK(s.outputs_finite);
+  printf("  xrun blocks (%s): %d empty, %d dropped\n", binary ? "binary" : "OSC",
+    s.nodes[1].xrun, s.nodes[1].dropped - dropped);
+}
+
+// startStream() hides the sample offset in the metadata's data pointer.
+// The first /start message took it out and put the pointer back, so every
+// later /start of the stream (a sink that joins later, or one that asks
+// again because the first was lost) sent the pointer as the offset, and that
+// sink never became active.
+static void test_start_again_with_metadata()
+{
+  source_options so;
+  so.add_sinks = false;
+  session s(so, { sink_options(), sink_options() });
+  s.source->addSink(s.nodes[1].endpoint(), kAooTrue);
+  static const char text[] = "jamsa live";
+  AooData md;
+  md.type = kAooDataText;
+  md.data = (const AooByte *)text;
+  md.size = sizeof(text);
+  s.start(&md, 0);
+  CHECK(run_until_active(s, 1, 2.0));
+  s.run(0.2);
+  s.source->addSink(s.nodes[2].endpoint(), kAooTrue);
+  CHECK(run_until_active(s, 2, 2.0));
+  for (int k = 1; k <= 2; k++)
+  {
+    CHECK(s.nodes[k].start_had_metadata);
+    CHECK(s.nodes[k].start_metadata.size() == sizeof(text) &&
+      !memcmp(s.nodes[k].start_metadata.data(), text, sizeof(text)));
+    CHECK(s.nodes[k].last_active_offset >= 0 && s.nodes[k].last_active_offset < 64);
+  }
+}
+
 int main()
 {
   printf("live_aoo_test\n");
+  aoo_initialize(nullptr);
 
   test_queue_threads<true>(3, 0.3);
   test_queue_threads<false>(1, 0.2);
@@ -345,6 +513,14 @@ int main()
   test_pool_reuse();
   test_pool_steady();
   test_pool_exhausted();
+
+  test_resampler_channels();
+  test_allocator_assignment();
+  test_getters();
+  test_sink_codec_control();
+  test_xrun_blocks(true);
+  test_xrun_blocks(false);
+  test_start_again_with_metadata();
 
   return test_summary("live_aoo_test");
 }

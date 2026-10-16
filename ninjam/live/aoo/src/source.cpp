@@ -1174,6 +1174,14 @@ void Source::make_new_stream(aoo::time_tag tt, AooData *md) {
     reset_timer();
 
     // "accept" and store stream metadata
+    // NB: startStream() has bashed the sample offset into the data pointer.
+    // Take it out here, once: send_start() runs again for every sink that
+    // joins later or asks for /start, and must send the same offset.
+    sample_offset_ = 0;
+    if (md) {
+        sample_offset_ = (int32_t)reinterpret_cast<intptr_t>(md->data);
+        md->data = md->size > 0 ? (AooByte *)md + sizeof(AooData) : nullptr;
+    }
     metadata_.reset(md);
 
     // remove audio from previous stream
@@ -1467,20 +1475,14 @@ void Source::send_start(const sendfn& fn){
         return;
     }
 
-    // obtain stream metadata and/or sample offset
+    // obtain stream metadata and sample offset, see make_new_stream()
     AooData *md = nullptr;
-    int32_t offset = 0;
-    if (metadata_) {
-        // offset has been bashed into data pointer, see startStream()
-        offset = reinterpret_cast<intptr_t>(metadata_->data) * ratio;
-        if (metadata_->size > 0) {
-            // restore data pointer!
-            metadata_->data = (AooByte *)metadata_.get() + sizeof(AooData);
-            // copy metadata
-            auto mdsize = flat_metadata_size(*metadata_);
-            md = (AooData *)alloca(mdsize);
-            flat_metadata_copy(*metadata_, *md);
-        }
+    int32_t offset = sample_offset_ * ratio;
+    if (metadata_ && metadata_->size > 0) {
+        // copy metadata
+        auto mdsize = flat_metadata_size(*metadata_);
+        md = (AooData *)alloca(mdsize);
+        flat_metadata_copy(*metadata_, *md);
     }
 #if IDLE_IF_NO_SINKS
     // cache sinks that need to send a /start message

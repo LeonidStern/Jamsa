@@ -135,7 +135,7 @@ AooCodec * AOO_CALL Encoder_new() {
     return aoo::construct<Encoder>();
 }
 
-void Encoder_free(AooCodec *c){
+void AOO_CALL Encoder_free(AooCodec *c){
     aoo::destroy(static_cast<Encoder *>(c));
 }
 
@@ -292,7 +292,7 @@ AooError AOO_CALL Encoder_control(
     return kAooOk;
 }
 
-AooError Encoder_encode(
+AooError AOO_CALL Encoder_encode(
         AooCodec *c, const AooSample *inSamples, AooInt32 frameSize,
         AooByte *outData, AooInt32 *outSize)
 {
@@ -339,7 +339,7 @@ AooCodec * AOO_CALL Decoder_new() {
     return aoo::construct<Decoder>();
 }
 
-void Decoder_free(AooCodec *c){
+void AOO_CALL Decoder_free(AooCodec *c){
     aoo::destroy(static_cast<Decoder *>(c));
 }
 
@@ -393,7 +393,7 @@ AooError AOO_CALL Decoder_setup(AooCodec *c, AooFormat *f) {
     return kAooOk;
 }
 
-AooError Decoder_control(AooCodec *c, AooCtl ctl, void *ptr, AooSize size){
+AooError AOO_CALL Decoder_control(AooCodec *c, AooCtl ctl, void *ptr, AooSize size){
     auto d = static_cast<Decoder *>(c);
     switch (ctl){
     case kAooCodecCtlReset:
@@ -416,7 +416,7 @@ AooError Decoder_control(AooCodec *c, AooCtl ctl, void *ptr, AooSize size){
     return kAooOk;
 }
 
-AooError Decoder_decode(
+AooError AOO_CALL Decoder_decode(
         AooCodec *c, const AooByte *inData, AooInt32 size,
         AooSample *outSamples, AooInt32 *frameSize)
 {
@@ -445,7 +445,7 @@ AooError Decoder_decode(
 
 //-------------------------- free functions ------------------------//
 
-AooError serialize(const AooFormat *f, AooByte *buf, AooInt32 *size)
+AooError AOO_CALL serialize(const AooFormat *f, AooByte *buf, AooInt32 *size)
 {
     if (!size) {
         return kAooErrorBadArgument;
@@ -470,7 +470,7 @@ AooError serialize(const AooFormat *f, AooByte *buf, AooInt32 *size)
     return kAooOk;
 }
 
-AooError deserialize(
+AooError AOO_CALL deserialize(
         const AooByte *buf, AooInt32 size, AooFormat *f, AooInt32 *fmtsize)
 {
     if (!fmtsize) {

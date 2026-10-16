@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <limits>
 
 #define TIME_DLL_VERBOSE 0
@@ -42,7 +43,7 @@ public:
         e2_ += c_ * e;
         // flush denormals
         if (std::numeric_limits<double>::has_denorm != std::denorm_absent){
-            if (e2_ <= std::numeric_limits<double>::min()){
+            if (std::fabs(e2_) <= std::numeric_limits<double>::min()){
                 e2_ = 0;
             #if TIME_DLL_VERBOSE
                 fprintf(stderr, "flushed denormals\n!");

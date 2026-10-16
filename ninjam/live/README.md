@@ -53,7 +53,9 @@ and its tests; it can also be built alone:
 Tests (`tests/`):
 
 - `live_aoo_test`: AOO's lock-free queue and RT memory pool under threads
-  (ported from AOO's own tests, with real checks instead of printouts).
+  (ported from AOO's own tests, with real checks instead of printouts), and
+  a test for each AOO bug we fixed, mostly through a source and sinks on a
+  virtual clock and network (`live_harness.h`).
 
 ## Changes from upstream
 
@@ -93,3 +95,41 @@ noted as such.
 - `packet_buffer.cpp`, `jitter_buffer::find`: searched up to the vector's
   capacity instead of its size after the buffer shrank (ASan
   container-overflow under reordering and loss).
+- `sink.cpp`, OSC `/data`: a block without frame fields was taken for one
+  frame even when empty, so the empty blocks a source sends after an xrun
+  never completed in the OSC format; they were counted as dropped and asked
+  for again. Also set the wrong flag (stream message instead of frames) when
+  the frame fields were there.
+- `sink.cpp`, `source_desc::codec_control`: ran the sink's codec controls
+  through the encoder's control function on the decoder's state (wrong
+  answers; setters wrote into the Opus decoder).
+- `source.cpp`, `send_start`: `startStream()` hides the sample offset in the
+  metadata's data pointer. The first `/start` took it out and restored the
+  pointer, so every later `/start` of the same stream (a sink that joins, or
+  one that asks again after losing the first) sent the pointer as the
+  offset, and that sink never went active. The offset is now taken out once,
+  in `make_new_stream()`.
+- `aoo_source.hpp`, `getSinkChannelOffset()` sent the Set control (it set
+  the offset to the caller's variable); `aoo_sink.hpp`,
+  `getDynamicResampling()` took its result by value.
+- `resampler.cpp`, `dynamic_resampler::setup`: kept the buffer when only the
+  channel count changed, though the buffer's front padding and its size on
+  free depend on it (writes before the block, then a bad free).
+- `memory.hpp`: the allocators' converting `operator=` did not return.
+- `time_dll.hpp`: the denormal flush tested `e2_ <= min` instead of its
+  magnitude, so it zeroed any negative value, not just tiny ones.
+- `codec/opus.cpp`: seven codec interface functions lacked `AOO_CALL`, which
+  only shows with a non-default calling convention (32-bit Windows).
+- `common/lockfree.hpp`, `concurrent_queue::reserve()`: with more free
+  nodes than asked for, the count wrapped around and it allocated until
+  memory ran out.
+- `rt_memory_pool.hpp`: the leak check (debug builds) counted requests that
+  failed (the pool was full, or size 0) as blocks in use and asserted at
+  exit.
+- `events.hpp`, `ievent::cast()`: went through a `static_cast` to a type the
+  event is not (undefined behavior, reported by UBSan for every event). Each
+  event type now returns its own `AooEvent`.
+
+`live_aoo_test` has a test for each of these that fails without the fix,
+except the flag, the denormal flush and `AOO_CALL`, which have no visible
+effect on our builds.

@@ -892,12 +892,14 @@ AooError Sink::handle_data_message(const osc::ReceivedMessage& msg,
     }
     // frames
     if (it->IsNil()) {
-        d.num_frames = 1; it++;
+        // a single frame, or none for an empty (xrun) block,
+        // like in the binary format
+        d.num_frames = d.total_size > 0 ? 1 : 0; it++;
         d.frame_index = 0; it++;
     } else {
         d.num_frames = (it++)->AsInt32();
         d.frame_index = (it++)->AsInt32();
-        d.flags |= kAooBinMsgDataStreamMessage;
+        d.flags |= kAooBinMsgDataFrames;
     }
     // data
     if (it->IsNil()) {
@@ -1101,9 +1103,9 @@ AooError source_desc::codec_control(const AooChar *codec, AooCtl ctl,
     unique_lock lock(mutex_);
     if (decoder_) {
         if (!strcmp(decoder_->cls->name, codec)) {
-            return AooEncoder_control(decoder_.get(), ctl, data, size);
+            return AooDecoder_control(decoder_.get(), ctl, data, size);
         } else {
-            LOG_ERROR("AooSource: tried to pass '" << codec << "' codec option to '"
+            LOG_ERROR("AooSink: tried to pass '" << codec << "' codec option to '"
                       << decoder_->cls->name << "' decoder");
             return kAooErrorBadArgument;
         }

@@ -11,7 +11,8 @@
 #                      host whose tempo the room follows and whose bars the intervals start on,
 #                      and a host that is a Link peer (as Live with its Link on), which the room's
 #                      tempo and intervals lead
-#   live_aoo_test      (ninjam/live) AOO's lock-free queue and RT memory pool under threads
+#   live_aoo_test      (ninjam/live) AOO's lock-free queue and RT memory pool under threads,
+#                      and the AOO bugs fixed in our copy
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp

@@ -297,14 +297,37 @@ public:
     }
 
     void* allocate(size_t size) {
+        auto ptr = do_allocate(size);
 #if AOO_RT_MEMORY_LEAK_DETECTION || AOO_DEBUG_RT_MEMORY
-        auto num_blocks = num_blocks_.fetch_add(1, std::memory_order_acquire) + 1;
-        auto num_bytes = num_bytes_.fetch_add(size, std::memory_order_acquire) + size;
+        // NB: only count blocks actually handed out; a failed request
+        // (nullptr) is never given back, so it is not a leak.
+        if (ptr) {
+            auto num_blocks = num_blocks_.fetch_add(1, std::memory_order_acquire) + 1;
+            auto num_bytes = num_bytes_.fetch_add(size, std::memory_order_acquire) + size;
 #if AOO_DEBUG_RT_MEMORY
-        LOG_DEBUG("rt_memory_pool: allocate " << size << " bytes (" << num_bytes
-                  << " bytes, " << num_blocks << " blocks total)");
+            LOG_DEBUG("rt_memory_pool: allocate " << size << " bytes (" << num_bytes
+                      << " bytes, " << num_blocks << " blocks total)");
 #endif
+        }
 #endif
+        return ptr;
+    }
+
+    void deallocate(void *ptr, size_t size) {
+#if AOO_RT_MEMORY_LEAK_DETECTION || AOO_DEBUG_RT_MEMORY
+        if (ptr) {
+            auto num_blocks = num_blocks_.fetch_sub(1, std::memory_order_acquire) - 1;
+            auto num_bytes = num_bytes_.fetch_sub(size, std::memory_order_acquire) - size;
+#if AOO_DEBUG_RT_MEMORY
+            LOG_DEBUG("rt_memory_pool: deallocate " << size << " bytes (" << num_bytes
+                      << " bytes, " << num_blocks << " blocks remaining)");
+#endif
+        }
+#endif
+        do_deallocate(ptr, size);
+    }
+private:
+    void* do_allocate(size_t size) {
         if (size > large_alloc_limit) {
             LOG_INFO("RT memory request (" << size << " bytes) too large - using default allocator");
             // fall back to heap allocation
@@ -327,15 +350,7 @@ public:
         }
     }
 
-    void deallocate(void *ptr, size_t size) {
-#if AOO_RT_MEMORY_LEAK_DETECTION || AOO_DEBUG_RT_MEMORY
-        auto num_blocks = num_blocks_.fetch_sub(1, std::memory_order_acquire) - 1;
-        auto num_bytes = num_bytes_.fetch_sub(size, std::memory_order_acquire) - size;
-#if AOO_DEBUG_RT_MEMORY
-        LOG_DEBUG("rt_memory_pool: deallocate " << size << " bytes (" << num_bytes
-                  << " bytes, " << num_blocks << " blocks remaining)");
-#endif
-#endif
+    void do_deallocate(void *ptr, size_t size) {
         if (size > large_alloc_limit) {
             // fall back to heap allocation
             alloc_type::deallocate((char *)ptr, size);
@@ -348,7 +363,7 @@ public:
             }
         }
     }
-
+public:
     void print() {
         std::cout << "total RT memory usage: " << memory_usage()
                   << " / " << capacity() << " bytes" << std::endl;

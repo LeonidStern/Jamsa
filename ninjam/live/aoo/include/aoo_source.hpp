@@ -456,7 +456,7 @@ public:
 
     /** \brief Get the sink channel offset for the given sink */
     AooError getSinkChannelOffset(const AooEndpoint& sink, AooInt32& onset) {
-        return control(kAooCtlSetSinkChannelOffset, (AooIntPtr)&sink, AOO_ARG(onset));
+        return control(kAooCtlGetSinkChannelOffset, (AooIntPtr)&sink, AOO_ARG(onset));
     }
 protected:
     ~AooSource(){} // non-virtual!

@@ -355,8 +355,10 @@ public:
     // not thread-safe!
     void reserve(size_t n) {
         // check for existing empty nodes
+        // NB: stop at zero; n must not wrap around if there are already
+        // more free nodes than requested.
         for (auto ptr = get_pointer(first_.load()), end = divider_.load();
-             ptr != end; ptr = get_next_node(ptr)) {
+             ptr != end && n > 0; ptr = get_next_node(ptr)) {
             n--;
         }
         // add empty nodes

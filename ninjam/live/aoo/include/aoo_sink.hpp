@@ -287,7 +287,7 @@ public:
     }
 
     /** \brief Check if dynamic resampling is enabled. */
-    AooError getDynamicResampling(AooBool b) {
+    AooError getDynamicResampling(AooBool& b) {
         return control(kAooCtlGetDynamicResampling, 0, AOO_ARG(b));
     }
 

@@ -295,6 +295,7 @@ class Source final : public AooSource, rt_memory_pool_client {
     }
     std::atomic<stream_state_type> stream_state_{stream_state::idle};
     rt_metadata_ptr metadata_;
+    int32_t sample_offset_ = 0; // see make_new_stream()
     // timing
     uint64_t process_samples_ = 0;
     double stream_samples_ = 0;

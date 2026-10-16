@@ -7,7 +7,8 @@
 #
 # Targets:
 #   ninjam_live      static library: AOO's source and sink with Opus, and oscpack
-#   live_aoo_test    AOO's lock-free queue and RT memory pool under threads
+#   live_aoo_test    AOO's lock-free queue and RT memory pool under threads, and
+#                    the AOO bugs fixed in our copy
 #
 # The plug-in's build (ninjam/vst3) adds this folder after it has downloaded
 # Opus and registers the tests from vst3/tests. A build of this folder alone

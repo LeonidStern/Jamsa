@@ -38,7 +38,7 @@ public:
     allocator(const allocator<U>&) noexcept {}
 
     template<typename U>
-    allocator& operator=(const allocator<U>&) noexcept {}
+    allocator& operator=(const allocator<U>&) noexcept { return *this; }
 
     value_type* allocate(size_t n) {
         return (value_type *)aoo::allocate(sizeof(T) * n);
@@ -125,7 +125,7 @@ public:
     rt_allocator(const rt_allocator<U>&) noexcept {}
 
     template<typename U>
-    rt_allocator& operator=(const rt_allocator<U>&) noexcept {}
+    rt_allocator& operator=(const rt_allocator<U>&) noexcept { return *this; }
 
     value_type* allocate(size_t n) {
         return (value_type *)aoo::rt_allocate(sizeof(T) * n);

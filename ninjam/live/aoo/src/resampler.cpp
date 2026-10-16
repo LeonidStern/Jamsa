@@ -94,7 +94,9 @@ void dynamic_resampler::setup(int32_t nfrom, int32_t nto, bool fixed_n,
         // the first two frames resp. the last frame. See read() and write().
         auto old_nsamples = buffer_ ? (size_ + extra_space) * nchannels_ : 0;
         auto nsamples = (size + extra_space) * nchannels;
-        if (old_nsamples != nsamples) {
+        // NB: also reallocate if only the channel count changed, because the
+        // buffer shift and free_buffer() depend on it.
+        if (old_nsamples != nsamples || nchannels != nchannels_) {
             // reallocate buffer
             free_buffer();
             auto buf = (AooSample*)aoo::allocate(nsamples * sizeof(AooSample));

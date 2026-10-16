@@ -44,7 +44,7 @@ struct ievent {
 
     // we cannot directly cast an ievent pointer to a AooEvent pointer because
     // of the hidden vtable pointer. That's why there is an explicit cast method.
-    AooEvent& cast();
+    virtual AooEvent& cast() = 0;
 };
 
 using event_ptr = std::unique_ptr<ievent>;
@@ -79,22 +79,18 @@ struct base_event : ievent, aligned_event<T> {
 
     base_event(const base_event&) = delete;
     base_event& operator=(const base_event&) = delete;
+
+    // NB: AooEvent is a union of the event structs, so the T part of this
+    // object is where the AooEvent starts. (Upstream went through a
+    // static_cast to base_event<cast_event>, which is undefined behavior
+    // because the object is not one; UBSan reports it on every event.)
+    AooEvent& cast() override {
+        return *reinterpret_cast<AooEvent *>(static_cast<T *>(this));
+    }
 };
 
 #define BASE_EVENT(name, field) \
     k##name, AOO_STRUCT_SIZE(name, field)
-
-// AooEvent cannot be used as the template argument for base_event because
-// unions cannot be base classes. That's why we make this helper struct.
-struct cast_event {
-    AooEvent event;
-};
-
-inline AooEvent& ievent::cast() {
-    // we cannot directly cast from ievent to AooEvent, so we have to go
-    // through base_event<cast_event>.
-    return static_cast<base_event<cast_event>*>(this)->event;
-}
 
 template<typename T>
 struct endpoint_event : base_event<T> {
