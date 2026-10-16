@@ -417,6 +417,16 @@ public:
         return control(kAooCtlReset, (AooIntPtr)&source, nullptr, 0);
     }
 
+    /** \brief (Jamsa) Remove a source, or all with `nullptr`
+     *
+     * The source times out: the next process() call that it doesn't
+     * produce audio for removes it (and sends kAooEventSourceRemove). If its
+     * packets keep coming, they add it again.
+     */
+    AooError removeSource(const AooEndpoint *source) {
+        return control(kAooCtlRemoveSource, (AooIntPtr)source, nullptr, 0);
+    }
+
     /** \brief Get the source stream format
      *
      * \param source The source endpoint.

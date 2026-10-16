@@ -145,6 +145,15 @@ public:
 
     bool check_active(const Sink& s);
 
+    // Jamsa: removeSource(); process() drops the source next time
+    void expire() {
+        expired_.store(true, std::memory_order_relaxed);
+    }
+
+    bool expired() const {
+        return expired_.load(std::memory_order_relaxed);
+    }
+
     AooError get_format(AooFormat& format, size_t size);
 
     AooError codec_control(const AooChar *codec, AooCtl ctl,
@@ -256,6 +265,7 @@ private:
     std::atomic<float> invite_start_time_{0};
     std::atomic<float> last_invite_time_{0};
     std::atomic<float> last_packet_time_{0};
+    std::atomic<bool> expired_{false}; // Jamsa: see expire()
     std::atomic<float> last_ping_time_{0};
     float last_stop_time_{0};
     // statistics

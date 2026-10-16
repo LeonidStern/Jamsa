@@ -177,5 +177,7 @@ enum
     /** (AooSource) send the data packets once to a broadcast endpoint */
     kAooCtlSetBroadcastEndpoint = kAooCtlUserDefined,
     /** (AooSource) is broadcast mode on? */
-    kAooCtlGetBroadcast
+    kAooCtlGetBroadcast,
+    /** (AooSink) let a source (or all) time out on the next process() */
+    kAooCtlRemoveSource
 };

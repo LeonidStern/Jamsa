@@ -368,6 +368,25 @@ AooError AOO_CALL aoo::Sink::control(
         CHECKARG(AooBool);
         as<AooBool>(ptr) = binary_.load();
         break;
+    // Jamsa: see AooSink::removeSource()
+    case kAooCtlRemoveSource:
+    {
+        source_lock lock(sources_);
+        if (index != 0) {
+            auto ep = (const AooEndpoint *)index;
+            ip_address addr((const sockaddr *)ep->address, ep->addrlen);
+            auto src = find_source(addr, ep->id);
+            if (!src) {
+                return kAooErrorNotFound;
+            }
+            src->expire();
+        } else {
+            for (auto& src : sources_) {
+                src.expire();
+            }
+        }
+        break;
+    }
     // unknown
     default:
         LOG_WARNING("AooSink: unsupported control " << ctl);
@@ -558,9 +577,10 @@ AooError AOO_CALL aoo::Sink::process(
     // so we do not need to lock the source mutex!
     source_lock lock(sources_);
     for (auto it = sources_.begin(); it != sources_.end();){
-        if (it->process(*this, data, nsamples, t, messageHandler, user)){
+        // Jamsa: an expired source (removeSource()) goes right away
+        if (!it->expired() && it->process(*this, data, nsamples, t, messageHandler, user)){
             didsomething = true;
-        } else if (!it->check_active(*this)){
+        } else if (it->expired() || !it->check_active(*this)){
             LOG_INFO("AooSink: removed inactive source " << it->ep);
             auto e = make_event<source_event>(kAooEventSourceRemove, it->ep);
             send_event(std::move(e), kAooThreadLevelAudio);

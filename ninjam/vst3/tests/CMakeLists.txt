@@ -18,7 +18,7 @@
 #   live_rt_test       (ninjam/live) no heap allocation in AOO's process(), clean network
 #                      or not
 #   live_unit_test     (ninjam/live) what Live adds to AOO: coupled stereo Opus, its
-#                      bitrate, broadcast mode
+#                      bitrate, broadcast mode, removeSource()
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp

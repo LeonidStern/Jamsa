@@ -73,7 +73,7 @@ Tests (`tests/`):
   its bitrate (encoded sizes, the decoder's channel layout, through the
   source too), broadcast mode with three sinks (one upload per block, a lost
   copy resent to its sink only, a sink that joins late, a channel offset,
-  turning it on and off).
+  turning it on and off) and `removeSource()`.
 
 ## Changes from upstream
 
@@ -318,3 +318,14 @@ copy of every data packet (`source.cpp`, `send_packet()`).
   `make_new_stream()`, which changes the ID under the writer lock on the
   audio thread, can't run in between and leave the new sink on the old
   stream. Turning broadcast mode on or off restarts a running stream.
+
+### Removing a source
+
+- `AooSink::removeSource(ep)` (`kAooCtlRemoveSource`; `nullptr` = all):
+  the glue keeps a fixed pool of sinks and gives a free one to the next
+  peer. A sink only ever dropped a source after the source timeout (10 s
+  by default) without packets, so the old peer's source would linger
+  in the slot. The source is marked expired; the next `process()` drops it
+  without playing it (the audio thread is the only one that removes
+  sources) and sends `kAooEventSourceRemove`. Its packets, if they keep
+  coming, add it again as a new source that asks for `/start`.

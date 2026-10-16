@@ -17,6 +17,7 @@
   - broadcast mode: a source sends each data packet once, to an address
     that passes it on to every sink, with /start, /stop, pings and resends
     still per sink. Three sinks.
+  - AooSink::removeSource(), for a sink that gets a new peer.
 
   Run with a test name to run only the tests whose names start with it.
 
@@ -491,6 +492,47 @@ static void test_broadcast_toggle()
   CHECK(s.source->setBroadcastEndpoint(&bad) != kAooOk);
 }
 
+// ---------------------------------------------------------------------------
+// AooSink::removeSource()
+// ---------------------------------------------------------------------------
+
+static void test_remove_source()
+{
+  if (!selected("remove_source")) return;
+  source_options so;
+  session s(so, { sink_options(), sink_options() });
+  s.start();
+  s.run(1.0);
+  CHECK_EQ(s.nodes[1].stream_active, 1);
+  AooEndpoint src = s.nodes[0].endpoint();
+  AooEndpoint stranger = s.nodes[2].endpoint();
+  CHECK_EQ(s.sinks[0]->removeSource(&stranger), kAooErrorNotFound);
+
+  // drop the source's packets to sink 1 for a while: it goes away at once,
+  // not after the source timeout
+  bool drop = true;
+  s.filter = [&](datagram &d) { return !(drop && d.to == 1); };
+  for (size_t i = s.in_flight.size(); i-- > 0;)
+    if (s.in_flight[i].to == 1) s.in_flight.erase(s.in_flight.begin() + i);
+  CHECK_EQ(s.sinks[0]->removeSource(&src), kAooOk);
+  s.run(0.05);
+  CHECK_EQ(s.nodes[1].events[kAooEventSourceRemove], 1);
+  CHECK(s.block_rms(1) == 0);
+  CHECK(s.block_rms(2) > 0.2); // the other sink plays on
+  CHECK_EQ(s.sinks[0]->removeSource(&src), kAooErrorNotFound);
+
+  // its packets bring it back: a new source asks for /start
+  drop = false;
+  CHECK(s.run_until([&] { return s.nodes[1].stream_active == 2; }, 0.5));
+  s.run(0.2);
+  CHECK(s.block_rms(1) > 0.2);
+
+  // all of them
+  CHECK_EQ(s.sinks[1]->removeSource(nullptr), kAooOk);
+  s.run(0.01);
+  CHECK_EQ(s.nodes[2].events[kAooEventSourceRemove], 1);
+}
+
 int main(int argc, char **argv)
 {
   printf("live_unit_test\n");
@@ -505,6 +547,8 @@ int main(int argc, char **argv)
   test_broadcast_resend();
   test_broadcast_late_sink();
   test_broadcast_toggle();
+
+  test_remove_source();
 
   return test_summary("live_unit_test");
 }
