@@ -48,6 +48,8 @@
                   a_name=<alice's name> b_name=<bob's> a_sees=<who alice hears, as shown> b_sees=<who bob hears>
                   a_state=<state> b_state=<state> (at the end) a_link=<alice's Link state> b_link=<bob's>
                   b_after_ms=<how long after alice's intervals bob's start, about half an interval>
+                  a_player1_snr=<dB> (bob on alice's output Player 1)
+                  a_other_players_peak=<the loudest sample on her other player outputs>
     PHASE room END start_kbps=<the room's at first> a_kbps=<alice sends> b_kbps=<bob sends> a_own=<alice's own>
                    b_own=<bob's own> b_saw_note=<0|1> flac=<alice's room>/<alice sends> opus=<the same, after>
                    start_bpi=<the room's BPI at first> least_bpi=<after a vote for 2>
@@ -273,10 +275,12 @@ public:
       return false;
     }
 
-    SpeakerArrangement in = SpeakerArr::kStereo, out = SpeakerArr::kStereo;
-    if (m_processor->setBusArrangements(&in, 1, &out, 1) != kResultTrue)
+    // the main output and a stereo output for each player, as Live asks for them
+    SpeakerArrangement in = SpeakerArr::kStereo, outs[1 + PLAYER_OUTS];
+    for (auto &o : outs) o = SpeakerArr::kStereo;
+    if (m_processor->setBusArrangements(&in, 1, outs, 1 + PLAYER_OUTS) != kResultTrue)
     {
-      printf("error: the plug-in refused a stereo in, stereo out arrangement\n");
+      printf("error: the plug-in refused a stereo in, stereo outs arrangement\n");
       return false;
     }
     ProcessSetup setup {};
@@ -290,11 +294,12 @@ public:
       return false;
     }
     m_component->activateBus(kAudio, kInput, 0, true);
-    m_component->activateBus(kAudio, kOutput, 0, true);
+    for (int b = 0; b <= PLAYER_OUTS; b ++) m_component->activateBus(kAudio, kOutput, b, true);
     m_component->setActive(true);
     m_processor->setProcessing(true);
 
     for (auto *v : { &m_in0, &m_in1, &m_out0, &m_out1, &m_peerIn, &m_peerOut0, &m_peerOut1 }) v->assign(m_block, 0.0f);
+    m_playerOut.assign(2 * PLAYER_OUTS, std::vector<float>(m_block, 0.0f));
     return true;
   }
 
@@ -336,11 +341,19 @@ public:
     }
 
     float *ins[2] = { m_in0.data(), m_in1.data() }, *outs[2] = { m_out0.data(), m_out1.data() };
-    AudioBusBuffers inBus {}, outBus {};
+    AudioBusBuffers inBus {}, outBus[1 + PLAYER_OUTS] {};
     inBus.numChannels = 2;
     inBus.channelBuffers32 = ins;
-    outBus.numChannels = 2;
-    outBus.channelBuffers32 = outs;
+    outBus[0].numChannels = 2;
+    outBus[0].channelBuffers32 = outs;
+    float *playerOuts[2 * PLAYER_OUTS];
+    for (int b = 0; b < PLAYER_OUTS; b ++)
+    {
+      playerOuts[2 * b] = m_playerOut[2 * b].data();
+      playerOuts[2 * b + 1] = m_playerOut[2 * b + 1].data();
+      outBus[1 + b].numChannels = 2;
+      outBus[1 + b].channelBuffers32 = playerOuts + 2 * b;
+    }
     ProcessData data {};
     data.processMode = kRealtime;
     ProcessContext context {};
@@ -404,9 +417,9 @@ public:
     data.symbolicSampleSize = kSample32;
     data.numSamples = m_block;
     data.numInputs = 1;
-    data.numOutputs = 1;
+    data.numOutputs = 1 + PLAYER_OUTS;
     data.inputs = &inBus;
-    data.outputs = &outBus;
+    data.outputs = outBus;
     m_processor->process(data);
     if (record || m_taping)
     {
@@ -415,6 +428,9 @@ public:
       {
         m_pluginHeard.insert(m_pluginHeard.end(), m_out0.begin(), m_out0.end());
         m_heardTransport.push_back(played);
+        m_player1Heard.insert(m_player1Heard.end(), m_playerOut[0].begin(), m_playerOut[0].end());
+        for (int c = 2; c < 2 * PLAYER_OUTS; c ++)
+          for (float f : m_playerOut[c]) m_otherPlayersPeak = std::max(m_otherPlayersPeak, fabsf(f));
       }
       if (m_taping) m_tape.insert(m_tape.end(), m_out0.begin(), m_out0.end());
     }
@@ -466,10 +482,23 @@ public:
     std::lock_guard<std::mutex> lock(m_heardMutex);
     return m_pluginHeard;
   }
+  // what the output Player 1 played (left), and the loudest sample on the other player outputs
+  std::vector<float> player1Heard()
+  {
+    std::lock_guard<std::mutex> lock(m_heardMutex);
+    return m_player1Heard;
+  }
+  float otherPlayersPeak()
+  {
+    std::lock_guard<std::mutex> lock(m_heardMutex);
+    return m_otherPlayersPeak;
+  }
   void clearHeard()
   {
     std::lock_guard<std::mutex> lock(m_heardMutex);
     m_pluginHeard.clear();
+    m_player1Heard.clear();
+    m_otherPlayersPeak = 0;
     m_peerHeard.clear();
     m_heardTransport.clear();
   }
@@ -528,6 +557,10 @@ public:
   double m_jitterMs = getenv("NINJAM_E2E_JITTER_MS") ? atof(getenv("NINJAM_E2E_JITTER_MS")) : 0.0;
   unsigned int m_rng = 1;
   std::vector<float> m_pluginHeard, m_peerHeard;
+  static constexpr int PLAYER_OUTS = 8; // Engine::NUM_PLAYER_OUTS
+  std::vector<std::vector<float>> m_playerOut;
+  std::vector<float> m_player1Heard;
+  float m_otherPlayersPeak = 0;
   bool m_taping = false;     // all the plug-in plays goes on m_tape too, recorded or not
   std::vector<float> m_tape;
   std::mutex m_heardMutex;
@@ -695,6 +728,10 @@ static int jam_two_instances(Host &a, Host &b)
     const size_t len = (size_t)ilen * 2;
     const double aSnr = tone_snr(ah, ah.size() > len ? ah.size() - len : 0, ah.size(), b.m_freq, a.m_srate);
     const double bSnr = tone_snr(bh, bh.size() > len ? bh.size() - len : 0, bh.size(), a.m_freq, b.m_srate);
+    // bob alone on alice's output Player 1, and nobody on the others
+    const std::vector<float> ap = a.player1Heard();
+    const double aPlayerSnr = tone_snr(ap, ap.size() > len ? ap.size() - len : 0, ap.size(), b.m_freq, a.m_srate);
+    const float aOthersPeak = a.otherPlayersPeak();
     const bool gotChat = contains(b.command("chatlog"), "hello from alice");
     printf("users (alice): %s", a.command("users").c_str());
     printf("users (bob): %s", b.command("users").c_str());
@@ -704,10 +741,10 @@ static int jam_two_instances(Host &a, Host &b)
     };
     auto sa = a.status(), sb = b.status();
     printf("PHASE two END a_hears_snr=%.1f b_hears_snr=%.1f b_host_refused=%d b_got_chat=%d a_users=%s b_users=%s a_name=%s b_name=%s "
-           "a_sees=%s b_sees=%s a_state=%s b_state=%s a_link=%s b_link=%s b_after_ms=%.0f\n",
+           "a_sees=%s b_sees=%s a_state=%s b_state=%s a_link=%s b_link=%s b_after_ms=%.0f a_player1_snr=%.1f a_other_players_peak=%.4f\n",
            aSnr, bSnr, refused ? 1 : 0, gotChat ? 1 : 0, sa["users"].c_str(), sb["users"].c_str(), sa["user"].c_str(), sb["user"].c_str(),
            shown(a.command("users")).c_str(), shown(b.command("users")).c_str(), sa["state"].c_str(), sb["state"].c_str(),
-           sa["link"].c_str(), sb["link"].c_str(), bAfterMs);
+           sa["link"].c_str(), sb["link"].c_str(), bAfterMs, aPlayerSnr, aOthersPeak);
 
     // bob changes the room's bitrate, then its codec; alice's changes too, her own setting doesn't
     const std::string startKbps = a.status()["roomkbps"];

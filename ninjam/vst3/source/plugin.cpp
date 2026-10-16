@@ -49,6 +49,14 @@ tresult PLUGIN_API NinjamPlugin::initialize(FUnknown *context)
 
   addAudioInput(STR16("Input"), SpeakerArr::kStereo);
   addAudioOutput(STR16("Output"), SpeakerArr::kStereo);
+  // a stereo output for each player alone (Engine::PlayerOuts), for recording each on a track
+  for (int i = 0; i < Engine::NUM_PLAYER_OUTS; i ++)
+  {
+    String128 name = {};
+    const std::string text = "Player " + std::to_string(i + 1);
+    for (size_t c = 0; c < text.size() && c < 127; c ++) name[c] = (char16)text[c];
+    addAudioOutput(name, SpeakerArr::kStereo, BusTypes::kAux, BusInfo::kDefaultActive);
+  }
 
   if (!m_engine) m_engine.reset(new Engine);
   FUnknownPtr<IHostApplication> app(context);
@@ -71,10 +79,11 @@ tresult PLUGIN_API NinjamPlugin::setActive(TBool)
 
 tresult PLUGIN_API NinjamPlugin::setBusArrangements(SpeakerArrangement *inputs, int32 numIns, SpeakerArrangement *outputs, int32 numOuts)
 {
-  // a mono or stereo input, a stereo output
-  if (numIns != 1 || numOuts != 1) return kResultFalse;
+  // a mono or stereo input, stereo outputs (a host may leave out the player outputs)
+  if (numIns != 1 || numOuts < 1 || numOuts > 1 + Engine::NUM_PLAYER_OUTS) return kResultFalse;
   if (inputs[0] != SpeakerArr::kStereo && inputs[0] != SpeakerArr::kMono) return kResultFalse;
-  if (outputs[0] != SpeakerArr::kStereo) return kResultFalse;
+  for (int32 i = 0; i < numOuts; i ++)
+    if (outputs[i] != SpeakerArr::kStereo) return kResultFalse;
   return SingleComponentEffect::setBusArrangements(inputs, numIns, outputs, numOuts);
 }
 
@@ -113,6 +122,7 @@ tresult PLUGIN_API NinjamPlugin::process(ProcessData &data)
   if (const ProcessContext *pc = data.processContext)
   {
     HostPosition &p = timing.position;
+    timing.transport = true;
     p.playing = (pc->state & ProcessContext::kPlaying) != 0;
     if (pc->state & ProcessContext::kTempoValid) p.tempo = pc->tempo;
     p.hasPosition = (pc->state & ProcessContext::kProjectTimeMusicValid) != 0;
@@ -126,7 +136,16 @@ tresult PLUGIN_API NinjamPlugin::process(ProcessData &data)
       p.timeSigDen = pc->timeSigDenominator;
     }
   }
-  m_engine->process(in, numIn, out.channelBuffers32, out.numChannels, data.numSamples, &timing);
+  Engine::PlayerOuts players;
+  for (int32 b = 1; b < data.numOutputs && b <= Engine::NUM_PLAYER_OUTS; b ++)
+  {
+    AudioBusBuffers &bus = data.outputs[b];
+    if (!bus.channelBuffers32 || bus.numChannels < 1) continue;
+    players.bus[b - 1] = bus.channelBuffers32;
+    players.channels[b - 1] = bus.numChannels;
+    bus.silenceFlags = 0;
+  }
+  m_engine->process(in, numIn, out.channelBuffers32, out.numChannels, data.numSamples, &timing, &players);
   out.silenceFlags = 0;
   return kResultOk;
 }

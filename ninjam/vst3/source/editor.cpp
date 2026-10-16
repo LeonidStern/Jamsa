@@ -965,6 +965,11 @@ void NinjamEditor::updateFooter(const Snapshot &s)
     text = "The room plays " + s.roomCodec + ": the plug-in can't send here, and plays it as silence";
     warn = true;
   }
+  else if (connected && s.sendPaused)
+  {
+    text = host + " is stopped, so you send nothing: press play to send";
+    warn = true;
+  }
   else if (!s.syncNote.empty())
   {
     text = s.syncNote;

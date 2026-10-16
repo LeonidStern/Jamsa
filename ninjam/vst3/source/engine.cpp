@@ -309,6 +309,10 @@ Engine::Engine()
 
   // our input, in stereo (source channels 0 and 1)
   m_client->SetLocalChannelInfo(0, LOCAL_CHANNEL_NAME, true, 0 | 1024, true, m_settings.opusKbps, true, m_settings.transmit);
+  // each player (all their channels) on an output pair of their own, after the main pair: the
+  // least used one when they join
+  m_client->config_remote_autochan = 2;
+  m_client->config_remote_autochan_nch = 2 + 2 * NUM_PLAYER_OUTS;
   applyLocalSettings();
 
   setupProcessing(48000, 1024);
@@ -361,15 +365,25 @@ void Engine::setupProcessing(double sampleRate, int maxBlockSize)
   m_bufL.assign(m_maxBlock, 0.0f);
   m_bufR.assign(m_maxBlock, 0.0f);
   m_spare.assign(m_maxBlock, 0.0f);
+  m_monL.assign(m_maxBlock, 0.0f);
+  m_monR.assign(m_maxBlock, 0.0f);
+  m_mix.assign(2 + 2 * NUM_PLAYER_OUTS, std::vector<float>(m_maxBlock, 0.0f));
   m_barSync.reset();
   m_click.setSampleRate(m_sampleRate);
   m_sampleTime = 0;
   m_link->resetTiming();
 }
 
-void Engine::process(float **in, int numIn, float **out, int numOut, int frames, const HostTiming *timing)
+void Engine::process(float **in, int numIn, float **out, int numOut, int frames, const HostTiming *timing,
+                     const PlayerOuts *playerOuts)
 {
   if (frames <= 0 || numOut < 1 || !out || !out[0]) return;
+  auto silencePlayerOuts = [&]() {
+    if (playerOuts)
+      for (int b = 0; b < NUM_PLAYER_OUTS; b ++)
+        for (int c = 0; c < playerOuts->channels[b]; c ++)
+          if (playerOuts->bus[b] && playerOuts->bus[b][c]) memset(playerOuts->bus[b][c], 0, sizeof(float) * frames);
+  };
   m_processCalls.fetch_add(1, std::memory_order_relaxed);
   const float gain = m_inputGain.load(std::memory_order_relaxed);
   const int srate = m_sampleRate.load(std::memory_order_relaxed);
@@ -385,6 +399,7 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
     // the network thread is connecting or disconnecting: a moment of silence
     for (int c = 0; c < numOut; c ++)
       if (out[c]) memset(out[c], 0, sizeof(float) * frames);
+    silencePlayerOuts();
     return;
   }
 
@@ -414,6 +429,11 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
     linkLeads = m_link->process(block, iv, host);
   }
   m_linkLeads.store(linkLeads, std::memory_order_relaxed);
+
+  // a stopped host: we send silence (and the network thread stops sending at the next interval)
+  const bool stopped = timing && timing->transport && !timing->offline && !timing->position.playing;
+  m_hostStopped.store(stopped, std::memory_order_relaxed);
+  const bool monitor = m_monitor.load(std::memory_order_relaxed) && !m_anySolo.load(std::memory_order_relaxed);
 
   // the host's bars: the interval playing now may end a little early or late, so the next
   // ones start on them. Not while Link leads the host: its bars follow the intervals then.
@@ -465,12 +485,43 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
     if (m_client->IsIntervalRunning() && pos < length) n = std::min(n, length - pos);
     for (int i = 0; i < n; i ++)
     {
-      m_bufL[i] = inL ? inL[done + i] * gain : 0.0f;
-      m_bufR[i] = inR ? inR[done + i] * gain : 0.0f;
+      m_monL[i] = inL ? inL[done + i] * gain : 0.0f;
+      m_monR[i] = inR ? inR[done + i] * gain : 0.0f;
+      m_bufL[i] = stopped ? 0.0f : m_monL[i];
+      m_bufR[i] = stopped ? 0.0f : m_monR[i];
     }
     float *ins[2] = { m_bufL.data(), m_bufR.data() };
+    float *mix[2 + 2 * NUM_PLAYER_OUTS];
+    for (int c = 0; c < 2 + 2 * NUM_PLAYER_OUTS; c ++) mix[c] = m_mix[c].data();
+    m_client->AudioProc(ins, 2, mix, 2 + 2 * NUM_PLAYER_OUTS, n, srate);
+
+    // the main output: everyone, and your monitoring (NJClient's own is muted, so it goes on
+    // while nothing is sent); each player output: that player alone
     float *outs[2] = { out[0] + done, numOut > 1 && out[1] ? out[1] + done : m_spare.data() };
-    m_client->AudioProc(ins, 2, outs, 2, n, srate);
+    for (int i = 0; i < n; i ++)
+    {
+      float l = mix[0][i], r = mix[1][i];
+      for (int p = 0; p < NUM_PLAYER_OUTS; p ++)
+      {
+        l += mix[2 + 2 * p][i];
+        r += mix[3 + 2 * p][i];
+      }
+      if (monitor)
+      {
+        l += m_monL[i];
+        r += m_monR[i];
+      }
+      outs[0][i] = l;
+      outs[1][i] = r;
+    }
+    if (playerOuts)
+      for (int p = 0; p < NUM_PLAYER_OUTS; p ++)
+      {
+        float **bus = playerOuts->bus[p];
+        if (!bus) continue;
+        for (int c = 0; c < playerOuts->channels[p]; c ++)
+          if (bus[c]) memcpy(bus[c] + done, mix[2 + 2 * p + (c & 1)], sizeof(float) * n);
+      }
 
     // the metronome, on the beats of the interval these samples played in
     if (m_client->IsIntervalRunning())
@@ -806,6 +857,7 @@ void Engine::threadProc()
 
     updateConnection();
     applySendKbps(); // the room's bitrate may have changed
+    applyBroadcast(); // the host may have started or stopped
     updateLink();
     followHostTempo();
 
@@ -829,16 +881,21 @@ void Engine::applyLocalSettings()
   m_client->config_metronome = 0.0f;
   m_client->config_metronome_mute = true;
   m_clickVolume = s.metronomeMute ? 0.0f : s.metronomeVolume;
-  m_client->SetLocalChannelMonitoring(0, true, 1.0f, true, 0.0f, true, !s.monitor, false, false);
+  // the engine monitors the input itself (process()), so it goes on while the host is stopped
+  m_client->SetLocalChannelMonitoring(0, true, 1.0f, true, 0.0f, true, true, false, false);
+  m_monitor = s.monitor;
 
   applySendKbps();
+  applyBroadcast();
+}
+
+void Engine::applyBroadcast()
+{
+  const bool want = getSettings().transmit && !m_hostStopped.load(std::memory_order_relaxed);
   bool bcast = false;
   m_client->GetLocalChannelInfo(0, nullptr, nullptr, &bcast);
-  if (bcast != s.transmit)
-  {
-    m_client->SetLocalChannelInfo(0, nullptr, false, 0, false, 0, true, s.transmit);
-    if (m_state == ConnState::Connected) m_client->NotifyServerOfChannelChange();
-  }
+  // from the next interval (the channel stays, so the others keep their settings for it)
+  if (bcast != want) m_client->SetLocalChannelInfo(0, nullptr, false, 0, false, 0, true, want);
 }
 
 void Engine::doConnect(const std::string &serverIn, const std::string &userIn)
@@ -1123,6 +1180,7 @@ void Engine::updateUsers(Snapshot &snap)
   bool haveSettings = false;
 
   std::string signature;
+  bool anySolo = false;
   const int n = m_client->GetNumUsers();
   for (int u = 0; u < n; u ++)
   {
@@ -1152,10 +1210,22 @@ void Engine::updateUsers(Snapshot &snap)
           m_client->SetUserChannelState(u, ch, false, false, true, it->second.volume, true, it->second.pan, true, it->second.mute, false, false);
       }
       bool sub = false, mute = false, solo = false;
-      const char *cn = m_client->GetUserChannelState(u, ch, &sub, &cv.volume, &cv.pan, &mute, &solo);
+      int outch = 0;
+      const char *cn = m_client->GetUserChannelState(u, ch, &sub, &cv.volume, &cv.pan, &mute, &solo, &outch);
       cv.name = cn ? cn : "";
       cv.mute = mute;
       cv.solo = solo;
+      if (solo) anySolo = true;
+      cv.playerOut = outch >= 2 && !(outch & 1024) ? outch / 2 : 0;
+      if (cv.playerOut > 0)
+      {
+        int &said = m_playerOutSaid[uv.name];
+        if (said != cv.playerOut)
+        {
+          said = cv.playerOut;
+          addChat(ChatLine::System, "", uv.displayName + " plays alone on the output Player " + std::to_string(cv.playerOut));
+        }
+      }
       cv.peak[0] = m_client->GetUserChannelPeak(u, ch, 0);
       cv.peak[1] = m_client->GetUserChannelPeak(u, ch, 1);
       signature += std::to_string(ch) + ":" + cv.name + "\n";
@@ -1163,6 +1233,7 @@ void Engine::updateUsers(Snapshot &snap)
     }
     snap.users.push_back(uv);
   }
+  m_anySolo = anySolo;
 
   {
     std::lock_guard<std::mutex> lock(m_snapMutex);
@@ -1229,6 +1300,8 @@ void Engine::publish()
   }
   else
   {
+    m_anySolo = false;
+    m_playerOutSaid.clear();
     std::lock_guard<std::mutex> lock(m_snapMutex);
     if (!m_snap.users.empty()) m_usersRevision ++;
     snap.usersRevision = m_usersRevision;
@@ -1243,6 +1316,7 @@ void Engine::publish()
   snap.audioRunning = t - m_lastAudio < 1.0;
   snap.localPeak[0] = m_client->GetLocalChannelPeak(0, 0);
   snap.localPeak[1] = m_client->GetLocalChannelPeak(0, 1);
+  snap.sendPaused = snap.audioRunning && m_hostStopped.load(std::memory_order_relaxed) && getSettings().transmit;
 
   // following the host, and its tempo against the room's
   std::string hostName;
