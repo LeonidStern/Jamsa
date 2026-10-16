@@ -119,6 +119,10 @@ add_library(ninjam_live_aoo_internal INTERFACE)
 target_include_directories(ninjam_live_aoo_internal INTERFACE
     ${NINJAM_LIVE_AOO_DIR}
     ${NINJAM_LIVE_AOO_DIR}/src
+)
+# (SYSTEM: oscpack's headers set off the plug-in's -Wsuggest-override in
+# every test that includes AOO's private headers)
+target_include_directories(ninjam_live_aoo_internal SYSTEM INTERFACE
     ${NINJAM_LIVE_AOO_DIR}/deps/oscpack
 )
 target_compile_definitions(ninjam_live_aoo_internal INTERFACE
