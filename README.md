@@ -46,7 +46,7 @@ The editor uses X11. It needs the usual desktop libraries: xcb, cairo, pango and
    - **BPI**: beats per interval, 2 to 64. A room starts at 4.
    - **Codec**: Opus, or lossless FLAC, which needs several times the bandwidth.
    - **Opus bitrate**: 64 to 510 kbps. A new Jamsa starts at 510, the best Opus sounds.
-5. **Sync** lets Ableton lead. When you change Ableton's tempo, the room follows, and intervals start on Ableton's bars.
+5. **Sync** keeps your DAW and the room in time, in any VST3 host. When you change your DAW's tempo, you vote the room to it, and while it plays, intervals start on its bars. If your DAW has Ableton Link, turn Link on there too: then the room's tempo moves your DAW's, whoever votes. In Live that's the Link button at the top left (if it isn't there, turn on *Show Link Toggle* in Live's Link settings).
 6. You can also type room commands in the chat: `!vote bpm 120`, `!vote bpi 16`, `!codec opus` or `!codec flac`, and `!bitrate 128`.
 
 Hosting tips:

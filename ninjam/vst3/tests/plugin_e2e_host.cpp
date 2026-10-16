@@ -15,7 +15,7 @@
   It loads Jamsa.vst3, plays a 997 Hz tone into it in real time, and drives
   it through its text command interface.
 
-  Usage: plugin_e2e_host path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync]]]
+  Usage: plugin_e2e_host path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link]]]
 
   Hosting (the default): the plug-in hosts a server and joins it, and a second
   NJClient ("peer", in this process) joins too and plays a 661 Hz tone. The
@@ -46,12 +46,15 @@
     PHASE two BEGIN
     PHASE two END a_hears_snr=<dB> b_hears_snr=<dB> b_host_refused=<0|1> b_got_chat=<0|1> a_users=<n> b_users=<n>
                   a_name=<alice's name> b_name=<bob's> a_sees=<who alice hears, as shown> b_sees=<who bob hears>
-                  a_state=<state> b_state=<state> (at the end)
+                  a_state=<state> b_state=<state> (at the end) a_link=<alice's Link state> b_link=<bob's>
     PHASE room END start_kbps=<the room's at first> a_kbps=<alice sends> b_kbps=<bob sends> a_own=<alice's own>
                    b_own=<bob's own> b_saw_note=<0|1> flac=<alice's room>/<alice sends> opus=<the same, after>
                    start_bpi=<the room's BPI at first> least_bpi=<after a vote for 2>
     PHASE swap END b_dropped=<0|1> b_hosting=<0|1> port=<port> a_state=<state> a_users=<n> a_kbps=<alice sends>
+                   a_link=<alice's Link state> b_link=<bob's>
     DONE
+  Both have Sync on, so both are in Link while in a room, and the one in a room first leads
+  it ("leading"), the other not ("other"); when alice leaves her room, bob leads it from his.
 
   The host leads (sync): this host passes a tempo, a transport and a time signature (4/4) in
   the ProcessContext, as Live does, and the plug-in follows it ("Sync", on by default). The host is at
@@ -80,11 +83,45 @@
     SYNC refollow room_bpm=<bpm> tempovotes=<n>
     NOTE same text=<empty when the tempos agree>
     DONE
+  No other Link app is there, so the plug-in is alone in Link, and its note says to turn
+  Link on in the host.
 
-  Errors start with "error:" and the exit code is not 0. With NINJAM_E2E_DEBUG set, each
+  Ableton Link (link): this host is a Link peer too, and does what Live does with its Link
+  on: its tempo (ProcessContext) is the Link session's, and while it plays its position is
+  Link's beat when the block is heard, which is LATENCY_MS after the plug-in's guess (one
+  block after process() is called). Its Link session is older and at 133 BPM. The plug-in
+  hosts a room (120 BPM) and leads Link: the host takes the room's 120 (no vote for its 133),
+  and the room's vote for 100 BPM and 4 beats. While it plays, each interval must start on a
+  host beat that is a multiple of 4 (the accent of the plug-in's click, against the position
+  the host passed), the plug-in must find the latency, and the intervals are never moved
+  (Link moves the host's bars instead). The host's tempo is dragged to 109.6: one vote, and
+  the room and Link at 110. The host's tempo goes to 110.3, which rounds to the room's: Link
+  goes back to 110. Another app sets Link to 125 while the host's own Link is off: Link goes
+  back to 110. Then the host's Link goes off: the plug-in says to turn it on, and lines its
+  intervals up with the host's bars itself; on again, the plug-in leads it again. Last, Sync
+  off: the plug-in leaves Link; and Sync on, out of the room: the plug-in leaves Link too.
+    PORT <port>
+    LINK nopeers                                       (no Link peer seen: the rest is skipped)
+    LINK joined room_bpm=<bpm> peer_tempo=<bpm> tempovotes=<n> leads=<0|1> link=<state> restores=<n>
+    LINK vote room_bpm=<bpm> peer_tempo=<bpm>
+    SYNC phase link100 ... latency=<ms the plug-in measured>  (as in sync, on the host's position)
+    LINK follow room_bpm=<bpm> peer_tempo=<bpm> tempovotes=<n>
+    SYNC phase link110 ...
+    LINK same peer_tempo=<bpm> tempovotes=<n> restores=<n>
+    LINK foreign peer_tempo=<bpm> restores=<n>
+    SYNC tape intervals=<n> odd=<n> fixes=<n> odd_lengths=<...>
+    LINK off peers=<n> leads=<0|1> bars=<state> hint=<0|1> tip=<the Sync button's tooltip>
+    LINK back peers=<n> leads=<0|1> peer_tempo=<bpm> tempovotes=<n>
+    LINK syncoff link=<state> peer_peers=<n>
+    LINK left link=<state> state=<the plug-in's connection> peer_peers_on=<n, Sync on again> peer_peers=<n, out of the room>
+    chat: ...                                          (the plug-in's chat, a line each)
+    DONE
+ With NINJAM_E2E_DEBUG set, each
   phase also prints the level of what each side heard, second by second.
 
 */
+
+#include <ableton/Link.hpp> // first: it includes asio
 
 #include <math.h>
 #include <stdio.h>
@@ -302,6 +339,15 @@ public:
     ProcessData data {};
     data.processMode = kRealtime;
     ProcessContext context {};
+    if (m_link && m_transport.followLink)
+    {
+      // as Live with its Link on: the session's tempo, and while it plays, Link's beat when the
+      // block is heard
+      const auto state = m_link->captureAppSessionState();
+      m_transport.tempo = state.tempo();
+      const double heardUs = m_linkBaseUs + (m_pos + m_block) * 1e6 / m_srate + m_latencyUs;
+      m_transport.ppq = m_transport.line = state.beatAtTime(std::chrono::microseconds((long long)llround(heardUs)), 4.0);
+    }
     const Transport played = m_transport; // the host's transport for this block
     if (played.on)
     {
@@ -325,7 +371,7 @@ public:
         context.state |= ProcessContext::kCycleActive | ProcessContext::kCycleValid;
       }
       data.processContext = &context;
-      if (played.playing)
+      if (played.playing && !played.followLink)
       {
         const double beats = m_block / (double)m_srate * played.tempo / 60.0;
         m_transport.ppq += beats;
@@ -417,8 +463,14 @@ public:
     double cycleStart = 0, cycleEnd = 0;
     bool tellCycle = true; // false: the host loops without saying so
     int wraps = 0;         // times round the loop
+    bool followLink = false; // tempo and position from m_link (link)
   };
   Transport m_transport;
+  // link: the host's own Link, Link's clock at sample 0, and how much later than the plug-in's
+  // guess a block is heard
+  ableton::Link *m_link = nullptr;
+  double m_linkBaseUs = 0, m_latencyUs = 0;
+  void startLinkClock() { m_linkBaseUs = (double)m_link->clock().micros().count() - m_pos * 1e6 / m_srate; }
   void locate(double ppq) { m_transport.ppq = m_transport.line = ppq; }
   std::vector<Transport> m_heardTransport; // for each block of m_pluginHeard
 
@@ -554,7 +606,8 @@ static int jam_two_instances(Host &a, Host &b)
     if (!a.runUntil(nullptr, 30.0, [&]() {
           auto sa = a.status(), sb = b.status();
           return sa["state"] == "connected" && sb["state"] == "connected" && atoi(sa["users"].c_str()) >= 1 &&
-                 atoi(sb["users"].c_str()) >= 1 && sa["bpi"] == "4" && sb["bpi"] == "4" && atof(sb["bpm"].c_str()) == 240.0;
+                 atoi(sb["users"].c_str()) >= 1 && sa["bpi"] == "4" && sb["bpi"] == "4" && atof(sb["bpm"].c_str()) == 240.0 &&
+                 sb["link"] == "other";
         }))
       return fail(b, "bob did not join alice's server, or the tempo did not change");
     a.command("chat hello from alice");
@@ -585,9 +638,10 @@ static int jam_two_instances(Host &a, Host &b)
     };
     auto sa = a.status(), sb = b.status();
     printf("PHASE two END a_hears_snr=%.1f b_hears_snr=%.1f b_host_refused=%d b_got_chat=%d a_users=%s b_users=%s a_name=%s b_name=%s "
-           "a_sees=%s b_sees=%s a_state=%s b_state=%s\n",
+           "a_sees=%s b_sees=%s a_state=%s b_state=%s a_link=%s b_link=%s\n",
            aSnr, bSnr, refused ? 1 : 0, gotChat ? 1 : 0, sa["users"].c_str(), sb["users"].c_str(), sa["user"].c_str(), sb["user"].c_str(),
-           shown(a.command("users")).c_str(), shown(b.command("users")).c_str(), sa["state"].c_str(), sb["state"].c_str());
+           shown(a.command("users")).c_str(), shown(b.command("users")).c_str(), sa["state"].c_str(), sb["state"].c_str(),
+           sa["link"].c_str(), sb["link"].c_str());
 
     // bob changes the room's bitrate, then its codec; alice's changes too, her own setting doesn't
     const std::string startKbps = a.status()["roomkbps"];
@@ -615,11 +669,12 @@ static int jam_two_instances(Host &a, Host &b)
     a.command("connect localhost:" + port2);
     a.runUntil(nullptr, 15.0, [&]() {
       auto s = a.status();
-      return s["state"] == "connected" && atoi(s["users"].c_str()) >= 1 && s["roomkbps"] != "0";
+      return s["state"] == "connected" && atoi(s["users"].c_str()) >= 1 && s["roomkbps"] != "0" && s["link"] == "other";
     });
     sa = a.status();
-    printf("PHASE swap END b_dropped=%d b_hosting=%s port=%s a_state=%s a_users=%s a_kbps=%s\n", dropped ? 1 : 0,
-           b.status()["hosting"].c_str(), port2.c_str(), sa["state"].c_str(), sa["users"].c_str(), sa["kbps"].c_str());
+    printf("PHASE swap END b_dropped=%d b_hosting=%s port=%s a_state=%s a_users=%s a_kbps=%s a_link=%s b_link=%s\n", dropped ? 1 : 0,
+           b.status()["hosting"].c_str(), port2.c_str(), sa["state"].c_str(), sa["users"].c_str(), sa["kbps"].c_str(),
+           sa["link"].c_str(), b.status()["link"].c_str());
 
     b.command("host off");
     if (!a.runUntil(nullptr, 15.0, [&]() { return b.status()["hosting"] == "0" && a.status()["state"] != "connected"; }))
@@ -689,7 +744,8 @@ static void measure_sync(Host &host, const char *name, bool playing)
     const Host::Transport &t = tr[acc[k] / host.m_block];
     const double beat = t.line + (acc[k] % host.m_block) / (double)host.m_srate * t.tempo / 60.0;
     double off = fmod(beat, bpi);
-    if (off > bpi / 2.0) off -= bpi;
+    if (off < 0) off += bpi;
+    if (off >= bpi / 2.0) off -= bpi;
     const double ms = off * 60000.0 / t.tempo;
     worst = std::max(worst, fabs(ms));
     char b[32];
@@ -698,8 +754,8 @@ static void measure_sync(Host &host, const char *name, bool playing)
   }
   if (playing) printf("accents (ms from a host beat that is a multiple of %d): %s\n", bpi, list.c_str());
   if (playing)
-    printf("SYNC phase %s n=%d max_ms=%.3f gap_err=%ld fixes=%s bars=%s accent_hz=%.0f beat_hz=%.0f beats=%d\n", name, (int)acc.size(), worst,
-           gapErr, s["barfixes"].c_str(), s["bars"].c_str(), accentHz, beatHz, (int)beats.size());
+    printf("SYNC phase %s n=%d max_ms=%.3f gap_err=%ld fixes=%s bars=%s accent_hz=%.0f beat_hz=%.0f beats=%d latency=%s\n", name, (int)acc.size(),
+           worst, gapErr, s["barfixes"].c_str(), s["bars"].c_str(), accentHz, beatHz, (int)beats.size(), s["latency"].c_str());
   else
     printf("SYNC %s n=%d gap_err=%ld fixes=%s bars=%s\n", name, (int)acc.size(), gapErr, s["barfixes"].c_str(), s["bars"].c_str());
 }
@@ -860,18 +916,202 @@ static int host_sync(Host &host)
   return 0;
 }
 
+// how much later than the plug-in's guess (one block after process() is called) this host hears a block (link)
+static const double LATENCY_MS = 4.0;
+
+// The host is Live with its Link on (peer, a Link session older than the plug-in's, at 133 BPM):
+// the room leads it through Link.
+static int link_sync(Host &host, ableton::Link &peer)
+{
+  Host::Transport &t = host.m_transport;
+  t.on = true;
+  t.followLink = true;
+  host.m_link = &peer;
+  host.m_latencyUs = LATENCY_MS * 1000;
+  host.startLinkClock();
+  auto len_at = [&](int bpm, int bpi) { return (int)(60.0 / bpm * bpi * host.m_srate); };
+  auto len_is = [&](int bpm) { return atoi(host.status()["len"].c_str()) == len_at(bpm, 4); };
+  auto peer_tempo = [&]() { return peer.captureAppSessionState().tempo(); };
+  auto peer_at = [&](double bpm) { return fabs(peer_tempo() - bpm) < 0.001; };
+  auto set_peer_tempo = [&](double bpm) {
+    auto state = peer.captureAppSessionState();
+    state.setTempo(bpm, peer.clock().micros());
+    peer.commitAppSessionState(state);
+  };
+  // records `intervals` intervals once Link is in line with them
+  auto record = [&](const char *name, int intervals) {
+    host.run(nullptr, 0.1);
+    if (!host.runUntil(nullptr, 20.0, [&]() { return host.status()["linkaligned"] == "1"; })) return false;
+    host.clearHeard();
+    host.run(nullptr, atoi(host.status()["len"].c_str()) / (double)host.m_srate * intervals + 0.2, true);
+    measure_sync(host, name, true);
+    return true;
+  };
+
+  for (const char *c : { "name plugin", "metronome on", "monitor off", "host on" })
+  {
+    const std::string r = host.command(c);
+    if (r != "ok") return fail(host, ("command failed: " + std::string(c) + ": " + r).c_str());
+  }
+  if (!host.runUntil(nullptr, 15.0, [&]() { auto s = host.status(); return s["state"] == "connected" && s["hosting"] == "1"; }))
+    return fail(host, "the plug-in did not start its server and join it");
+  printf("PORT %s\n", host.status()["port"].c_str());
+
+  // the plug-in sees the host's Link (in this process, as on a network)
+  if (!host.runUntil(nullptr, 10.0, [&]() { return atoi(host.status()["peers"].c_str()) >= 1; }))
+  {
+    printf("LINK nopeers\n");
+    host.command("host off");
+    host.runUntil(nullptr, 10.0, [&]() { return host.status()["hosting"] == "0"; });
+    host.unload();
+    printf("DONE\n");
+    return 0;
+  }
+
+  // in the room (120 BPM), the plug-in leads Link: the host takes the room's tempo, no vote for its 133
+  host.runUntil(nullptr, 10.0, [&]() { return peer_at(120) && host.status()["leads"] == "1"; });
+  host.run(nullptr, 3.0); // past the time a vote would take
+  auto s = host.status();
+  printf("LINK joined room_bpm=%s peer_tempo=%.3f tempovotes=%s leads=%s link=%s restores=%s\n", s["bpm"].c_str(), peer_tempo(),
+         s["tempovotes"].c_str(), s["leads"].c_str(), s["link"].c_str(), s["restores"].c_str());
+
+  // the room's votes go to the host through Link
+  if (host.command("vote bpm 100") != "ok" || host.command("vote bpi 4") != "ok") return fail(host, "the votes failed");
+  if (!host.runUntil(nullptr, 20.0, [&]() { return len_is(100) && peer_at(100); }))
+    return fail(host, "the room and Link did not get to 100 BPM and 4 beats");
+  s = host.status();
+  printf("LINK vote room_bpm=%s peer_tempo=%.3f\n", s["bpm"].c_str(), peer_tempo());
+
+  // from an interval before the host plays, the tape has each interval the plug-in sent
+  host.m_taping = true;
+  host.run(nullptr, len_at(100, 4) / (double)host.m_srate + 0.3);
+
+  // the host plays (on Link's beat); the plug-in finds when it hears the blocks: its measure holds
+  // still for 3 seconds
+  t.playing = true;
+  {
+    double last = -1e9, since = now_seconds();
+    host.runUntil(nullptr, 40.0, [&]() {
+      const double l = atof(host.status()["latency"].c_str());
+      if (fabs(l - last) > 0.001)
+      {
+        last = l;
+        since = now_seconds();
+      }
+      return fabs(l) > 0.5 && now_seconds() - since >= 3.0;
+    });
+  }
+  if (!record("link100", 4)) return fail(host, "Link did not line up with the intervals at 100 BPM");
+
+  // the host's tempo is dragged to 109.6 (on Link, as Live does): one vote, and the room and Link at 110
+  for (double bpm : { 104.0, 106.5, 108.0, 109.6 })
+  {
+    set_peer_tempo(bpm);
+    host.run(nullptr, 0.15);
+  }
+  if (!host.runUntil(nullptr, 20.0, [&]() { return len_is(110) && peer_at(110); }))
+    return fail(host, "the room and Link did not follow the host's tempo to 110");
+  s = host.status();
+  printf("LINK follow room_bpm=%s peer_tempo=%.3f tempovotes=%s\n", s["bpm"].c_str(), peer_tempo(), s["tempovotes"].c_str());
+  if (!record("link110", 3)) return fail(host, "Link did not line up with the intervals at 110 BPM");
+
+  // the host goes to 110.3, which is the room's BPM: no vote, and Link goes back to 110
+  set_peer_tempo(110.3);
+  host.run(nullptr, 0.5);
+  if (!host.runUntil(nullptr, 15.0, [&]() { return peer_at(110); })) return fail(host, "Link did not go back to 110 from 110.3");
+  host.run(nullptr, 1.0);
+  s = host.status();
+  printf("LINK same peer_tempo=%.3f tempovotes=%s restores=%s\n", peer_tempo(), s["tempovotes"].c_str(), s["restores"].c_str());
+
+  // the host stops, and its Link goes off (its tempo stays at 110); another app sets Link to 125: back to 110
+  t.playing = false;
+  t.followLink = false;
+  t.tempo = 110;
+  host.run(nullptr, 1.0);
+  set_peer_tempo(125);
+  host.run(nullptr, 0.2);
+  if (!host.runUntil(nullptr, 15.0, [&]() { return peer_at(110); })) return fail(host, "Link did not go back to 110 from 125");
+  host.run(nullptr, 1.0);
+  s = host.status();
+  printf("LINK foreign peer_tempo=%.3f restores=%s\n", peer_tempo(), s["restores"].c_str());
+
+  // what the others heard: Link moved the host's bars, never the intervals
+  host.m_taping = false;
+  std::string oddLengths;
+  const int intervals = odd_intervals(host.m_tape, host.m_srate, { len_at(100, 4), len_at(110, 4) }, oddLengths);
+  const int odd = oddLengths.empty() ? 0 : (int)std::count(oddLengths.begin(), oddLengths.end(), ',') + 1;
+  printf("SYNC tape intervals=%d odd=%d fixes=%s odd_lengths=%s\n", intervals, odd, host.status()["barfixes"].c_str(),
+         oddLengths.empty() ? "-" : oddLengths.c_str());
+  host.m_tape.clear();
+
+  // no other Link app now: the plug-in says to turn Link on in the host, and lines its intervals up
+  // with the host's bars itself
+  peer.enable(false);
+  host.locate(9.37);
+  t.playing = true;
+  if (!host.runUntil(nullptr, 20.0, [&]() { auto st = host.status(); return st["peers"] == "0" && st["bars"] == "aligned"; }))
+    return fail(host, "without Link, the intervals did not line up with the host's bars");
+  host.runUntil(nullptr, 10.0, [&]() { return contains(host.command("chatlog"), "Turn on Link in "); });
+  s = host.status();
+  printf("LINK off peers=%s leads=%s bars=%s hint=%d tip=%s\n", s["peers"].c_str(), s["leads"].c_str(), s["bars"].c_str(),
+         contains(host.command("chatlog"), "Turn on Link in My VST3 HostApplication if it has Link") ? 1 : 0,
+         host.command("synctip").c_str());
+
+  // the host's Link on again: the plug-in leads it again
+  t.followLink = true;
+  peer.enable(true);
+  host.runUntil(nullptr, 10.0, [&]() { return host.status()["leads"] == "1" && peer_at(110); });
+  s = host.status();
+  printf("LINK back peers=%s leads=%s peer_tempo=%.3f tempovotes=%s\n", s["peers"].c_str(), s["leads"].c_str(), peer_tempo(),
+         s["tempovotes"].c_str());
+
+  // Sync off: the plug-in leaves Link, so the host's Link sees nobody
+  host.command("follow off");
+  host.runUntil(nullptr, 5.0, [&]() { return peer.numPeers() == 0; });
+  host.run(nullptr, 2.0);
+  s = host.status();
+  printf("LINK syncoff link=%s peer_peers=%d\n", s["link"].c_str(), (int)peer.numPeers());
+
+  // Sync on again: in Link again; out of the room, out of Link (with Sync on)
+  host.command("follow on");
+  host.runUntil(nullptr, 10.0, [&]() { return peer.numPeers() >= 1; });
+  const int peersOn = (int)peer.numPeers();
+  host.command("host off");
+  host.runUntil(nullptr, 10.0, [&]() { auto st = host.status(); return st["hosting"] == "0" && st["state"] != "connected"; });
+  host.runUntil(nullptr, 5.0, [&]() { return peer.numPeers() == 0; });
+  host.run(nullptr, 2.0);
+  s = host.status();
+  printf("LINK left link=%s state=%s peer_peers_on=%d peer_peers=%d\n", s["link"].c_str(), s["state"].c_str(), peersOn,
+         (int)peer.numPeers());
+  printf("chat:\n%s", host.command("chatlog").c_str());
+
+  peer.enable(false);
+  host.m_link = nullptr;
+  host.unload();
+  printf("DONE\n");
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2)
   {
-    fprintf(stderr, "usage: %s path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync]]]\n", argv[0]);
+    fprintf(stderr, "usage: %s path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link]]]\n", argv[0]);
     return 2;
   }
   const int srate = argc > 2 ? atoi(argv[2]) : 48000;
   const int blockSize = argc > 3 ? atoi(argv[3]) : 512;
 
   Host host(srate, blockSize);
+  if (argc > 4 && !strcmp(argv[4], "link"))
+  {
+    // the host's Link goes on first, so its session is the older one when the plug-in's joins it
+    ableton::Link peer(133.0);
+    peer.enable(true);
+    if (!host.load(argv[1])) return 1;
+    return link_sync(host, peer);
+  }
   if (!host.load(argv[1])) return 1;
   if (argc > 5 && !strcmp(argv[4], "join")) return join_vorbis_room(host, argv[5]);
   if (argc > 4 && !strcmp(argv[4], "sync")) return host_sync(host);

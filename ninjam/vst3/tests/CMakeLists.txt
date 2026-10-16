@@ -1,13 +1,16 @@
 # Tests for the plug-in (configure with -DNINJAM_VST3_TESTS=ON), run with ctest:
 #
 #   plugin_unit_test   saved state, port mapping messages, following the host's tempo and bars,
-#                      the metronome's click, the editor's texts and BPM dragging
+#                      the metronome's click, the editor's texts and BPM dragging; Ableton Link:
+#                      the beat, phase and tempo logic, one instance leading Link in real time
 #   plugin_clipboard   (Linux, with xvfb-run) the Copy buttons' text, read back the way a
 #                      program that pastes reads it
 #   plugin_e2e         test_plugin_e2e.py: plugin_e2e_host loads Jamsa.vst3, which hosts a
 #                      server; a second client joins; audio both ways in Opus and FLAC.
-#                      Also two instances in one process, playing together, and a host whose
-#                      tempo the room follows and whose bars the intervals start on
+#                      Also two instances in one process, playing together (one leads Link), a
+#                      host whose tempo the room follows and whose bars the intervals start on,
+#                      and a host that is a Link peer (as Live with its Link on), which the room's
+#                      tempo and intervals lead
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp
@@ -15,12 +18,15 @@ add_executable(plugin_unit_test
     ../source/engine.cpp
     ../source/hostserver.cpp
     ../source/hostsync.cpp
+    ../source/linksync.cpp
     ../source/textkeys.cpp
     ../source/uitext.cpp
 )
 target_compile_features(plugin_unit_test PRIVATE cxx_std_17)
-target_link_libraries(plugin_unit_test PRIVATE ninjam_client ninjamsrv_embedded)
+target_link_libraries(plugin_unit_test PRIVATE ninjam_client ninjamsrv_embedded Ableton::Link)
 add_test(NAME plugin_unit_test COMMAND plugin_unit_test)
+# Link apps on one machine see each other: the tests that use Link run one at a time
+set_tests_properties(plugin_unit_test PROPERTIES RESOURCE_LOCK ableton_link)
 if(SMTG_LINUX)
     target_sources(plugin_unit_test PRIVATE ../source/clipboard.cpp)
     target_link_libraries(plugin_unit_test PRIVATE xcb)
@@ -40,7 +46,7 @@ if(NOT WIN32)
     endif()
     add_executable(plugin_e2e_host plugin_e2e_host.cpp ${module_loader})
     target_compile_features(plugin_e2e_host PRIVATE cxx_std_17)
-    target_link_libraries(plugin_e2e_host PRIVATE sdk_hosting ninjam_client ${CMAKE_DL_LIBS})
+    target_link_libraries(plugin_e2e_host PRIVATE sdk_hosting ninjam_client Ableton::Link ${CMAKE_DL_LIBS})
     if(SMTG_MAC)
         set_source_files_properties(${module_loader} PROPERTIES COMPILE_FLAGS "-fobjc-arc")
         find_library(COCOA_FRAMEWORK Cocoa)
@@ -55,7 +61,8 @@ if(NOT WIN32)
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         )
         set_tests_properties(plugin_e2e PROPERTIES
-            TIMEOUT 600
+            TIMEOUT 900
+            RESOURCE_LOCK ableton_link
             ENVIRONMENT "NINJAM_VST3_PLUGIN=$<TARGET_PROPERTY:Jamsa,SMTG_PLUGIN_PACKAGE_PATH>;NINJAM_VST3_E2E_HOST=$<TARGET_FILE:plugin_e2e_host>"
         )
     endif()

@@ -927,16 +927,17 @@ void NinjamEditor::updateTransport(const Snapshot &s)
     }
   }
 
-  // Sync: the host's tempo, green when it is the room's, amber when not
-  const std::string chip = s.hostChip.empty() ? "Host" : s.hostChip;
+  // Sync: the host's tempo, green when it is the room's, amber when not; "Link" while the host
+  // follows the room through Link
+  const std::string chip = s.linkLeads ? "Link" : s.hostChip.empty() ? "Host" : s.hostChip;
   setLabel(m_syncText, chip + " " + uitext::bpmBoxText(s.hostTempo));
   const bool known = s.hostTempo > 0 && connected && s.bpm > 0;
   const bool differ = known && fabs(s.hostTempo - s.bpm) > BarSync::SAME_TEMPO;
   m_syncLed->setColor(!known ? Colors::buttonOff() : differ ? Colors::yellow() : Colors::green(), known);
   setTooltip(m_syncText, !s.syncNote.empty() ? s.syncNote
-                         : s.hostTempo > 0 ? s.hostLabel + "'s tempo" : s.hostLabel + " doesn't say its tempo (or isn't running the audio)");
-  setTooltip(m_sync, "Sync with " + s.hostLabel + ": when you change its tempo, vote the room to it; and while it plays, "
-                     "start the intervals on its bars (a multiple of BPI beats from bar 1)");
+                         : s.hostTempo > 0 ? s.hostLabel + "'s tempo" + (s.linkLeads ? ", which follows the room through Link" : "")
+                         : s.hostLabel + " doesn't say its tempo (or isn't running the audio)");
+  setTooltip(m_sync, syncTooltip(s.hostLabel, s.linkState, s.linkPeers));
 
   // the beat of the interval that plays; without the host's audio nothing plays (and NJClient's
   // BPI is still the one it started with), so the room's BPI and no beat
@@ -969,10 +970,12 @@ void NinjamEditor::updateFooter(const Snapshot &s)
     text = s.syncNote;
     warn = true;
   }
-  else if (s.nextIntervalPpq >= 0) text = nextIntervalText(s.hostChip, s.nextIntervalPpq, s.timeSigNum, s.timeSigDen);
+  else if (s.nextIntervalPpq >= 0)
+    text = nextIntervalText(s.hostChip, s.nextIntervalPpq, s.timeSigNum, s.timeSigDen) + (s.linkLeads ? " (Link)" : "");
   else if (connected)
   {
     if (!s.followTempo) text = "Sync is off: the intervals keep their own time";
+    else if (s.linkLeads) text = host + " follows the room through Link: its tempo, and its bars on the intervals";
     else
       switch (s.barState)
       {
