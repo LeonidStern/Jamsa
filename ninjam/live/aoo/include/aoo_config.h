@@ -10,9 +10,12 @@
 
 /*---------- global compile time settings ----------*/
 
-/** \brief internal networking support (AooClient and AooServer) */
+/** \brief internal networking support (AooClient and AooServer): not available in this copy */
 #ifndef AOO_NET
-# define AOO_NET 1
+# define AOO_NET 0
+#endif
+#if AOO_NET
+# error "AOO_NET is not supported (net sources were removed)"
 #endif
 
 /** \brief audio sample size in bits */
@@ -46,7 +49,7 @@
 #endif
 
 #if AOO_PACKET_SIZE > AOO_MAX_PACKET_SIZE
-#error "AOO_PACKET_SIZE must exceed AOO_MAX_PACKET_SIZE"
+#error "AOO_PACKET_SIZE must not exceed AOO_MAX_PACKET_SIZE"
 #endif
 
 /** \brief default size of the RT memory pool */
@@ -99,14 +102,4 @@
 /** \brief debug stream message scheduling */
 #ifndef AOO_DEBUG_STREAM_MESSAGE
 # define AOO_DEBUG_STREAM_MESSAGE 0
-#endif
-
-/** \brief debug relay messages */
-#ifndef AOO_DEBUG_RELAY
-#define AOO_DEBUG_RELAY 0
-#endif
-
-/** \brief debug client messages */
-#ifndef AOO_DEBUG_CLIENT_MESSAGE
-#define AOO_DEBUG_CLIENT_MESSAGE 0
 #endif

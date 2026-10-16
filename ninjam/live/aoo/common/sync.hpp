@@ -13,22 +13,6 @@
   #include <pthread.h>
 #endif
 
-#ifdef __APPLE__
-// macOS doesn't support unnamed posix semaphores,
-// so we use Mach semaphores instead
-#include <mach/mach.h>
-#endif
-
-#if defined(__linux__) || defined(__FreeBSD__) || \
-    defined(__NetBSD__) || defined(__OpenBSD__)
-  #define HAVE_POSIX_SEMAPHORE
-  #include <semaphore.h>
-#endif
-
-// TODO: FreeRTOS Semaphore
-#if defined(_WIN32) || defined(__APPLE__) || defined(HAVE_POSIX_SEMAPHORE)
-  #define HAVE_SEMAPHORE
-#endif
 
 // for spinlock
 #if defined(_MSC_VER)
@@ -65,10 +49,6 @@ inline void pause_cpu() {
 # warning "Cannot pause CPU, falling back to busy-waiting."
 #endif
 }
-
-//-------------- thread priority ------------------//
-
-void set_low_realtime_priority();
 
 //----------------- relaxed atomics ---------------//
 
@@ -202,97 +182,6 @@ protected:
     std::atomic<uint32_t> locked_{false};
 };
 
-//------------- shared spin lock -----------------//
-
-// TODO: temporarily disable interrupts on ESP?
-class shared_spinlock {
-public:
-    shared_spinlock() = default;
-    shared_spinlock(const shared_spinlock&) = delete;
-    shared_spinlock& operator=(const shared_spinlock&) = delete;
-
-    // exclusive
-    void lock() {
-        // only try to modify the shared state if the lock seems to be available.
-        // this should prevent unnecessary cache invalidation.
-        for (;;) {
-            if (state_.load(std::memory_order_relaxed) == UNLOCKED){
-                // check if state is UNLOCKED and set LOCKED bit on success.
-                uint32_t expected = UNLOCKED;
-                if (state_.compare_exchange_weak(expected, LOCKED,
-                    std::memory_order_acquire, std::memory_order_relaxed)) return;
-                // CAS failed -> retry immediately
-            } else {
-                pause_cpu();
-            }
-        }
-    }
-
-    bool try_lock() {
-        // check if state is UNLOCKED and set LOCKED bit on success.
-        uint32_t expected = UNLOCKED;
-        return state_.compare_exchange_strong(expected, LOCKED,
-            std::memory_order_acquire, std::memory_order_relaxed);
-    }
-
-    void unlock() {
-        // clear LOCKED bit, see try_lock_shared()
-        state_.fetch_and(~LOCKED, std::memory_order_release);
-    }
-
-    // shared
-    void lock_shared() {
-        // only try to modify the shared state if the lock seems to be
-        // available. this should prevent unnecessary cache invalidation.
-        for (;;)
-        {
-            auto state = state_.load(std::memory_order_relaxed);
-            if (!(state & LOCKED) && try_lock_shared()) {
-                return;
-            } else {
-                pause_cpu();
-            }
-        }
-    }
-
-    bool try_lock_shared() {
-        // optimistically increment the reader count and then
-        // check whether the LOCKED bit is *not* set, otherwise
-        // we simply decrement the reader count again. this is
-        // optimized for the likely case that there's no writer.
-        auto state = state_.fetch_add(1, std::memory_order_acquire);
-        if (!(state & LOCKED)){
-            return true;
-        } else {
-            state_.fetch_sub(1, std::memory_order_acq_rel); // memory order?
-            return false;
-        }
-    }
-
-    void unlock_shared() {
-        // decrement the reader count
-        state_.fetch_sub(1, std::memory_order_release);
-    }
-protected:
-    const uint32_t UNLOCKED = 0;
-    const uint32_t LOCKED = 0x80000000;
-    std::atomic<uint32_t> state_{0};
-};
-
-//--------------- padded spin locks --------------------//
-
-template<typename T, size_t N>
-class alignas(N) padded_class : public T {
-    // pad and align to prevent false sharing
-    char pad_[N - sizeof(T)];
-};
-
-static const size_t CACHELINE_SIZE = 64;
-
-using padded_spinlock = padded_class<spinlock, CACHELINE_SIZE>;
-
-using padded_shared_spinlock =  padded_class<shared_spinlock, CACHELINE_SIZE>;
-
 //------------------------------ mutex ------------------------------------//
 
 // The std::mutex implementation on Windows rolls their own mutex based on atomics and
@@ -317,16 +206,6 @@ private:
 #else
     pthread_mutex_t mutex_;
 #endif
-};
-
-class recursive_mutex : public mutex {
-public:
-    void lock();
-    bool try_lock();
-    void unlock();
-private:
-    std::atomic<std::thread::id> owner_{std::thread::id{}};
-    int count_ = 0;
 };
 
 //------------------------ shared_mutex -------------------------//
@@ -361,23 +240,6 @@ private:
 using shared_mutex = std::shared_mutex;
 
 #endif // _WIN32 || AOO_HAVE_PTHREAD_RWLOCK
-
-// WARNING: lock() and try_lock() may only be called recursively
-// if the topmost lock is exclusive! Use with care!!!
-class shared_recursive_mutex : public shared_mutex {
-public:
-    // exclusive
-    void lock();
-    bool try_lock();
-    void unlock();
-    // shared
-    void lock_shared();
-    bool try_lock_shared();
-    void unlock_shared();
-private:
-    std::atomic<std::thread::id> owner_{std::thread::id{}};
-    int count_ = 0;
-};
 
 //----------------------- lock guards ------------------------------//
 
@@ -417,84 +279,6 @@ public:
     ~scoped_shared_lock() { lock_.unlock_shared(); }
 private:
     T& lock_;
-};
-
-//----------------------- semaphore --------------------------//
-
-#ifdef HAVE_SEMAPHORE
-
-namespace detail {
-
-class native_semaphore {
- public:
-    native_semaphore();
-    ~native_semaphore();
-    native_semaphore(const native_semaphore&) = delete;
-    native_semaphore& operator=(const native_semaphore&) = delete;
-    void post();
-    void wait();
-    bool try_wait();
-    bool wait_for(double seconds);
- private:
-#if defined(_WIN32)
-    void *sem_;
-#elif defined(__APPLE__)
-    semaphore_t sem_;
-#else // posix
-    sem_t sem_;
-#endif
-};
-
-} // detail
-
-#endif // HAVE_SEMAPHORE
-
-// thanks to https://preshing.com/20150316/semaphores-are-surprisingly-versatile/
-
-class semaphore {
- public:
-    semaphore();
-    ~semaphore();
-    semaphore(const semaphore&) = delete;
-    semaphore& operator=(const semaphore&) = delete;
-    void post();
-    void wait();
-    bool try_wait();
-    bool wait_for(double seconds);
- private:
-#ifdef HAVE_SEMAPHORE
-    detail::native_semaphore sem_;
-    std::atomic<int32_t> count_{0};
-#else
-    // fallback using mutex + condition variable
-    pthread_mutex_t mutex_;
-    pthread_cond_t condition_;
-    int32_t count_{0};
-#endif
-};
-
-//------------------------- event ------------------------------//
-
-class event {
- public:
-    event();
-    ~event();
-    event(const event&) = delete;
-    event& operator=(const event&) = delete;
-    void set();
-    void wait();
-    bool try_wait();
-    bool wait_for(double seconds);
- private:
-#ifdef HAVE_SEMAPHORE
-    detail::native_semaphore sem_;
-    std::atomic<int32_t> count_{0};
-#else
-    // fallback using mutex + condition variable
-    pthread_mutex_t mutex_;
-    pthread_cond_t condition_;
-    bool state_{false};
-#endif // HAVE_SEMAPHORE
 };
 
 } // sync

@@ -537,10 +537,7 @@ Decoder::~Decoder(){
 
 } // namespace
 
-void aoo_opusLoad(const AooCodecHostInterface *iface){
-    iface->registerCodec(&g_interface);
-    // the Opus codec is always statically linked, so we can simply use the
-    // internal log function and allocator
+// hard-wired into aoo::find_codec() (no codec registry)
+const AooCodecInterface * aoo_opusInterface() {
+    return &g_interface;
 }
-
-void aoo_opusUnload() {}

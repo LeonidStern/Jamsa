@@ -95,8 +95,4 @@ private:
     uint64_t value_;
 };
 
-//----------------- NTP server -----------------------//
-
-std::pair<bool, std::string> check_ntp_server();
-
 } // aoo

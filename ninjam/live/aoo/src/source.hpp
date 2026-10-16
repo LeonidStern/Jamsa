@@ -5,9 +5,6 @@
 #pragma once
 
 #include "aoo_source.hpp"
-#if AOO_NET
-# include "aoo_client.hpp"
-#endif
 
 #include "common/lockfree.hpp"
 #include "common/net_utils.hpp"
@@ -74,14 +71,8 @@ struct sink_request {
 // NOTE: the stream ID can change anytime, it only
 // has to be synchronized with any format change.
 struct sink_desc {
-#if AOO_NET
-    sink_desc(const ip_address& addr, const ip_address& relay,
-              int32_t id, bool binary, AooId stream_id)
-        : ep(addr, relay, id, binary), stream_id_(stream_id) {}
-#else
     sink_desc(const ip_address& addr, int32_t id, bool binary, AooId stream_id)
         : ep(addr, id, binary), stream_id_(stream_id) {}
-#endif // USE_AOO_NEt
     sink_desc(const sink_desc& other) = delete;
     sink_desc& operator=(const sink_desc& other) = delete;
 
@@ -281,9 +272,6 @@ class Source final : public AooSource, rt_memory_pool_client {
     int16_t nchannels_ = 0;
     int16_t blocksize_ = 0;
     int32_t samplerate_ = 0;
-#if AOO_NET
-    AooClient *client_ = nullptr;
-#endif
     // audio encoder
     std::unique_ptr<AooFormat, format_deleter> format_;
     std::unique_ptr<AooCodec, encoder_deleter> encoder_;

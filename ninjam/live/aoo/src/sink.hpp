@@ -5,9 +5,6 @@
 #pragma once
 
 #include "aoo_sink.hpp"
-#if AOO_NET
-# include "aoo_client.hpp"
-#endif
 
 #include "common/lockfree.hpp"
 #include "common/net_utils.hpp"
@@ -135,12 +132,7 @@ class Sink;
 
 class source_desc {
 public:
-#if AOO_NET
-    source_desc(const ip_address& addr, const ip_address& relay,
-                AooId id, bool binary, double time);
-#else
     source_desc(const ip_address& addr, AooId id, bool binary, double time);
-#endif
 
     source_desc(const source_desc& other) = delete;
     source_desc& operator=(const source_desc& other) = delete;
@@ -392,9 +384,6 @@ private:
     std::atomic<int16_t> nchannels_{0};
     std::atomic<int16_t> blocksize_{0};
     std::atomic<int32_t> samplerate_{0};
-#if AOO_NET
-    AooClient *client_ = nullptr;
-#endif
     // the sources
     using source_list = aoo::concurrent_list<source_desc>;
     using source_lock = std::unique_lock<source_list>;

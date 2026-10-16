@@ -36,8 +36,6 @@ using parameter = sync::relaxed_atomic<T>;
 
 AooId get_random_id();
 
-uint32_t make_version();
-
 AooError check_version(const char *version);
 
 //------------- common data structures ------------//
@@ -75,54 +73,23 @@ private:
     void *user_;
 };
 
-//--------------- ip_address -----------------------//
-
-#if 0
-using ip_address_list = std::vector<ip_address, aoo::allocator<ip_address>>;
-#else
-using ip_address_list = std::vector<ip_address>;
-#endif
-
-inline osc::OutboundPacketStream& operator<<(osc::OutboundPacketStream& msg, const ip_address& addr) {
-    msg << addr.name() << (int32_t)addr.port();
-    return msg;
-}
-
-inline ip_address osc_read_address(osc::ReceivedMessageArgumentIterator& it) {
-    auto hostname = (it++)->AsString();
-    auto port = (it++)->AsInt32();
-    return ip_address(hostname, port);
-}
-
 //---------------- endpoint ------------------------//
 
 struct endpoint {
     endpoint() = default;
     endpoint(const ip_address& _address, int32_t _id, bool _binary)
         : address(_address), id(_id), binary(_binary) {}
-#if AOO_NET
-    endpoint(const ip_address& _address, const ip_address& _relay,
-             int32_t _id, bool _binary)
-        : address(_address), relay(_relay), id(_id), binary(_binary) {}
-#endif
     // data
     ip_address address;
-#if AOO_NET
-    ip_address relay;
-#endif
     AooId id = 0;
     bool binary = false;
 
     void send(const osc::OutboundPacketStream& msg, const sendfn& fn) const {
         send((const AooByte *)msg.Data(), msg.Size(), fn);
     }
-#if AOO_NET
-    void send(const AooByte *data, AooSize size, const sendfn& fn) const;
-#else
     void send(const AooByte *data, AooSize size, const sendfn& fn) const {
         fn(data, size, address, 0);
     }
-#endif
 };
 
 inline std::ostream& operator<<(std::ostream& os, const endpoint& ep){
@@ -130,30 +97,6 @@ inline std::ostream& operator<<(std::ostream& os, const endpoint& ep){
     return os;
 }
 
-#if AOO_NET
-namespace net {
-AooSize write_relay_message(AooByte *buffer, AooSize bufsize, const AooByte *msg,
-                            AooSize msgsize, const ip_address& addr, bool binary);
-} // net
-
-inline void endpoint::send(const AooByte *data, AooSize size, const sendfn& fn) const {
-    if (relay.valid()) {
-    #if AOO_DEBUG_RELAY
-        LOG_DEBUG("relay message to " << *this << " via " << relay);
-    #endif
-        AooByte buffer[AOO_MAX_PACKET_SIZE];
-        auto result = net::write_relay_message(buffer, sizeof(buffer),
-                                               data, size, address, binary);
-        if (result > 0) {
-            fn(buffer, result, relay, 0);
-        } else {
-            LOG_ERROR("can't relay binary message: buffer too small");
-        }
-    } else {
-        fn(data, size, address, 0);
-    }
-}
-#endif
 
 //---------------- codec ---------------------------//
 
@@ -191,35 +134,9 @@ struct rt_format_deleter {
 
 //---------------- metadata -----------------------//
 
-struct metadata {
-    metadata() = default;
-    metadata(AooDataType type, const AooByte *data, AooSize size)
-        : type_(type), data_(data, data + size) {}
-    metadata(const AooData* md) {
-        if (md) {
-            type_ = md->type;
-            data_.assign(md->data, md->data + md->size);
-        }
-    }
-
-    AooDataType type() const { return type_; }
-    const AooByte *data() const { return data_.data(); }
-    AooSize size() const { return data_.size(); }
-
-    bool valid() const {
-        return type_ != kAooDataUnspecified;
-    }
-private:
-    AooDataType type_ = kAooDataUnspecified;
-    std::vector<AooByte> data_;
-};
-
-
 struct metadata_view {
     metadata_view() :
         type(kAooDataUnspecified), data(nullptr), size(0) {}
-    metadata_view(const aoo::metadata& md)
-        : type(md.type()), data(md.data()), size(md.size()) {}
     metadata_view (const AooData *md)
         : type(md ? md->type : (AooDataType)kAooDataUnspecified),
           data(md ? md->data : nullptr),

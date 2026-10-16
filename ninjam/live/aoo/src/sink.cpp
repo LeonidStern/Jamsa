@@ -84,12 +84,6 @@ aoo::Sink::~Sink(){
     }
 }
 
-AOO_API AooError AOO_CALL AooSink_setup(
-        AooSink *sink, AooInt32 nchannels, AooSampleRate samplerate,
-        AooInt32 blocksize, AooFlag flags) {
-    return sink->setup(nchannels, samplerate, blocksize, flags);
-}
-
 AooError AOO_CALL aoo::Sink::setup(
         AooInt32 nchannels, AooSampleRate samplerate,
         AooInt32 blocksize, AooFlag flags) {
@@ -142,12 +136,6 @@ T& as(void *p){
     if (!src) {                         \
         return kAooErrorNotFound;       \
     }                                   \
-
-AOO_API AooError AOO_CALL AooSink_control(
-        AooSink *sink, AooCtl ctl, AooIntPtr index, void *ptr, AooSize size)
-{
-    return sink->control(ctl, index, ptr, size);
-}
 
 AooError AOO_CALL aoo::Sink::control(
         AooCtl ctl, AooIntPtr index, void *ptr, AooSize size)
@@ -380,24 +368,12 @@ AooError AOO_CALL aoo::Sink::control(
         CHECKARG(AooBool);
         as<AooBool>(ptr) = binary_.load();
         break;
-#if AOO_NET
-    case kAooCtlSetClient:
-        client_ = reinterpret_cast<AooClient *>(index);
-        break;
-#endif
     // unknown
     default:
         LOG_WARNING("AooSink: unsupported control " << ctl);
         return kAooErrorNotImplemented;
     }
     return kAooOk;
-}
-
-AOO_API AooError AOO_CALL AooSink_codecControl(
-        AooSink *sink, const AooChar *codec, AooCtl ctl,
-        AooIntPtr index, void *data, AooSize size)
-{
-    return sink->codecControl(codec, ctl, index, data, size);
 }
 
 AooError AOO_CALL aoo::Sink::codecControl(const AooChar *codec,
@@ -408,12 +384,6 @@ AooError AOO_CALL aoo::Sink::codecControl(const AooChar *codec,
         return kAooErrorNotFound;
     }
     return src->codec_control(codec, ctl, data, size);
-}
-
-AOO_API AooError AOO_CALL AooSink_handleMessage(
-        AooSink *sink, const AooByte *data, AooInt32 size,
-        const void *address, AooAddrSize addrlen) {
-    return sink->handleMessage(data, size, address, addrlen);
 }
 
 AooError AOO_CALL aoo::Sink::handleMessage(
@@ -485,11 +455,6 @@ AooError AOO_CALL aoo::Sink::handleMessage(
     }
 }
 
-AOO_API AooError AOO_CALL AooSink_send(
-        AooSink *sink, AooSendFunc fn, void *user){
-    return sink->send(fn, user);
-}
-
 AooError AOO_CALL aoo::Sink::send(AooSendFunc fn, void *user){
     dispatch_requests();
 
@@ -507,12 +472,6 @@ AooError AOO_CALL aoo::Sink::send(AooSendFunc fn, void *user){
     }
 
     return kAooOk;
-}
-
-AOO_API AooError AOO_CALL AooSink_process(
-        AooSink *sink, AooSample **data, AooInt32 nsamples, AooNtpTime t,
-        AooStreamMessageHandler messageHandler, void *user) {
-    return sink->process(data, nsamples, t, messageHandler, user);
 }
 
 AooError AOO_CALL aoo::Sink::process(
@@ -609,12 +568,6 @@ AooError AOO_CALL aoo::Sink::process(
     return kAooOk;
 }
 
-AOO_API AooError AOO_CALL AooSink_setEventHandler(
-        AooSink *sink, AooEventHandler fn, void *user, AooEventMode mode)
-{
-    return sink->setEventHandler(fn, user, mode);
-}
-
 AooError AOO_CALL aoo::Sink::setEventHandler(
         AooEventHandler fn, void *user, AooEventMode mode)
 {
@@ -624,16 +577,8 @@ AooError AOO_CALL aoo::Sink::setEventHandler(
     return kAooOk;
 }
 
-AOO_API AooBool AOO_CALL AooSink_eventsAvailable(AooSink *sink){
-    return sink->eventsAvailable();
-}
-
 AooBool AOO_CALL aoo::Sink::eventsAvailable(){
     return !event_queue_.empty();
-}
-
-AOO_API AooError AOO_CALL AooSink_pollEvents(AooSink *sink){
-    return sink->pollEvents();
 }
 
 
@@ -643,16 +588,6 @@ AooError AOO_CALL aoo::Sink::pollEvents(){
         event_handler_(event_context_, &e->cast(), kAooThreadLevelUnknown);
     }
     return kAooOk;
-}
-
-AOO_API AooError AOO_CALL AooSink_inviteSource(
-        AooSink *sink, const AooEndpoint *source, const AooData *metadata)
-{
-    if (sink) {
-        return sink->inviteSource(*source, metadata);
-    } else {
-        return kAooErrorBadArgument;
-    }
 }
 
 AooError AOO_CALL aoo::Sink::inviteSource(
@@ -674,25 +609,10 @@ AooError AOO_CALL aoo::Sink::inviteSource(
     return kAooOk;
 }
 
-AOO_API AooError AOO_CALL AooSink_uninviteSource(
-        AooSink *sink, const AooEndpoint *source)
-{
-    if (source){
-        return sink->uninviteSource(*source);
-    } else {
-        return kAooErrorBadArgument;
-    }
-}
-
 AooError AOO_CALL aoo::Sink::uninviteSource(const AooEndpoint& ep) {
     ip_address addr((const sockaddr *)ep.address, ep.addrlen);
     push_request(source_request { request_type::uninvite, addr, ep.id });
     return kAooOk;
-}
-
-AOO_API AooError AOO_CALL AooSink_uninviteAll(AooSink *sink)
-{
-    return sink->uninviteAll();
 }
 
 AooError AOO_CALL aoo::Sink::uninviteAll() {
@@ -788,29 +708,7 @@ aoo::source_desc * Sink::get_source_arg(intptr_t index){
 // called with source mutex locked
 source_desc * Sink::add_source(const ip_address& addr, AooId id){
     // add new source
-#if AOO_NET
-    ip_address relay;
-    // check if the peer needs to be relayed
-    if (client_){
-        AooEndpoint ep { addr.address(), (AooAddrSize)addr.length(), id };
-        AooBool b;
-        if (client_->control(kAooCtlNeedRelay,
-                             reinterpret_cast<intptr_t>(&ep),
-                             &b, sizeof(b)) == kAooOk)
-        {
-            if (b == kAooTrue){
-                LOG_DEBUG("AooSink: source " << addr << " needs to be relayed");
-                // get relay address
-                client_->control(kAooCtlGetRelayAddress,
-                                 reinterpret_cast<intptr_t>(&ep),
-                                 &relay, sizeof(relay));
-            }
-        }
-    }
-    auto it = sources_.emplace_front(addr, relay, id, binary_.load(), elapsed_time());
-#else
     auto it = sources_.emplace_front(addr, id, binary_.load(), elapsed_time());
-#endif
     return &(*it);
 }
 
@@ -1152,15 +1050,9 @@ AooError Sink::handle_pong_message(const osc::ReceivedMessage& msg,
 
 //----------------------- source_desc --------------------------//
 
-#if AOO_NET
-source_desc::source_desc(const ip_address& addr, const ip_address& relay,
-                         AooId id, bool binary, double time)
-    : ep(addr, relay, id, binary), last_packet_time_(time)
-#else
 source_desc::source_desc(const ip_address& addr, AooId id,
                          bool binary, double time)
     : ep(addr, id, binary), last_packet_time_(time)
-#endif
 {
     // resendqueue_.reserve(256);
     event_buffer_.reserve(6); // start, stop, active, inactive, overrun, underrun

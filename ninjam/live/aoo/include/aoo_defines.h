@@ -143,54 +143,6 @@
 #define kAooMsgDecline "/decline"
 #define kAooMsgDeclineLen 8
 
-#define kAooMsgServer "/server"
-#define kAooMsgServerLen 7
-
-#define kAooMsgClient "/client"
-#define kAooMsgClientLen 7
-
-#define kAooMsgPeer "/peer"
-#define kAooMsgPeerLen 5
-
-#define kAooMsgRelay "/relay"
-#define kAooMsgRelayLen 6
-
-#define kAooMsgMessage "/msg"
-#define kAooMsgMessageLen 4
-
-#define kAooMsgAck "/ack"
-#define kAooMsgAckLen 4
-
-#define kAooMsgLogin "/login"
-#define kAooMsgLoginLen 6
-
-#define kAooMsgQuery "/query"
-#define kAooMsgQueryLen 6
-
-#define kAooMsgGroup "/group"
-#define kAooMsgGroupLen 6
-
-#define kAooMsgUser "/user"
-#define kAooMsgUserLen 5
-
-#define kAooMsgJoin "/join"
-#define kAooMsgJoinLen 5
-
-#define kAooMsgLeave "/leave"
-#define kAooMsgLeaveLen 6
-
-#define kAooMsgEject "/eject"
-#define kAooMsgEjectLen 6
-
-#define kAooMsgUpdate "/update"
-#define kAooMsgUpdateLen 7
-
-#define kAooMsgChanged "/changed"
-#define kAooMsgChangedLen 8
-
-#define kAooMsgRequest "/request"
-#define kAooMsgRequestLen 8
-
 /** \endcond */
 
 /*------------------- binary messages ---------------------*/
@@ -221,28 +173,6 @@ enum
     kAooBinMsgDataStreamMessage = 0x04,
     kAooBinMsgDataXRun = 0x08,
     kAooBinMsgDataTimeStamp = 0x10
-};
-
-/** \brief commands for 'message' binary message */
-enum
-{
-    kAooBinMsgCmdMessage = 0,
-    kAooBinMsgCmdAck = 1
-};
-
-/** \brief flags for 'message' binary message */
-enum
-{
-    kAooBinMsgMessageReliable = 0x01,
-    kAooBinMsgMessageFrames = 0x02,
-    kAooBinMsgMessageTimestamp = 0x04
-};
-
-/** \brief commands for 'relay' binary message */
-enum
-{
-    kAooBinMsgCmdRelayIPv4 = 0,
-    kAooBinMsgCmdRelayIPv6 = 1
 };
 
 /** \endcond */

@@ -72,21 +72,6 @@ enum
     kAooCtlGetBinaryFormat,
     kAooCtlSetStreamTimeSendInterval,
     kAooCtlGetStreamTimeSendInterval,
-#if AOO_NET
-    kAooCtlSetPassword = 1000,
-    kAooCtlSetRelayHost,
-    kAooCtlSetUseInternalRelay,
-    kAooCtlGetUseInternalRelay,
-    kAooCtlSetGroupAutoCreate,
-    kAooCtlGetGroupAutoCreate,
-    kAooCtlSetPingSettings,
-    kAooCtlGetPingSettings,
-    kAooCtlAddInterfaceAddress,
-    kAooCtlRemoveInterfaceAddress,
-    /* server group controls */
-    kAooCtlUpdateGroup,
-    kAooCtlUpdateUser,
-#endif
     kAooCtlSentinel
 };
 
@@ -167,21 +152,6 @@ enum
  #define AOO_INVITE_TIMEOUT 1.0
 #endif
 
-/** \brief enable/disable internal server relay by default */
-#ifndef AOO_SERVER_INTERNAL_RELAY
- #define AOO_SERVER_INTERNAL_RELAY 0
-#endif
-
-/** \brief enable/disable automatic group creation by default */
-#ifndef AOO_GROUP_AUTO_CREATE
-#define AOO_GROUP_AUTO_CREATE 1
-#endif
-
-/** \brief enable/disable automatic user creation by default */
-#ifndef AOO_USER_AUTO_CREATE
-#define AOO_USER_AUTO_CREATE 1
-#endif
-
 /*------------------------------------------------------*/
 /*               user defined controls                  */
 /*------------------------------------------------------*/
@@ -200,18 +170,3 @@ enum
 
 /** \brief offset for user defined controls */
 #define kAooCtlUserDefined 10000
-
-/*------------------------------------------------------*/
-/*                 private controls                     */
-/*------------------------------------------------------*/
-
-/* Don't use! TODO: move somewhere else. */
-enum
-{
-    kAooCtlSetClient = -1000,
-    kAooCtlNeedRelay,
-    kAooCtlGetRelayAddress,
-    kAooCtlSetSimulatePacketLoss,
-    kAooCtlSetSimulatePacketReorder,
-    kAooCtlSetSimulatePacketJitter
-};

@@ -16,15 +16,6 @@
 
 #include <string.h>
 
-struct AooSource;
-
-/** \cond DO_NOT_DOCUMENT */
-AOO_API AooError AOO_CALL AooSource_codecControl(
-        struct AooSource *source, const AooChar *codec,
-        AooCtl ctl, AooIntPtr index,
-        void *data, AooSize size);
-/** \endcond */
-
 AOO_PACK_BEGIN
 
 /*---------------------------------------------------*/
@@ -60,77 +51,6 @@ AOO_INLINE void AooFormatOpus_init(
     fmt->header.blockSize = blockSize;
     fmt->applicationType = applicationType;
     strcpy(fmt->header.codecName, kAooCodecOpus);
-}
-
-/*----------- helper functions for common controls ------------------*/
-
-/** \brief set bitrate
- *
- * \param src the AOO source
- * \param sink the AOO sink (`NULL` for all sinks)
- * \param bitrate bits/s, `OPUS_BITRATE_MAX` or `OPUS_AUTO`
- */
-AOO_INLINE AooError AooSource_setOpusBitrate(
-        struct AooSource *src, const AooEndpoint *sink, opus_int32 bitrate)
-{
-    return AooSource_codecControl(src, kAooCodecOpus,
-                OPUS_SET_BITRATE_REQUEST, (AooIntPtr)sink,
-                &bitrate, sizeof(bitrate));
-}
-
-/** \brief get bitrate */
-AOO_INLINE AooError AooSource_getOpusBitrate(
-        struct AooSource *src, const AooEndpoint *sink, opus_int32 *bitrate)
-{
-    return AooSource_codecControl(src, kAooCodecOpus,
-                OPUS_GET_BITRATE_REQUEST, (AooIntPtr)sink,
-                bitrate, sizeof(*bitrate));
-}
-
-/** \brief set complexity
- *
- * \param src the AOO source
- * \param sink the AOO sink (`NULL` for all sinks)
- * \param complexity the complexity (0-10 or `OPUS_AUTO`)
- */
-AOO_INLINE AooError AooSource_setOpusComplexity(
-        struct AooSource *src, const AooEndpoint *sink, opus_int32 complexity)
-{
-    return AooSource_codecControl(src, kAooCodecOpus,
-                OPUS_SET_COMPLEXITY_REQUEST, (AooIntPtr)sink,
-                &complexity, sizeof(complexity));
-}
-
-/** \brief get complexity */
-AOO_INLINE AooError AooSource_getOpusComplexity(
-        struct AooSource *src, const AooEndpoint *sink, opus_int32 *complexity)
-{
-    return AooSource_codecControl(src, kAooCodecOpus,
-                OPUS_GET_COMPLEXITY_REQUEST, (AooIntPtr)sink,
-                complexity, sizeof(*complexity));
-}
-
-/** \brief set signal type
- *
- * \param src the AOO source
- * \param sink the AOO sink (`NULL` for all sinks)
- * \param signalType the signal type
- * (`OPUS_SIGNAL_VOICE`, `OPUS_SIGNAL_MUSIC` or `OPUS_AUTO`)
- */
-AOO_INLINE AooError AooSource_setOpusSignalType(
-        struct AooSource *src, const AooEndpoint *sink, opus_int32 signalType)
-{
-    return AooSource_codecControl(src, kAooCodecOpus,
-                OPUS_SET_SIGNAL_REQUEST, (AooIntPtr)sink,
-                &signalType, sizeof(signalType));
-}
-
-/** \brief get signal type */
-AOO_INLINE AooError AooSource_getOpusSignalType(
-        struct AooSource *src, const AooEndpoint *sink, opus_int32 *signalType) {
-    return AooSource_codecControl(src, kAooCodecOpus,
-                OPUS_GET_SIGNAL_REQUEST, (AooIntPtr)sink,
-                signalType, sizeof(*signalType));
 }
 
 /*--------------------------------------------------------------------*/

@@ -226,56 +226,6 @@ AOO_INLINE AooError AooDecoder_reset(AooCodec *dec)
     return dec->cls->decoderControl(dec, kAooCodecCtlReset, NULL, 0);
 }
 
-/*----------------- register codecs -----------------------*/
-
-/** \brief function for registering codecs */
-typedef AooError (AOO_CALL *AooCodecRegisterFunc)(
-        const AooCodecInterface *cls
-);
-
-/** \brief host interface passed to codec plugins */
-typedef struct AooCodecHostInterface
-{
-    /** struct size */
-    AooSize structSize;
-    /** function for registering new codecs */
-    AooCodecRegisterFunc registerCodec;
-    /** allocator function */
-    AooAllocFunc alloc;
-    /** log function */
-    AooLogFunc log;
-} AooCodecHostInterface;
-
-/** \brief global host interface instance */
-AOO_API const AooCodecHostInterface * aoo_getCodecHostInterface(void);
-
-/** \brief register an external codec plugin */
-AOO_API AooError AOO_CALL aoo_registerCodec(const AooCodecInterface *codec);
-
-/** \brief type of entry function for codec plugin module
- *
- * \note AOO doesn't support dynamic plugin loading out of the box,
- * but it is quite easy to implement on your own.
- * You just have to put one or more codecs in a shared library and export
- * a single function of type AooCodecLoadFunc with the name `aoo_load`:
- *
- *     void aoo_load(const AooCodecHostInterface *interface);
- *
- * In your host application, you would then scan directories for shared libraries,
- * check if they export a function named `aoo_load`, and if yes, call it with a
- * pointer to the host interface table.
- */
-typedef AooError (AOO_CALL *AooCodecLoadFunc)
-        (const AooCodecHostInterface *);
-
-/** \brief type of exit function for codec plugin module
- *
- * Your codec plugin can optionally export a function `aoo_unload` which should be
- * called before program exit to properly release shared resources.
- */
-typedef AooError (AOO_CALL *AooCodecUnloadFunc)(void);
-
-
 /*-------------------------------------------------------------------------------------*/
 
 AOO_PACK_END

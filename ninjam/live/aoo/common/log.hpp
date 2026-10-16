@@ -8,7 +8,7 @@
 
 #define DO_LOG(level, msg) do { aoo::Log(level) << msg; } while (false)
 
-#define LOG_ALL(msg) DO_LOG(kAooLogLevelNone, msg)
+#define LOG_ALL(msg) DO_LOG(kAooLogLevelSilent, msg)
 
 #if AOO_LOG_LEVEL >= kAooLogLevelError
 # define LOG_ERROR(msg) DO_LOG(kAooLogLevelError, msg)
