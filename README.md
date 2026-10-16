@@ -50,7 +50,7 @@ The editor uses X11. It needs the usual desktop libraries: xcb, cairo, pango and
 6. You can also type room commands in the chat: `!vote bpm 120`, `!vote bpi 16`, `!codec opus` or `!codec flac`, and `!bitrate 128`.
 
 Hosting tips:
-- Jamsa asks your router to forward its port (UPnP or NAT-PMP). If the router doesn't allow that, forward TCP port 2049 to your computer yourself (Jamsa tries ports 2049 to 2058). The WAN address still shows: Jamsa asks a "what's my IP" service (api.ipify.org) for it.
+- Jamsa asks your router to forward its port (UPnP or NAT-PMP). If the router doesn't allow that, forward TCP port 2049 to your computer yourself (Jamsa tries ports 2049 to 2058). The WAN address still shows: Jamsa asks a "what's my IP" service (api.ipify.org) for it. Jamsa can't see a port you forwarded yourself, so it says *Forward port* until the first player joins from the internet, then *Port open*.
 - The host's connection sends every player everyone else's audio. With 4 players at 510 kbps, that's about 4.6 Mbit/s of upload; at 128 kbps, about 1.2 Mbit/s.
 - The room closes when the host closes Ableton. For a room that stays up, run the server on a machine that's always on (see below).
 
