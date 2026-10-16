@@ -424,13 +424,29 @@ class RelayTests(LiveTest):
         b.udp.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)  # so that it's the server that drops them
 
         def flood(count, size):
-            """How many of count datagrams of size bytes, sent as fast as possible, get through; and how long
-            sending them took."""
-            t0 = time.perf_counter()
+            """How many of count datagrams of size bytes, sent as fast as possible, get through; and for how long
+            the server can have been forwarding them (until the last one got here), which lets it send more."""
+            n = 0
+            t0 = last = time.perf_counter()
+            b.udp.setblocking(False)
             for i in range(count):
                 a.send_live(struct.pack("<I", i) + b"f" * (size - 24), dest=b.live["peer_id"])
-            elapsed = time.perf_counter() - t0
-            return len(self.got(b, 0.5)), elapsed
+                while True:
+                    try:
+                        b.udp.recv(2048)
+                    except BlockingIOError:
+                        break
+                    n += 1
+                    last = time.perf_counter()
+            b.udp.settimeout(0.5)
+            while True:
+                try:
+                    b.udp.recv(2048)
+                except socket.timeout:
+                    break
+                n += 1
+                last = time.perf_counter()
+            return n, last - t0
 
         # 128 kbps and 240-sample frames allow 65600 bytes/s and 450 datagrams/s, a quarter second ahead
         time.sleep(0.3)  # all of that
