@@ -23,10 +23,10 @@ Jamsa is one `Jamsa.vst3`. On Windows that's a single file; on macOS and Linux i
 
 **macOS**
 1. Double-click the zip to unzip it.
-2. Move `Jamsa.vst3` to `~/Library/Audio/Plug-Ins/VST3` (or `/Library/Audio/Plug-Ins/VST3` for all users).
+2. Move `Jamsa.vst3` to `/Library/Audio/Plug-Ins/VST3`, the folder most plug-in installers use.
 3. The build isn't notarized by Apple, so macOS blocks it until you remove the download flag. In Terminal, run:
    ```
-   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Jamsa.vst3
+   xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Jamsa.vst3
    ```
 4. In Ableton, open Settings (Preferences in Live 11), then Plug-Ins. Turn on *Use VST3 Plug-In System Folders* and click *Rescan*.
 
