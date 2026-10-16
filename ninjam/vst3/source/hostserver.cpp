@@ -53,7 +53,7 @@ static const char *CONFIG =
     "AnonymousUsersCanChat yes\n"
     "AnonymousMaskIP no\n"
     "DefaultBPM 120\n"
-    "DefaultBPI 16\n"
+    "DefaultBPI 4\n"
     "DefaultTopic \"Hosted by Jamsa. Type !vote bpm 100, !vote bpi 8 or !codec flac to change the room\"\n"
     "SetVotingThreshold 1\n"
     "SetVotingVoteTimeout 60\n"

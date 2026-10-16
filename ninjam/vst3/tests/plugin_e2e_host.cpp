@@ -49,6 +49,7 @@
                   a_state=<state> b_state=<state> (at the end)
     PHASE room END start_kbps=<the room's at first> a_kbps=<alice sends> b_kbps=<bob sends> a_own=<alice's own>
                    b_own=<bob's own> b_saw_note=<0|1> flac=<alice's room>/<alice sends> opus=<the same, after>
+                   start_bpi=<the room's BPI at first> least_bpi=<after a vote for 2>
     PHASE swap END b_dropped=<0|1> b_hosting=<0|1> port=<port> a_state=<state> a_users=<n> a_kbps=<alice sends>
     DONE
 
@@ -535,6 +536,12 @@ static int jam_two_instances(Host &a, Host &b)
       return fail(a, "alice did not start her server and join it");
     const std::string port = a.status()["port"];
     printf("PORT %s\n", port.c_str());
+    // the room starts at 4 BPI, and goes down to 2
+    a.runUntil(nullptr, 5.0, [&]() { return atoi(a.status()["bpi"].c_str()) > 0; });
+    const std::string startBpi = a.status()["bpi"];
+    a.command("chat !vote bpi 2");
+    a.runUntil(nullptr, 5.0, [&]() { return a.status()["bpi"] == "2"; });
+    const std::string leastBpi = a.status()["bpi"];
     a.command("chat !vote bpm 240");
     a.command("chat !vote bpi 4");
 
@@ -595,9 +602,9 @@ static int jam_two_instances(Host &a, Host &b)
     a.command("codec opus");
     a.runUntil(nullptr, 10.0, [&]() { auto s = a.status(); return s["codec"] == "Opus" && s["upload"] == "OPUS"; });
     const std::string opus = a.status()["codec"] + "/" + a.status()["upload"];
-    printf("PHASE room END start_kbps=%s a_kbps=%s b_kbps=%s a_own=%s b_own=%s b_saw_note=%d flac=%s opus=%s\n", startKbps.c_str(),
-           sa["kbps"].c_str(), sb["kbps"].c_str(), sa["ownkbps"].c_str(), sb["ownkbps"].c_str(), sawNote ? 1 : 0, flac.c_str(),
-           opus.c_str());
+    printf("PHASE room END start_kbps=%s a_kbps=%s b_kbps=%s a_own=%s b_own=%s b_saw_note=%d flac=%s opus=%s start_bpi=%s least_bpi=%s\n",
+           startKbps.c_str(), sa["kbps"].c_str(), sb["kbps"].c_str(), sa["ownkbps"].c_str(), sb["ownkbps"].c_str(), sawNote ? 1 : 0,
+           flac.c_str(), opus.c_str(), startBpi.c_str(), leastBpi.c_str());
 
     // alice stops her server, which drops bob; now bob can host, and alice joins him
     a.command("host off");

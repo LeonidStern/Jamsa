@@ -43,7 +43,7 @@ The editor uses X11. It needs the usual desktop libraries: xcb, cairo, pango and
 3. **To join**, type the address under Server and click **Connect**.
 4. These settings belong to the room, so changing one changes it for everyone:
    - **BPM**: drag it, or double-click and type.
-   - **BPI**: beats per interval.
+   - **BPI**: beats per interval, 2 to 64. A room starts at 4.
    - **Codec**: Opus, or lossless FLAC, which needs several times the bandwidth.
    - **Opus bitrate**: 64 to 510 kbps. A new Jamsa starts at 510, the best Opus sounds.
 5. **Sync** lets Ableton lead. When you change Ableton's tempo, the room follows, and intervals start on Ableton's bars.

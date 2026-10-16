@@ -314,6 +314,8 @@ class PluginEndToEndTest(unittest.TestCase):
         self.assertEqual((room.get("a_own"), room.get("b_own")), ("510", "256"), log)
         self.assertEqual(room.get("b_saw_note"), "1", log)
         self.assertEqual((room.get("flac"), room.get("opus")), ("FLAC/FLAC", "Opus/OPUS"), log)
+        # a room starts at 4 BPI, and a vote takes it down to 2
+        self.assertEqual((room.get("start_bpi"), room.get("least_bpi")), ("4", "2"), log)
         self.assertEqual(swap.get("a_kbps"), "256", "bob hosts at his own bitrate\n" + log)
         self.assertEqual(swap.get("b_dropped"), "1", "the joined instance leaves when the server stops\n" + log)
         self.assertEqual(swap.get("b_hosting"), "1", "the other instance can host once the first stopped\n" + log)
