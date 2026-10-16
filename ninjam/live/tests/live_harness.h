@@ -142,6 +142,9 @@ public:
   int source_skips = 0;
   // pass the sinks a stream message handler (AOO allows none)
   bool message_handler = true;
+  // called with true right before a node's process() and with false right
+  // after it: what runs in between is what an audio thread would run
+  void (*audio_hook)(bool) = nullptr;
 
   session(const source_options &so, const std::vector<sink_options> &sos)
   {
@@ -220,7 +223,12 @@ public:
     {
       fill_input(n);
       if (source_skips > 0) source_skips--;
-      else source->process(n.pointers.data(), n.blocksize, t);
+      else
+      {
+        if (audio_hook) audio_hook(true);
+        source->process(n.pointers.data(), n.blocksize, t);
+        if (audio_hook) audio_hook(false);
+      }
       sender ctx = { this, 0 };
       source->send(send_function, &ctx);
       source->pollEvents();
@@ -228,8 +236,10 @@ public:
     else
     {
       AooSink *s = sinks[k - 1].get();
+      if (audio_hook) audio_hook(true);
       s->process(n.pointers.data(), n.blocksize, t,
         message_handler ? on_stream_message : nullptr, &n);
+      if (audio_hook) audio_hook(false);
       sender ctx = { this, (int)k };
       s->send(send_function, &ctx);
       s->pollEvents();

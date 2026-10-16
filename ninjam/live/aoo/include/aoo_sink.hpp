@@ -117,6 +117,8 @@ public:
     /** \brief set event handler function and event handling mode
      *
      * \attention Not threadsafe - only call in the beginning!
+     * (Jamsa: #kAooEventModePoll only; #kAooEventModeCallback returns
+     * #kAooErrorNotImplemented)
      */
     virtual AooError AOO_CALL setEventHandler(
             AooEventHandler fn, void *user, AooEventMode mode) = 0;

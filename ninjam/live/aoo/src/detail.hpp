@@ -51,6 +51,12 @@ using spsc_queue = lockfree::spsc_queue<T, aoo::allocator<T>>;
 template<typename T, bool multi_producer=true>
 using concurrent_queue = lockfree::concurrent_queue<T, multi_producer, aoo::allocator<T>>;
 
+// Jamsa: for queues that the audio thread pushes to. A push takes a free
+// node or makes a new one; this way a new one comes from the RT memory pool
+// (lock-free) instead of the heap. Reserve nodes up front as well.
+template<typename T, bool multi_producer=true>
+using rt_concurrent_queue = lockfree::concurrent_queue<T, multi_producer, aoo::rt_allocator<T>>;
+
 template<typename T>
 using concurrent_list = lockfree::concurrent_list<T, aoo::allocator<T>>;
 

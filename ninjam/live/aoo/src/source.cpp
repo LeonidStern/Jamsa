@@ -147,7 +147,11 @@ AOO_API AooSource * AOO_CALL AooSource_new(AooId id) {
 }
 
 aoo::Source::Source(AooId id)
-    : id_(id) {}
+    : id_(id) {
+    // Jamsa: nodes for the /stop requests that process() pushes when the
+    // stream stops, one per sink (more come from the RT pool)
+    requests_.reserve(64);
+}
 
 AOO_API void AOO_CALL AooSource_free(AooSource *src){
     // cast to correct type because base class
@@ -856,6 +860,11 @@ AooError AOO_CALL aoo::Source::process(
 
 AooError AOO_CALL aoo::Source::setEventHandler(
         AooEventHandler fn, void *user, AooEventMode mode){
+    // Jamsa: poll mode only. In callback mode the handler runs on the
+    // audio thread (and on the network threads), with locks held.
+    if (mode == kAooEventModeCallback) {
+        return kAooErrorNotImplemented;
+    }
     event_handler_ = fn;
     event_context_ = user;
     event_mode_ = mode;
@@ -1219,7 +1228,10 @@ void Source::make_new_stream(aoo::time_tag tt, AooData *md) {
 #if 0
     message_queue_.clear();
 #endif
-    message_prio_queue_.clear();
+    // Jamsa: not here: the queued messages free heap memory, and this is
+    // the audio thread. send_data() clears it before it sends anything of
+    // the new stream.
+    need_clear_messages_.store(true, std::memory_order_release);
     process_samples_ = 0;
     stream_samples_ = 0;
 
@@ -1805,6 +1817,11 @@ void Source::send_data(const sendfn& fn){
         // NB: recheck one every iteration because we temporarily release the lock!
         if (!encoder_ || sequence_ == invalid_stream) {
             return;
+        }
+        // drop the stream messages of the previous stream (Jamsa: see
+        // make_new_stream(); checked here because the loop releases the lock)
+        if (need_clear_messages_.exchange(false, std::memory_order_acquire)) {
+            message_prio_queue_.clear();
         }
         assert(format_ != nullptr);
 

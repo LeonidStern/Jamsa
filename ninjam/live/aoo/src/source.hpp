@@ -326,6 +326,9 @@ class Source final : public AooSource, rt_memory_pool_client {
     message_queue message_queue_;
     using message_prio_queue = priority_queue<nrt_stream_message, stream_message_comp, aoo::allocator<nrt_stream_message>>;
     message_prio_queue message_prio_queue_;
+    // Jamsa: set by make_new_stream() on the audio thread; send_data()
+    // clears message_prio_queue_, whose messages free heap memory
+    std::atomic<bool> need_clear_messages_{false};
     // events
     using event_queue = lockfree::concurrent_queue<event_ptr, true, aoo::rt_allocator<event_ptr>>;
     event_queue event_queue_;
@@ -333,7 +336,9 @@ class Source final : public AooSource, rt_memory_pool_client {
     void *event_context_ = nullptr;
     AooEventMode event_mode_ = kAooEventModeNone;
     // requests
-    aoo::concurrent_queue<sink_request, true> requests_;
+    // NB: the audio thread pushes a /stop request per sink when the stream
+    // stops (see rt_concurrent_queue)
+    aoo::rt_concurrent_queue<sink_request, true> requests_;
     // sinks
     using sink_list = aoo::concurrent_list<sink_desc>;
     using sink_lock = std::unique_lock<sink_list>;

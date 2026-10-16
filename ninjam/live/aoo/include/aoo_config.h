@@ -23,9 +23,11 @@
 #define AOO_SAMPLE_SIZE 32
 #endif
 
-/** \brief max. log level */
+/** \brief max. log level
+ * (Jamsa: Error by default, so that nothing a peer sends gets logged, see
+ * README.md; upstream's default is Warning) */
 #ifndef AOO_LOG_LEVEL
-#define AOO_LOG_LEVEL kAooLogLevelWarning
+#define AOO_LOG_LEVEL kAooLogLevelError
 #endif
 
 /** \brief custom allocator support  */
@@ -63,9 +65,11 @@
 # define AOO_MAX_STREAM_CHANNELS 8
 #endif
 
-/** \brief max. bytes of stream messages a sink keeps scheduled per source */
+/** \brief max. bytes of stream messages a sink keeps scheduled per source
+ * (they are allocated on the audio thread: keep this well below the RT memory
+ * pool's large_alloc_limit, 64 KB, past which the pool uses the heap) */
 #ifndef AOO_MAX_PENDING_STREAM_MESSAGES_SIZE
-# define AOO_MAX_PENDING_STREAM_MESSAGES_SIZE 65536
+# define AOO_MAX_PENDING_STREAM_MESSAGES_SIZE 16384
 #endif
 
 /** \brief default size of the RT memory pool */

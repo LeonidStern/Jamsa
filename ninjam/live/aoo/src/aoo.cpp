@@ -20,6 +20,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -30,13 +31,42 @@
 
 namespace aoo {
 
+// Jamsa: get_random_id() runs on the audio thread too (a new stream ID when
+// a sink is activated, a stream starts). Upstream built a static
+// std::random_device and a thread_local engine on first use, from whatever
+// thread called first: a file open, maybe an allocation. Instead, a counter
+// that is seeded once by aoo_initialize() and mixed by a bijective hash
+// (after Chris Wellons' "lowbias32"), so that IDs don't repeat for 2^31
+// calls: lock-free and the same cost every time.
+namespace {
+std::atomic<uint32_t> g_random_state{0x2545F491u};
+}
+
+void seed_random_id() {
+    uint32_t seed = 0;
+    try {
+        std::random_device rd;
+        seed = rd();
+    } catch (...) {
+        // no entropy source: the clock will do
+    }
+    seed ^= (uint32_t)std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    g_random_state.store(seed, std::memory_order_relaxed);
+}
+
 int32_t get_random_id(){
-    // std::minstd_rand is fast, uses very little memory
-    // and is good enough for our purposes.
-    static std::random_device rd;
-    thread_local std::minstd_rand eng(rd());
-    std::uniform_int_distribution<int32_t> dist;
-    return dist(eng);
+    // like upstream: never negative, because negative IDs are invalid. Every
+    // step is a bijection on 31 bits (xor with a right shift, multiplication
+    // by an odd number), and the counter's low 31 bits step by an odd
+    // number, so no ID repeats within 2^31 calls.
+    const uint32_t mask = 0x7fffffffu;
+    uint32_t x = g_random_state.fetch_add(0x9E3779B9u, std::memory_order_relaxed) & mask;
+    x ^= x >> 16;
+    x = (x * 0x7feb352du) & mask;
+    x ^= x >> 15;
+    x = (x * 0x846ca68bu) & mask;
+    x ^= x >> 16;
+    return (int32_t)x;
 }
 
 AooError check_version(const char *version) {
@@ -98,6 +128,10 @@ AOO_API AooError AOO_CALL aoo_logMessage(AooLogLevel level, const AooChar *msg) 
         fn(level, msg);
     }
     return kAooOk;
+}
+
+AOO_API void AOO_CALL aoo_setLogFunction(AooLogFunc fn) {
+    aoo::g_logfunc.store(fn, std::memory_order_release);
 }
 
 //----------------------- OSC --------------------------//
@@ -294,6 +328,7 @@ std::once_flag g_init_flag;
 AOO_API AooError AOO_CALL aoo_initialize(const AooSettings *settings) {
     // thread-safe and idempotent; only the first call's settings take effect.
     std::call_once(g_init_flag, [settings]() {
+        aoo::seed_random_id();
         if (CHECK_SETTING(settings, logFunc) && settings->logFunc) {
             aoo::g_logfunc.store(settings->logFunc, std::memory_order_release);
         }

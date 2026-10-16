@@ -15,6 +15,8 @@
 #                      and the AOO bugs fixed in our copy
 #   live_fuzz_test     (ninjam/live) hostile and mangled packets into a running AOO source
 #                      and sinks
+#   live_rt_test       (ninjam/live) no heap allocation in AOO's process(), clean network
+#                      or not
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp

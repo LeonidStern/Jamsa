@@ -119,4 +119,15 @@ AOO_API const AooChar * AOO_CALL aoo_dataTypeToString(AooDataType type);
  */
 AOO_API AooError AOO_CALL aoo_logMessage(AooLogLevel level, const AooChar *msg);
 
+/**
+ * \brief (Jamsa) set the log function, at any time
+ *
+ * Unlike AooSettings::logFunc, which only the first aoo_initialize() call
+ * takes, this replaces the function whenever it is called. AOO logs from
+ * the audio thread too (rarely: at the default level, Error, only what
+ * would be a bug), so the function must not block: hand the message to
+ * another thread. `NULL` silences AOO.
+ */
+AOO_API void AOO_CALL aoo_setLogFunction(AooLogFunc fn);
+
 AOO_PACK_END

@@ -63,6 +63,12 @@ Tests (`tests/`):
   It checks that the outputs stay finite, that nothing logs at Error level,
   and that a new stream plays normally afterwards. It matters most in a
   build with `-fsanitize=address,undefined`.
+- `live_rt_test`: counts the heap calls (the program replaces `operator
+  new` and `delete`) made inside the source's and the sinks' `process()`:
+  none once a stream runs, on a clean network, with loss, jitter, reordering
+  and duplicates, while the stream restarts and the source has xruns, and
+  with stream messages. Also the other real-time changes below. `LIVE_RT_TRACE=1` prints where a
+  counted call came from (glibc).
 
 ## Changes from upstream
 
@@ -195,7 +201,7 @@ ones marked "(fuzzer)" were found by it.
   type `0xFFFF` (the sink's own stream time type) was later read as a time
   stamp it didn't carry; a sink without a message handler called a null
   pointer; and a source could keep any amount scheduled (now at most
-  `AOO_MAX_PENDING_STREAM_MESSAGES_SIZE`, 64 KB, per source).
+  `AOO_MAX_PENDING_STREAM_MESSAGES_SIZE`, 16 KB, per source).
 - Source: the count of a binary resend request was multiplied by 8 before
   the size check (overflow with a 32-bit `size_t`); `/invite` with the
   token -1 (fuzzer) added a sink without telling the user (an assert in
@@ -213,3 +219,43 @@ first, see the spec): a cap on the sources a sink keeps (each new address
 and ID from the network creates one), on the resends one request can ask
 for, and on events queued while nobody polls. A forged `/stop` from a
 player's address still ends that player's stream, as AOO's protocol says.
+
+### Real-time safety
+
+The plug-in calls `process()` of the source and the sinks on the host's
+audio thread, which must not wait for a lock, the heap or the system.
+
+- The queues the audio thread pushes to (the sink's resend requests and
+  other requests per source, the source's requests, where a stopping stream
+  queues a `/stop` per sink) took a new node from the heap whenever their
+  free nodes ran out, as under loss. They now take nodes from AOO's
+  lock-free RT memory pool (`rt_concurrent_queue` in `detail.hpp`) and
+  reserve some up front.
+- The sink's per-source event buffer (`event_buffer_`), a vector filled on
+  the audio thread, had room for 6 events and grew on the heap past that
+  (several overruns or stream time events in one call). It reserves 16 and
+  grows from the RT pool.
+- `get_random_id()` (stream and format IDs; the source's audio thread makes
+  one per sink when a stream starts) built a static `std::random_device` and a
+  `thread_local` engine on first use, from whichever thread got there
+  first. It is now a lock-free counter, seeded in `aoo_initialize()` and
+  mixed by a bijective hash: no repeats within 2^31 IDs, never negative.
+- Stream messages that a sink schedules are allocated on the audio thread,
+  from the RT pool, which uses the heap for blocks over 64 KB; one message
+  could be that large. The cap on what a source can keep scheduled
+  (`AOO_MAX_PENDING_STREAM_MESSAGES_SIZE`, see Hardening) is 16 KB.
+- `make_new_stream()` (audio thread) cleared the source's queue of
+  scheduled stream messages, which frees their heap memory; the send thread
+  now does it, before it sends anything of the new stream.
+- Events by polling only: `setEventHandler()` refuses
+  `kAooEventModeCallback`, in which AOO calls the handler on the audio
+  thread with its locks held.
+- Logging: `AOO_LOG_LEVEL` defaults to Error (was Warning) and the new
+  `aoo_setLogFunction()` replaces the log function at any time (the one in
+  `AooSettings` only counts at the first `aoo_initialize()`), so that the
+  glue can hand messages to another thread. AOO formats a message into a
+  fixed buffer on the stack; the default function writes to stderr.
+
+Not done here: the RT memory pool still falls back to the heap when it runs
+out (1 MB by default) or for a block larger than `large_alloc_limit`
+(64 KB); `live_rt_test` would count that.

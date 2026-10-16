@@ -591,6 +591,11 @@ AooError AOO_CALL aoo::Sink::process(
 AooError AOO_CALL aoo::Sink::setEventHandler(
         AooEventHandler fn, void *user, AooEventMode mode)
 {
+    // Jamsa: poll mode only. In callback mode the handler runs on the
+    // audio thread (and on the network threads), with locks held.
+    if (mode == kAooEventModeCallback) {
+        return kAooErrorNotImplemented;
+    }
     event_handler_ = fn;
     event_context_ = user;
     event_mode_ = mode;
@@ -1126,7 +1131,13 @@ source_desc::source_desc(const ip_address& addr, AooId id,
     : ep(addr, id, binary), last_packet_time_(time)
 {
     // resendqueue_.reserve(256);
-    event_buffer_.reserve(6); // start, stop, active, inactive, overrun, underrun
+    // Jamsa: room for the usual events of one process() call (start, stop,
+    // states, overrun, underrun, stream times); more grow from the RT pool
+    event_buffer_.reserve(16);
+    // nodes for the queues the audio thread pushes to: a resend request per
+    // missing block or frame between two send() calls, the odd /stop request
+    data_requests_.reserve(64);
+    request_queue_.reserve(8);
     LOG_DEBUG("AooSink: source_desc");
 }
 

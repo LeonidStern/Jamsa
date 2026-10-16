@@ -280,11 +280,12 @@ private:
     int64_t process_samples_ = 0;
     void reset_stream();
     // requests
-    aoo::concurrent_queue<request, true> request_queue_;
+    // NB: the audio thread pushes to both (see rt_concurrent_queue)
+    aoo::rt_concurrent_queue<request, true> request_queue_;
     void push_request(const request& r){
         request_queue_.push(r);
     }
-    aoo::concurrent_queue<data_request, false> data_requests_;
+    aoo::rt_concurrent_queue<data_request, false> data_requests_;
     void push_data_request(const data_request& r) {
     #if AOO_DEBUG_RESEND && 0
         LOG_DEBUG("AooSink: push data request (" << r.sequence
@@ -293,7 +294,9 @@ private:
         data_requests_.push(r);
     }
     // events
-    using event_buffer = std::vector<event_ptr, aoo::allocator<event_ptr>>;
+    // NB: filled on the audio thread; if it ever outgrows what the
+    // constructor reserves, it grows from the RT memory pool, not the heap
+    using event_buffer = std::vector<event_ptr, aoo::rt_allocator<event_ptr>>;
     event_buffer event_buffer_;
     void queue_event(event_ptr e);
     void flush_events(const Sink& s);
