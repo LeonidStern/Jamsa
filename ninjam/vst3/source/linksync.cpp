@@ -77,6 +77,42 @@ Correction phaseCorrection(double errorBeats, double bpm, bool realign, double s
   return c;
 }
 
+double linkGraceMs()
+{
+  return std::chrono::duration<double, std::milli>(ableton::link::detail::kLocalModGracePeriod).count();
+}
+
+double BlockClock::update(double nominalUs, double nowUs, double blockUs)
+{
+  const double late = nowUs - nominalUs;
+  const long long b = (long long)floor(nominalUs / (WINDOW_MS * 1000.0 / BUCKETS));
+  if (!m_have || b < m_last)
+  {
+    // the first block (or the sample count went back): start again
+    for (int i = 0; i < BUCKETS; i ++) m_bucket[i] = -1;
+    m_have = true;
+    m_offset = late;
+    m_since = nominalUs;
+  }
+  m_last = b;
+  const int k = (int)(b % BUCKETS);
+  if (m_bucket[k] != b)
+  {
+    m_bucket[k] = b;
+    m_min[k] = late;
+  }
+  else m_min[k] = std::min(m_min[k], late);
+
+  double earliest = late;
+  for (int i = 0; i < BUCKETS; i ++)
+    if (m_bucket[i] >= 0 && m_bucket[i] > b - BUCKETS) earliest = std::min(earliest, m_min[i]);
+
+  if (nominalUs - m_since < WINDOW_MS * 1000.0) m_offset = std::min(m_offset, earliest); // the first window: the earliest yet
+  else if (fabs(earliest - m_offset) >= REJOIN_MS * 1000.0) m_offset = earliest;
+  else m_offset += std::min(1.0, blockUs / (SMOOTH_MS * 1000.0)) * (earliest - m_offset);
+  return m_offset;
+}
+
 bool MoveCounter::add(double seconds)
 {
   int n = 0;
@@ -219,8 +255,6 @@ LinkTempoKeeper::Action LinkTempoKeeper::update(double now, double linkTempo, do
 
 static const double TEMPO_EPS = 1e-3;      // BPM: Link's tempo is the interval's
 static const double ALIGNED_MS = 2.0;
-static const double SMOOTH_SECONDS = 1.0;  // the block time's smoothing
-static const double RESYNC_MS = 50.0;      // a block time this far off: a stall
 
 static double steady_seconds()
 {
@@ -245,9 +279,9 @@ struct LinkSync::Impl
   bool realign = false;
   double lastStepUs = -1e18;   // the last correction
   double lastChangeUs = -1e18; // the last time Link's beat or tempo moved, ours or not
-  // the time of sample 0 on Link's clock, smoothed
-  bool haveOffset = false;
-  double offsetUs = 0, offsetRate = 0;
+  // when blocks start on Link's clock, by the sample count
+  linkmath::BlockClock clock;
+  double clockRate = 0;
   // Link's phase after the last block, to tell when something else moves it
   bool haveRef = false;
   double refUs = 0, refPhase = 0, refTempo = 0;
@@ -414,7 +448,7 @@ bool LinkSync::calibrationGaveUp() const { return m->calGaveUp.load(); }
 
 void LinkSync::resetTiming()
 {
-  m->haveOffset = false;
+  m->clock.reset();
   m->haveRef = false;
   m->started = false;
   m->calib.reset();
@@ -436,23 +470,21 @@ bool LinkSync::process(const Block &b, const Interval &iv, const Host &host)
     d.lastStepUs = d.lastChangeUs = -1e18;
     d.moves.reset();
     d.calib.skip();
+    d.clock.reset();
   }
   if (b.frames <= 0 || b.sampleRate <= 0) return false;
 
-  // when the block's first sample is heard: one block after now, on Link's clock (smoothed
-  // against the sample count), plus what the calibration measured
+  // when the block's first sample is heard: one block after it starts on Link's clock (by the
+  // sample count and the earliest calls), plus what the calibration measured
   const double nowUs = (double)link.clock().micros().count();
   const double blockUs = b.frames * 1e6 / b.sampleRate;
   const double nominalUs = b.sampleTime * 1e6 / b.sampleRate;
-  const double off = nowUs - nominalUs;
-  if (!d.haveOffset || b.sampleRate != d.offsetRate || fabs(off - d.offsetUs) > std::max(RESYNC_MS * 1000, 2 * blockUs))
+  if (b.sampleRate != d.clockRate)
   {
-    d.offsetUs = off;
-    d.haveOffset = true;
-    d.offsetRate = b.sampleRate;
+    d.clock.reset();
+    d.clockRate = b.sampleRate;
   }
-  else d.offsetUs += std::min(1.0, b.frames / (b.sampleRate * SMOOTH_SECONDS)) * (off - d.offsetUs);
-  const double tUs = nominalUs + d.offsetUs + blockUs + d.calib.offsetMs() * 1000.0;
+  const double tUs = nominalUs + d.clock.update(nominalUs, nowUs, blockUs) + blockUs + d.calib.offsetMs() * 1000.0;
   const std::chrono::microseconds t((long long)llround(tUs));
 
   // the host started again: the calibration may work now, if it gave up
@@ -550,7 +582,8 @@ bool LinkSync::process(const Block &b, const Interval &iv, const Host &host)
     {
       d.latencyMs.store(d.calib.offsetMs(), std::memory_order_relaxed);
       d.calGaveUp.store(d.calib.gaveUp(), std::memory_order_relaxed);
-      d.lastChangeUs = tUs; // Link lines up at the new time first
+      d.realign = true; // Link lines up at the new time at once
+      d.lastChangeUs = tUs;
     }
   }
   else d.calib.skip();

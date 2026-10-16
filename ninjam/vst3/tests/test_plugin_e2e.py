@@ -77,7 +77,9 @@ FOURCC = {"opus": b"OPUS", "opus_again": b"OPUS", "opus256": b"OPUS", "opus510":
 # how far an interval's start may be from a host beat that is a multiple of BPI (ms)
 MAX_HOST_PHASE_MS = 1.0
 # how much later than the plug-in's guess the test host hears a block with Link (LATENCY_MS in
-# plugin_e2e_host.cpp), and how close the plug-in's measure of it must be (ms)
+# plugin_e2e_host.cpp), and how close the plug-in's measure of it must be (ms); the plug-in's
+# guess starts from its earliest calls, which on a busy machine come a little after the block's
+# time by the host's sample count (late_min), so it measures that much less
 LINK_LATENCY_MS, LINK_LATENCY_DELTA_MS = 4.0, 1.5
 # Opus bitrate (kbps) and interval length (seconds) of each Opus phase, for the interval sizes
 OPUS_SIZES = {"opus": (128, 1.0), "opus_again": (128, 1.0), "opus256": (256, 1.0), "opus510": (510, 1.0),
@@ -455,14 +457,14 @@ class PluginEndToEndTest(unittest.TestCase):
         self.assertEqual(lines["LINK vote"], {"room_bpm": "100.0", "peer_tempo": "100.000"}, log)
         # each interval starts on a host beat that is a multiple of BPI, the plug-in found when the
         # host hears its blocks, and Link moved the host's bars, never the intervals
+        latency = LINK_LATENCY_MS - float(lines["LINK timing"]["late_min"])
         for name, n in (("link100", 4), ("link110", 3)):
             phase = lines["SYNC phase " + name]
             self.assertGreaterEqual(int(phase["n"]), n, name + "\n" + log)
             self.assertLess(float(phase["max_ms"]), MAX_HOST_PHASE_MS, name + "\n" + log)
             self.assertEqual((phase["gap_err"], phase["fixes"], phase["bars"]), ("0", "0", "off"), name + "\n" + log)
             self.assertAlmostEqual(float(phase["accent_hz"]), 1500, delta=50, msg=name + "\n" + log)
-            self.assertAlmostEqual(float(phase["latency"]), LINK_LATENCY_MS, delta=LINK_LATENCY_DELTA_MS,
-                                   msg=name + "\n" + log)
+            self.assertAlmostEqual(float(phase["latency"]), latency, delta=LINK_LATENCY_DELTA_MS, msg=name + "\n" + log)
         # the host's tempo dragged to 109.6: one vote, and the room and Link at 110
         self.assertEqual(lines["LINK follow"], {"room_bpm": "110.0", "peer_tempo": "110.000", "tempovotes": "1"}, log)
         # 110.3 is the room's BPM: no vote, Link goes back to 110; and so it does from another app's 125

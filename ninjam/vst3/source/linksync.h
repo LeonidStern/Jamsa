@@ -32,7 +32,9 @@
     chase each other.
 
   - when a block is heard: the plug-in can't know the host's output latency,
-    so it starts from "one block after process() is called" and, while Live
+    so it starts from "one block after process() is called" (by the earliest
+    calls of the last two seconds: a call is often late, on a busy machine,
+    but never early; linkmath::BlockClock) and, while Live
     plays at the room's tempo, measures how far Live's beat (the block's
     ppq, which Live keeps on Link's phase) is from the interval's beat in the
     same block, and moves the time it aligns Link at by that much
@@ -78,7 +80,11 @@ double msToBeats(double ms, double bpm);
 
 // Under DEADBAND_MS the phase is left alone; up to JUMP_MS it is moved by steps of at most
 // STEP_MS, one every STEP_EVERY_MS at most; beyond, or to start, it is moved at once.
-constexpr double DEADBAND_MS = 0.5, STEP_MS = 1.0, STEP_EVERY_MS = 250.0, JUMP_MS = 30.0;
+// STEP_EVERY_MS is longer than Link's grace period for a change made here (linkGraceMs(): for
+// that long Link shows an app its own change rather than the network's), so between two steps
+// the plug-in sees Live's changes (its tempo) before it commits again, and doesn't undo them.
+constexpr double DEADBAND_MS = 0.5, STEP_MS = 2.0, STEP_EVERY_MS = 1500.0, JUMP_MS = 30.0;
+double linkGraceMs(); // Link's own (1 second in Link 4.1)
 
 struct Correction
 {
@@ -89,6 +95,31 @@ struct Correction
 // errorBeats: the interval's beat minus Link's phase (wrapped), at bpm. realign: line up
 // at once (the sync just started, or the BPM or BPI changed). sinceStepMs: since the last step.
 Correction phaseCorrection(double errorBeats, double bpm, bool realign, double sinceStepMs);
+
+// When a block starts on Link's clock: its time by the sample count, plus how late the earliest
+// calls of the last WINDOW_MS were after theirs. A call is often late (the thread woke up late,
+// the host did other work first, the machine is busy) but never early, so the earliest calls
+// follow the sound card's clock and the late ones don't move it; smoothed over SMOOTH_MS. When
+// even the earliest calls of a whole window are REJOIN_MS off (the sample count lost time, as
+// when the host dropped audio), it goes there at once.
+class BlockClock
+{
+public:
+  static constexpr double WINDOW_MS = 2000.0, SMOOTH_MS = 1000.0, REJOIN_MS = 50.0;
+  static constexpr int BUCKETS = 8; // the window, in parts
+
+  // the block whose first sample is at nominalUs by the sample count, of blockUs, called at
+  // nowUs (Link's clock): returns the offset to add to nominalUs
+  double update(double nominalUs, double nowUs, double blockUs);
+  void reset() { m_have = false; }
+  double offsetUs() const { return m_offset; }
+
+private:
+  long long m_bucket[BUCKETS] = {}, m_last = 0;
+  double m_min[BUCKETS] = {};
+  double m_offset = 0, m_since = 0;
+  bool m_have = false;
+};
 
 // Counts the times Link's beat moved by more than JUMP_MS while the plug-in kept it in line
 // and nothing on its side changed: another app moving it. add() is true once that happened

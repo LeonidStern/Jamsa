@@ -104,6 +104,7 @@
     LINK nopeers                                       (no Link peer seen: the rest is skipped)
     LINK joined room_bpm=<bpm> peer_tempo=<bpm> tempovotes=<n> leads=<0|1> link=<state> restores=<n>
     LINK vote room_bpm=<bpm> peer_tempo=<bpm>
+    LINK timing late_min=<ms> late_mean=<ms> late_max=<ms>  (how late this host called process(), while it played)
     SYNC phase link100 ... latency=<ms the plug-in measured>  (as in sync, on the host's position)
     LINK follow room_bpm=<bpm> peer_tempo=<bpm> tempovotes=<n>
     SYNC phase link110 ...
@@ -116,8 +117,11 @@
     LINK left link=<state> state=<the plug-in's connection> peer_peers_on=<n, Sync on again> peer_peers=<n, out of the room>
     chat: ...                                          (the plug-in's chat, a line each)
     DONE
- With NINJAM_E2E_DEBUG set, each
-  phase also prints the level of what each side heard, second by second.
+
+  With NINJAM_E2E_DEBUG set, each phase also prints the level of what each side heard, second
+  by second. NINJAM_E2E_JITTER_MS=<ms> makes this host call process() late as a busy machine
+  does (CI's virtual machines): up to that much after each block, and five times that every
+  two seconds.
 
 */
 
@@ -339,16 +343,27 @@ public:
     ProcessData data {};
     data.processMode = kRealtime;
     ProcessContext context {};
+    if (m_start == 0) m_start = now_seconds();
+    if (m_link && m_linkBaseUs == 0) m_linkBaseUs = linkClockAtStart();
     if (m_link && m_transport.followLink)
     {
       // as Live with its Link on: the session's tempo, and while it plays, Link's beat when the
-      // block is heard
+      // block is heard, by the sample count (a sound card's clock)
       const auto state = m_link->captureAppSessionState();
       m_transport.tempo = state.tempo();
       const double heardUs = m_linkBaseUs + (m_pos + m_block) * 1e6 / m_srate + m_latencyUs;
       m_transport.ppq = m_transport.line = state.beatAtTime(std::chrono::microseconds((long long)llround(heardUs)), 4.0);
     }
     const Transport played = m_transport; // the host's transport for this block
+    if (m_link && played.playing)
+    {
+      // how late process() is called, after the block's time by the sample count
+      const double late = ((double)m_link->clock().micros().count() - m_linkBaseUs - m_pos * 1e6 / m_srate) / 1000.0;
+      m_lateMin = std::min(m_lateMin, late);
+      m_lateMax = std::max(m_lateMax, late);
+      m_lateSum += late;
+      m_lateN++;
+    }
     if (played.on)
     {
       // the host's tempo and transport, as a DAW passes them
@@ -413,10 +428,17 @@ public:
     m_pos += m_block;
 
     // real time
-    if (m_start == 0) m_start = now_seconds();
     const double due = m_start + (double)m_pos / m_srate;
     const double wait = due - now_seconds();
     if (wait > 0) std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+    if (m_jitterMs > 0)
+    {
+      // late, as on a busy machine: a little after each block, and more now and then
+      m_rng = m_rng * 1103515245u + 12345u;
+      double ms = m_jitterMs * ((m_rng >> 8) & 0xffff) / 65536.0;
+      if (m_pos / (2 * m_srate) != (m_pos - m_block) / (2 * m_srate)) ms += 5 * m_jitterMs;
+      std::this_thread::sleep_for(std::chrono::duration<double>(ms / 1000.0));
+    }
   }
 
   void run(NJClient *peer, double seconds, bool record = false)
@@ -470,7 +492,31 @@ public:
   // guess a block is heard
   ableton::Link *m_link = nullptr;
   double m_linkBaseUs = 0, m_latencyUs = 0;
-  void startLinkClock() { m_linkBaseUs = (double)m_link->clock().micros().count() - m_pos * 1e6 / m_srate; }
+  // when this host called process() late, after the block's time (ms), while it played
+  double m_lateMin = 1e9, m_lateMax = -1e9, m_lateSum = 0;
+  long m_lateN = 0;
+  void resetLate()
+  {
+    m_lateMin = 1e9;
+    m_lateMax = -1e9;
+    m_lateSum = 0;
+    m_lateN = 0;
+  }
+  // m_start (sample 0) on Link's clock: the two clocks read together, the closest of a few tries
+  double linkClockAtStart()
+  {
+    double best = 1e18, delta = 0;
+    for (int i = 0; i < 5; i ++)
+    {
+      const double a = now_seconds() * 1e6, l = (double)m_link->clock().micros().count(), b = now_seconds() * 1e6;
+      if (b - a < best)
+      {
+        best = b - a;
+        delta = l - (a + b) / 2;
+      }
+    }
+    return m_start * 1e6 + delta;
+  }
   void locate(double ppq) { m_transport.ppq = m_transport.line = ppq; }
   std::vector<Transport> m_heardTransport; // for each block of m_pluginHeard
 
@@ -478,6 +524,8 @@ public:
   double m_freq; // of the tone played into the plug-in
   long m_pos = 0;
   double m_start = 0;
+  double m_jitterMs = getenv("NINJAM_E2E_JITTER_MS") ? atof(getenv("NINJAM_E2E_JITTER_MS")) : 0.0;
+  unsigned int m_rng = 1;
   std::vector<float> m_pluginHeard, m_peerHeard;
   bool m_taping = false;     // all the plug-in plays goes on m_tape too, recorded or not
   std::vector<float> m_tape;
@@ -928,7 +976,6 @@ static int link_sync(Host &host, ableton::Link &peer)
   t.followLink = true;
   host.m_link = &peer;
   host.m_latencyUs = LATENCY_MS * 1000;
-  host.startLinkClock();
   auto len_at = [&](int bpm, int bpi) { return (int)(60.0 / bpm * bpi * host.m_srate); };
   auto len_is = [&](int bpm) { return atoi(host.status()["len"].c_str()) == len_at(bpm, 4); };
   auto peer_tempo = [&]() { return peer.captureAppSessionState().tempo(); };
@@ -989,6 +1036,7 @@ static int link_sync(Host &host, ableton::Link &peer)
   // the host plays (on Link's beat); the plug-in finds when it hears the blocks: its measure holds
   // still for 3 seconds
   t.playing = true;
+  host.resetLate();
   {
     double last = -1e9, since = now_seconds();
     host.runUntil(nullptr, 40.0, [&]() {
@@ -1001,6 +1049,8 @@ static int link_sync(Host &host, ableton::Link &peer)
       return fabs(l) > 0.5 && now_seconds() - since >= 3.0;
     });
   }
+  printf("LINK timing late_min=%.3f late_mean=%.3f late_max=%.3f\n", host.m_lateMin, host.m_lateSum / std::max(1L, host.m_lateN),
+         host.m_lateMax);
   if (!record("link100", 4)) return fail(host, "Link did not line up with the intervals at 100 BPM");
 
   // the host's tempo is dragged to 109.6 (on Link, as Live does): one vote, and the room and Link at 110

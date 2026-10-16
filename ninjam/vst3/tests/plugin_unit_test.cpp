@@ -631,20 +631,23 @@ static void test_link_math()
   CHECK(c.kind == Correction::Jump && near(c.shift, msToBeats(-40, 120)));
   c = phaseCorrection(msToBeats(0.3, 120), 120, false, 1e9);
   CHECK(c.kind == Correction::None);
-  c = phaseCorrection(msToBeats(5, 120), 120, false, 300);
+  const double since = STEP_EVERY_MS + 1;
+  c = phaseCorrection(msToBeats(5, 120), 120, false, since);
   CHECK(c.kind == Correction::Step && near(c.shift, msToBeats(STEP_MS, 120)));
-  c = phaseCorrection(msToBeats(-5, 120), 120, false, 300);
+  c = phaseCorrection(msToBeats(-5, 120), 120, false, since);
   CHECK(c.kind == Correction::Step && near(c.shift, -msToBeats(STEP_MS, 120)));
-  c = phaseCorrection(msToBeats(0.8, 120), 120, false, 300);
+  c = phaseCorrection(msToBeats(0.8, 120), 120, false, since);
   CHECK(c.kind == Correction::Step && near(c.shift, msToBeats(0.8, 120)));
-  c = phaseCorrection(msToBeats(5, 120), 120, false, 100); // the last step was too recent
+  c = phaseCorrection(msToBeats(5, 120), 120, false, STEP_EVERY_MS - 100); // the last step was too recent
   CHECK(c.kind == Correction::None);
-  c = phaseCorrection(msToBeats(29, 120), 120, false, 300);
+  c = phaseCorrection(msToBeats(29, 120), 120, false, since);
   CHECK(c.kind == Correction::Step);
+  // a step only once Link shows the plug-in the network's changes again, not its own last one
+  CHECK(linkGraceMs() > 0 && STEP_EVERY_MS > linkGraceMs());
 
-  // The audio clock runs fast or slow against Link's (by up to 0.2%): after the first jump,
+  // The audio clock runs fast or slow against Link's (by up to 0.1%): after the first jump,
   // steps keep the interval starts on Link's beats within a little more than a step, with no jump.
-  for (double ppm : { 50.0, -300.0, 2000.0 })
+  for (double ppm : { 50.0, -300.0, 1000.0 })
   {
     const double bpm = 95, bpi = 16, blockMs = 512 / 48.0;
     double linkOffset = 1.2345; // Link's beat at time 0
@@ -680,6 +683,87 @@ static void test_link_math()
   CHECK(!m.add(30)); // the first is too old
   CHECK(m.add(31));
   CHECK(m.add(32));
+}
+
+// When blocks start on Link's clock (BlockClock), from the times process() is called: calls that
+// come late (a busy machine, a timer that wakes up late, the host catching up after a stall)
+// don't move it; the sound card's clock drifting from Link's does, and so does the sample count
+// losing time.
+static void test_block_clock()
+{
+  using linkmath::BlockClock;
+  const double srate = 48000, frames = 512, blockUs = frames * 1e6 / srate;
+  const double t0 = 5e9; // Link's clock at sample 0
+  unsigned int rng = 1;
+  auto uniform = [&]() {
+    rng = rng * 1103515245u + 12345u;
+    return ((rng >> 8) & 0xffff) / 65536.0;
+  };
+  const long minute = (long)(60 * srate / frames);
+
+  // calls 0.2 to 15 ms late (a 15.6 ms Windows timer), and 80 ms late every 2 seconds, then
+  // back to back until the host catches up: the clock stays within 1 ms of the earliest calls
+  // (the earliest of two seconds varies by about that here), far from a jump (JUMP_MS)
+  {
+    BlockClock c;
+    double lo = 1e18, hi = -1e18, late = 0;
+    for (long i = 0; i < minute; i ++)
+    {
+      const double nominal = i * blockUs;
+      late = std::max(late - blockUs, 0.0) + 200 + 15000 * uniform(); // what the stall left, and this call's
+      if (i % 188 == 100) late += 80000;
+      const double off = c.update(nominal, t0 + nominal + late, blockUs) - t0;
+      if (nominal >= 3e6)
+      {
+        lo = std::min(lo, off);
+        hi = std::max(hi, off);
+      }
+    }
+    printf("block clock, calls 0.2 to 15 ms late and stalls: %.3f to %.3f ms after the earliest\n", (lo - 200) / 1000,
+           (hi - 200) / 1000);
+    CHECK(lo >= 200 - 1 && hi - 200 < 1000);
+  }
+
+  // a sound card 100 ppm slow against Link's clock: it follows, a little behind (the window and
+  // the smoothing: a lag that stays the same, which the Calibrator takes up with the latency)
+  {
+    BlockClock c;
+    double worst = 0;
+    for (long i = 0; i < minute; i ++)
+    {
+      const double nominal = i * blockUs, drift = nominal * 100e-6;
+      const double off = c.update(nominal, t0 + nominal + drift + 200 + 2000 * uniform(), blockUs) - t0;
+      if (nominal >= 3e6) worst = std::max(worst, fabs(off - drift - 200));
+    }
+    printf("block clock, a sound card 100 ppm slow: %.3f ms behind at most\n", worst / 1000);
+    CHECK(worst < 400);
+  }
+
+  // the sample count loses 100 ms (the host dropped audio): there once the window is past
+  {
+    BlockClock c;
+    double off = 0;
+    long moved = -1;
+    for (long i = 0; i < minute / 2; i ++)
+    {
+      const double nominal = i * blockUs;
+      const double lost = i >= minute / 4 ? 100000 : 0;
+      off = c.update(nominal, t0 + nominal + lost + 200 + 1000 * uniform(), blockUs) - t0;
+      if (i < minute / 4) CHECK(off < 200 + 1000);
+      else if (moved < 0 && off > 100000) moved = i;
+    }
+    CHECK(moved > 0 && (moved - minute / 4) * blockUs <= (BlockClock::WINDOW_MS + 300) * 1000);
+    CHECK(fabs(off - 100000 - 200) < 1000);
+  }
+
+  // a first call 20 ms late doesn't stay; after reset() (a new sample rate) it starts again
+  {
+    BlockClock c;
+    CHECK(near(c.update(0, t0 + 20000, blockUs) - t0, 20000));
+    CHECK(near(c.update(blockUs, t0 + blockUs + 200, blockUs) - t0, 200));
+    c.reset();
+    CHECK(near(c.update(1e6, t0 + 3e6, blockUs) - t0, 2e6));
+  }
 }
 
 // Rounds of blocks into a Calibrator, as LinkSync feeds it: `residual(offset)` is how far the
@@ -933,6 +1017,8 @@ static void test_link_sync()
     iv.pos = 1234;
     LinkSync::Host host; // a host that doesn't say where it is
     int leads = 0, blocks = 0;
+    // in real time, with calls late now and then (a timer that wakes up late, a busy machine),
+    // and the next ones back to back until it catches up
     auto run = [&](LinkSync &l, double seconds) {
       const auto start = std::chrono::steady_clock::now();
       for (int i = 0; i < seconds * srate / frames; i ++)
@@ -943,6 +1029,7 @@ static void test_link_sync()
         iv.pos += frames;
         if (iv.pos >= iv.len) iv.pos -= iv.len;
         std::this_thread::sleep_until(start + std::chrono::microseconds((long long)((i + 1) * 1e6 * frames / srate)));
+        if (i % 7 == 3) std::this_thread::sleep_for(std::chrono::milliseconds(i % 21 == 3 ? 40 : 12));
       }
     };
     run(a, 1.0);
@@ -1415,6 +1502,7 @@ int main(int argc, char **argv)
   test_uitext();
   test_textkeys();
   test_link_math();
+  test_block_clock();
   test_calibrator();
   test_tempo_keeper();
   test_link_texts();
