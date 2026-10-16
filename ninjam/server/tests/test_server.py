@@ -16,7 +16,7 @@ import uuid
 
 from njclient import (Client, chat_fields, codec_mask, mask_opus_kbps, CHAT, CODEC_MASK, DOWNLOAD_BEGIN,
                       DOWNLOAD_WRITE, CAP_OPUS, CAP_FLAC)
-from fake_router import FakeIGD, FakeNatPmp
+from fake_router import FakeIGD, FakeNatPmp, FakeSSDP
 
 # absolute, because each server runs with its own temporary directory as cwd
 SERVER = os.path.abspath(os.environ.get("NINJAMSRV", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ninjamsrv")))
@@ -605,8 +605,10 @@ class PortMappingTests(unittest.TestCase):
     """Router port mapping (PortMapping yes) against a fake router. Needs a PORTMAP=1 build."""
 
     def start(self, rootdesc, natpmp_gateway="127.0.0.1", extra_config=""):
-        self.server = Server("LogFile $DIR/server.log\nPortMapping yes\n" + extra_config,
-                             env={"NINJAM_UPNP_ROOTDESC": rootdesc, "NINJAM_NATPMP_GATEWAY": natpmp_gateway})
+        env = {"NINJAM_NATPMP_GATEWAY": natpmp_gateway}
+        if rootdesc:  # None: find the router by multicast discovery, as at home
+            env["NINJAM_UPNP_ROOTDESC"] = rootdesc
+        self.server = Server("LogFile $DIR/server.log\nPortMapping yes\n" + extra_config, env=env)
         self.server.wait_ready()
         self.addCleanup(self.cleanup)
         self.wait_for_log("[portmap]")
@@ -665,6 +667,37 @@ class PortMappingTests(unittest.TestCase):
         self.addCleanup(igd.close)
         self.start(igd.url)
         self.wait_for_log("which is not public")
+
+    def discovered_router(self, **kwargs):
+        igd = FakeIGD(**kwargs)
+        self.addCleanup(igd.close)
+        try:
+            ssdp = FakeSSDP(igd.url)
+        except OSError as e:
+            self.skipTest("can't answer UPnP discovery here: %s" % e)
+        self.addCleanup(ssdp.close)
+        return igd
+
+    def test_discovers_the_router(self):
+        igd = self.discovered_router(external_ip="93.184.216.34")  # not a documentation range: the UPnP library treats those as private
+        self.start(None)
+        self.wait_for_log("UPnP: people can connect to 93.184.216.34:%d" % self.server.port)
+        self.assertIn(self.server.port, igd.mappings)
+
+    def test_discovered_router_behind_another_router(self):
+        # a mesh router (TP-Link Deco and the like) plugged into the provider's router: its own
+        # internet address is private, so the UPnP library calls it "not connected"
+        igd = self.discovered_router(external_ip="192.168.1.20")
+        self.start(None)
+        self.wait_for_log("which is not public")
+        self.assertIn(self.server.port, igd.mappings)
+        self.assertNotIn("could not find a router", self.log())
+
+    def test_discovered_router_that_says_it_is_disconnected(self):
+        igd = self.discovered_router(connected=False)
+        self.start(None)
+        self.wait_for_log("people can connect to")
+        self.assertIn(self.server.port, igd.mappings)
 
     def test_turning_port_mapping_off_on_reload_removes_the_forward(self):
         igd = FakeIGD()

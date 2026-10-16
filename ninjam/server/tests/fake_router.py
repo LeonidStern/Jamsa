@@ -3,6 +3,7 @@
 FakeIGD answers UPnP-IGD requests (device description over HTTP, SOAP control
 for AddPortMapping / DeletePortMapping / GetExternalIPAddress).
 FakeNatPmp answers NAT-PMP (RFC 6886) on 127.0.0.1:5351, the fixed NAT-PMP port.
+FakeSSDP answers UPnP discovery (M-SEARCH on 239.255.255.250:1900) with a FakeIGD's address.
 Both record the mappings they hold in `mappings`, keyed by external port.
 """
 import http.server
@@ -45,9 +46,10 @@ ENVELOPE = ('<?xml version="1.0"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.
 
 
 class FakeIGD:
-    def __init__(self, external_ip="203.0.113.7", only_permanent_leases=False):
+    def __init__(self, external_ip="203.0.113.7", only_permanent_leases=False, connected=True):
         self.external_ip = external_ip
         self.only_permanent_leases = only_permanent_leases
+        self.connected = connected
         self.mappings = {}
         self.lock = threading.Lock()
         igd = self
@@ -102,6 +104,9 @@ class FakeIGD:
                 return 0, {}
             if action == "GetExternalIPAddress":
                 return 0, {"NewExternalIPAddress": self.external_ip}
+            if action == "GetStatusInfo":
+                return 0, {"NewConnectionStatus": "Connected" if self.connected else "Disconnected",
+                           "NewLastConnectionError": "ERROR_NONE", "NewUptime": "1000"}
             return 401, None  # Invalid Action
 
     def close(self):
@@ -144,6 +149,67 @@ class FakeNatPmp:
                 else:
                     self.mappings.pop(external, None)
                 self.sock.sendto(struct.pack("!BBHIHHI", 0, 128 + op, 0, epoch, internal, external, lifetime), addr)
+
+    def close(self):
+        self.running = False
+        self.thread.join()
+        self.sock.close()
+
+
+class FakeSSDP:
+    """Answers every M-SEARCH with `location`. Raises OSError if multicast doesn't loop back on this machine."""
+    GROUP = "239.255.255.250"
+    PORT = 1900
+
+    def __init__(self, location):
+        self.location = location
+        self.searches = 0
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        self.sock.bind(("", self.PORT))
+        self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                             struct.pack("4s4s", socket.inet_aton(self.GROUP), socket.inet_aton("0.0.0.0")))
+        self.sock.settimeout(0.2)
+        self.check_loopback()
+        self.running = True
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def check_loopback(self):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+            probe.sendto(b"probe", (self.GROUP, self.PORT))
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                try:
+                    if self.sock.recvfrom(64)[0] == b"probe":
+                        return
+                except socket.timeout:
+                    pass
+        finally:
+            probe.close()
+        self.sock.close()
+        raise OSError("multicast does not loop back here")
+
+    def serve(self):
+        while self.running:
+            try:
+                req, addr = self.sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            m = re.search(rb"\r\nST: *([^\r]*)", req, re.I)
+            if not req.startswith(b"M-SEARCH") or not m:
+                continue
+            self.searches += 1
+            reply = ("HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=120\r\nST: %s\r\n"
+                     "USN: uuid:fake-router::%s\r\nEXT:\r\nSERVER: Fake/1.0 UPnP/1.1 Fake/1.0\r\n"
+                     "LOCATION: %s\r\n\r\n" % (m.group(1).decode(), m.group(1).decode(), self.location))
+            self.sock.sendto(reply.encode(), addr)
 
     def close(self):
         self.running = False

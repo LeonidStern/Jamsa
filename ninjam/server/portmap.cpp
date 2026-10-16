@@ -100,7 +100,10 @@ struct PortMapper::State
   natpmp_t natpmp;
   int natpmp_public_port;
 
-  State(int p) : stop(false), port(p), method(NONE), upnp_permanent(false), natpmp_public_port(0)
+  // what went wrong in the last Map() without a mapping, for the message after the first failure
+  enum { UPNP_NO_ANSWER, UPNP_SEND_FAILED, UPNP_NOT_A_ROUTER, UPNP_REFUSED } upnp_problem;
+
+  State(int p) : stop(false), port(p), method(NONE), upnp_permanent(false), natpmp_public_port(0), upnp_problem(UPNP_NO_ANSWER)
   {
     memset(&urls,0,sizeof(urls));
     memset(&igd,0,sizeof(igd));
@@ -132,7 +135,35 @@ struct PortMapper::State
   int NatpmpAdd(bool quiet, uint32_t lifetime);
 
   void ReportAddress(const char *how, const char *ext, int ext_port);
+  void ReportFailure();
 };
+
+void PortMapper::State::ReportFailure()
+{
+  const int mins=PORTMAP_RETRY/60;
+  switch (upnp_problem)
+  {
+    case UPNP_REFUSED: // UpnpAdd() said why
+      logText("[portmap] the router would not forward TCP port %d. Forward it on your router to this machine by hand. "
+              "Will keep trying every %d minutes.\n",port,mins);
+    break;
+    case UPNP_SEND_FAILED:
+      logText("[portmap] could not ask the router: sending to the local network failed. On macOS, allow your music "
+              "app in System Settings > Privacy & Security > Local Network, then restart it. Otherwise forward TCP "
+              "port %d on your router to this machine by hand. Will keep trying every %d minutes.\n",port,mins);
+    break;
+    case UPNP_NOT_A_ROUTER:
+      logText("[portmap] UPnP devices answered, but none of them is a router that forwards ports. If your Wi-Fi "
+              "system runs in access point (bridge) mode, turn on UPnP on the router in front of it, or forward TCP "
+              "port %d there to this machine by hand. Will keep trying every %d minutes.\n",port,mins);
+    break;
+    default:
+      logText("[portmap] could not find a router that supports UPnP or NAT-PMP. Forward TCP port %d on your router "
+              "to this machine by hand, or turn on UPnP in the router's settings. Will keep trying every %d minutes.\n",
+              port,mins);
+    break;
+  }
+}
 
 void PortMapper::State::ReportAddress(const char *how, const char *ext, int ext_port)
 {
@@ -174,21 +205,31 @@ bool PortMapper::State::UpnpFind()
     };
     int err=0;
     struct UPNPDev *devs=upnpDiscoverDevices(types,UPNP_DISCOVER_MS,NULL,NULL,0,0,2,&err,1);
-    if (!devs) return false;
+    if (!devs)
+    {
+      upnp_problem = err == UPNPDISCOVER_SOCKET_ERROR ? UPNP_SEND_FAILED : UPNP_NO_ANSWER;
+      return false;
+    }
 
+    // Take any router, whatever it says about its internet connection. The library calls a router
+    // "not connected" when its own internet address is private, which is the usual case for a mesh
+    // system (TP-Link Deco and the like) plugged into the provider's router: the mapping still
+    // works on this router, and ReportAddress() explains the other one.
 #if MINIUPNPC_API_VERSION >= 18
     char wanaddr[64];
     r=UPNP_GetValidIGD(devs,&urls,&igd,lanaddr,sizeof(lanaddr),wanaddr,sizeof(wanaddr));
-    // 1 = connected IGD, 2 = connected but with a private address (reported later), higher = unusable
-    if (r != 1 && r != 2)
+    // 1 = connected IGD, 2 = connected with a private address, 3 = IGD not connected, 4 = not an IGD
+    const int last_igd=3;
 #else
     r=UPNP_GetValidIGD(devs,&urls,&igd,lanaddr,sizeof(lanaddr));
-    // 1 = connected IGD, higher = not connected or not an IGD
-    if (r != 1)
+    // 1 = connected IGD, 2 = IGD not connected or with a private address, 3 = not an IGD
+    const int last_igd=2;
 #endif
+    if (r < 1 || r > last_igd)
     {
-      if (r) FreeUPNPUrls(&urls);
+      if (r > 0) FreeUPNPUrls(&urls);
       r=0;
+      upnp_problem=UPNP_NOT_A_ROUTER;
     }
     freeUPNPDevlist(devs);
   }
@@ -294,6 +335,7 @@ int PortMapper::State::Map()
     return r > 0 ? r : -1;
   }
 
+  upnp_problem=UPNP_NO_ANSWER;
   if (UpnpFind())
   {
     int lease=UpnpAdd(false);
@@ -308,6 +350,7 @@ int PortMapper::State::Map()
     }
     FreeUPNPUrls(&urls);
     memset(&urls,0,sizeof(urls));
+    upnp_problem=UPNP_REFUSED;
   }
   if (Stopping()) return -1;
 
@@ -378,9 +421,7 @@ void PortMapper::State::Run()
       }
       if (!reported_failure)
       {
-        logText("[portmap] could not find a router that supports UPnP or NAT-PMP. Forward TCP port %d on your router "
-                "to this machine by hand, or turn on UPnP in the router's settings. Will keep trying every %d minutes.\n",
-                port,PORTMAP_RETRY/60);
+        ReportFailure();
         reported_failure=true;
       }
       wait=PORTMAP_RETRY;
