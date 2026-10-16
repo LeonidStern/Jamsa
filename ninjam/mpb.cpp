@@ -277,6 +277,110 @@ Net_Message *mpb_server_codec_mask::build()
 }
 
 
+// MESSAGE_SERVER_LIVE
+static unsigned int mpb_get_le(const unsigned char *p, int bytes)
+{
+  unsigned int v=0;
+  while (bytes-- > 0) v = (v<<8) | p[bytes];
+  return v;
+}
+
+static unsigned char *mpb_put_le(unsigned char *p, unsigned int v, int bytes)
+{
+  while (bytes-- > 0)
+  {
+    *p++=v&0xff;
+    v>>=8;
+  }
+  return p;
+}
+
+int mpb_server_live::parse(Net_Message *msg) // return 0 on success
+{
+  if (msg->get_type() != MESSAGE_SERVER_LIVE) return -1;
+  const int size=msg->get_size();
+  if (size < LIVE_FIXED_LEN) return 1; // allow longer messages, for future extensions
+  const unsigned char *p=(const unsigned char *)msg->get_data();
+  if (!p) return 2;
+
+  const int fixed_len=p[1];
+  if (p[0] < 1 || fixed_len < LIVE_FIXED_LEN || fixed_len > size) return 3;
+
+  version=p[0];
+  flags=p[2];
+  udp_port=(int)mpb_get_le(p+4,2);
+  live_kbps=(int)mpb_get_le(p+6,2);
+  peer_id=mpb_get_le(p+8,4);
+  key=(WDL_UINT64)mpb_get_le(p+12,4) | ((WDL_UINT64)mpb_get_le(p+16,4)<<32);
+  frame_samples=(int)mpb_get_le(p+20,2);
+  max_peers=(int)mpb_get_le(p+22,2);
+
+  m_peers=p+fixed_len;
+  m_peers_len=size-fixed_len;
+  return 0;
+}
+
+Net_Message *mpb_server_live::build()
+{
+  Net_Message *nm=new Net_Message;
+  nm->set_type(MESSAGE_SERVER_LIVE);
+
+  nm->set_size(LIVE_FIXED_LEN+m_build_peers.GetSize());
+
+  unsigned char *p=(unsigned char *)nm->get_data();
+
+  if (!p)
+  {
+    delete nm;
+    return 0;
+  }
+
+  memset(p,0,LIVE_FIXED_LEN);
+  p[0]=LIVE_VERSION;
+  p[1]=LIVE_FIXED_LEN;
+  p[2]=flags&0xff;
+  mpb_put_le(p+4,udp_port,2);
+  mpb_put_le(p+6,live_kbps,2);
+  mpb_put_le(p+8,peer_id,4);
+  mpb_put_le(p+12,(unsigned int)(key&0xffffffff),4);
+  mpb_put_le(p+16,(unsigned int)(key>>32),4);
+  mpb_put_le(p+20,frame_samples,2);
+  mpb_put_le(p+22,max_peers,2);
+  if (m_build_peers.GetSize()) memcpy(p+LIVE_FIXED_LEN,m_build_peers.Get(),m_build_peers.GetSize());
+
+  return nm;
+}
+
+void mpb_server_live::build_add_peer(unsigned int id, int peer_flags, const char *name)
+{
+  const int name_len = name ? (int)strlen(name) : 0;
+  const int oldsize=m_build_peers.GetSize();
+  unsigned char *p=(unsigned char *)m_build_peers.ResizeOK(oldsize+4+1+name_len+1,false);
+  if (!p) return;
+  p=mpb_put_le(p+oldsize,id,4);
+  *p++=peer_flags&0xff;
+  if (name_len) memcpy(p,name,name_len);
+  p[name_len]=0;
+}
+
+// returns offset of next item on success, or <= 0 if out of items
+int mpb_server_live::parse_get_peer(int offs, unsigned int *id, int *peer_flags, const char **name)
+{
+  if (!m_peers || offs < 0 || offs+4+1+1 > m_peers_len) return 0;
+  const unsigned char *p=m_peers+offs;
+  const unsigned char *nm=p+5;
+  const unsigned char *end=m_peers+m_peers_len;
+  const unsigned char *z=nm;
+  while (z < end && *z) z++;
+  if (z >= end) return 0; // no terminator
+
+  if (id) *id=mpb_get_le(p,4);
+  if (peer_flags) *peer_flags=p[4];
+  if (name) *name=(const char *)nm;
+  return (int)(z+1-m_peers);
+}
+
+
 // MESSAGE_SERVER_USERINFO_CHANGE_NOTIFY
 int mpb_server_userinfo_change_notify::parse(Net_Message *msg) // return 0 on success
 {
