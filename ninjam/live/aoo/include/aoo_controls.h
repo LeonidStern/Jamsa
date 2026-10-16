@@ -170,3 +170,12 @@ enum
 
 /** \brief offset for user defined controls */
 #define kAooCtlUserDefined 10000
+
+/** \brief Jamsa's controls (see ninjam/live/README.md) */
+enum
+{
+    /** (AooSource) send the data packets once to a broadcast endpoint */
+    kAooCtlSetBroadcastEndpoint = kAooCtlUserDefined,
+    /** (AooSource) is broadcast mode on? */
+    kAooCtlGetBroadcast
+};

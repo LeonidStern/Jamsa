@@ -24,6 +24,10 @@
   datagram is handed to AOO in a heap block of exactly its size, so that
   AddressSanitizer catches any read past its end.
 
+  With source_options::broadcast the source runs in Jamsa's broadcast mode:
+  what it sends to 'broadcast_addr' reaches every sink, as through our
+  server (each copy goes through 'filter' on its own).
+
 */
 
 #ifndef JAMSA_LIVE_HARNESS_H
@@ -56,6 +60,7 @@ struct datagram
   int from, to;          // node indexes
   double due;            // arrival time in seconds
   std::vector<AooByte> bytes;
+  bool broadcast = false; // a copy of what the source sent to broadcast_addr
 };
 
 struct node
@@ -120,6 +125,7 @@ struct source_options
   int format_blocksize = 240;  // Opus frame: 5 ms at 48 kHz
   bool binary = true;
   bool add_sinks = true;       // add every sink to the source up front
+  bool broadcast = false;      // Jamsa's broadcast mode, to broadcast_addr
   int bitrate = 0;             // Opus bitrate in the format (0: Opus' default)
 };
 
@@ -146,6 +152,9 @@ public:
   // called with true right before a node's process() and with false right
   // after it: what runs in between is what an audio thread would run
   void (*audio_hook)(bool) = nullptr;
+  // broadcast mode: the source's datagrams to this address go to every sink
+  sockaddr_in broadcast_addr = make_address(250);
+  long broadcast_sent = 0; // datagrams the source sent there
 
   session(const source_options &so, const std::vector<sink_options> &sos)
   {
@@ -164,6 +173,14 @@ public:
     AooFormatOpus_init(&fmt, 2, 48000, so.format_blocksize, OPUS_APPLICATION_RESTRICTED_LOWDELAY);
     if (so.bitrate > 0) fmt.bitrate = so.bitrate;
     source->setFormat(fmt.header);
+    if (so.broadcast)
+    {
+      AooEndpoint ep;
+      ep.address = &broadcast_addr;
+      ep.addrlen = sizeof(broadcast_addr);
+      ep.id = 1;
+      source->setBroadcastEndpoint(&ep);
+    }
 
     for (size_t i = 0; i < sos.size(); i++)
     {
@@ -342,6 +359,25 @@ private:
   {
     sender *ctx = (sender *)user;
     session *self = ctx->self;
+    if (addrlen == sizeof(sockaddr_in)
+      && ((const sockaddr_in *)address)->sin_addr.s_addr == self->broadcast_addr.sin_addr.s_addr)
+    {
+      // one copy for every sink, as our server does
+      self->datagrams_sent++;
+      self->broadcast_sent++;
+      for (int to = 1; to < (int)self->nodes.size(); to++)
+      {
+        datagram d;
+        d.from = ctx->from;
+        d.to = to;
+        d.due = self->now + self->network_delay;
+        d.bytes.assign(data, data + size);
+        d.broadcast = true;
+        if (self->filter && !self->filter(d)) continue;
+        self->in_flight.push_back(std::move(d));
+      }
+      return size;
+    }
     const int to = self->node_of(address, addrlen);
     if (to < 0) return 0; // nobody there
     datagram d;

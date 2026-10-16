@@ -13,7 +13,8 @@
 #                    (build with -fsanitize=address,undefined to get the most out of it)
 #   live_rt_test     no heap allocation in the source's and sinks' process(), clean
 #                    network or not
-#   live_unit_test   what Live adds to AOO: coupled stereo Opus, its bitrate
+#   live_unit_test   what Live adds to AOO: coupled stereo Opus, its bitrate,
+#                    broadcast mode
 #
 # The plug-in's build (ninjam/vst3) adds this folder after it has downloaded
 # Opus and registers the tests from vst3/tests. A build of this folder alone

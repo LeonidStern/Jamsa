@@ -92,14 +92,16 @@ struct sink_desc {
 
     // a new stream has been started by the user;
     // called while (try-)locked
-    void start();
+    // Jamsa: with the stream ID to use (see Source::make_new_stream())
+    void start(AooId stream_id);
 
     // the stream has been stopped by the user
     void stop(Source& s, int32_t offset);
 
     // (de)activate a source; if the stream is running,
     // this will also queue a /start resp. /stop message.
-    void activate(Source& s, bool b);
+    // Jamsa: with the stream ID to use, see Source::new_sink_stream_id()
+    void activate(Source& s, bool b, AooId stream_id);
 
     bool is_active() const {
         return stream_id_.load(std::memory_order_acquire) != kAooIdInvalid;
@@ -146,6 +148,19 @@ struct cached_sink {
     endpoint ep;
     AooId stream_id;
     int32_t channel;
+};
+
+// Jamsa: broadcast mode as the send thread saw it (see send_packet())
+struct cached_broadcast {
+    bool enabled = false;
+    endpoint ep;
+    AooId stream_id = kAooIdInvalid;
+
+    // does the one broadcast copy of a data packet reach this sink?
+    bool covers(const cached_sink& s) const {
+        return enabled && s.stream_id == stream_id
+            && s.channel == 0 && s.ep.id == ep.id;
+    }
 };
 
 template<typename Alloc>
@@ -345,6 +360,14 @@ class Source final : public AooSource, rt_memory_pool_client {
     sink_list sinks_;
     sync::mutex sink_mutex_;
     aoo::vector<cached_sink> cached_sinks_; // only for the send thread
+    // Jamsa: broadcast mode (setBroadcastEndpoint()). broadcast_ and
+    // broadcast_ep_ are guarded by update_mutex_; broadcast_stream_ is the
+    // stream ID all active sinks share in broadcast mode, changed by
+    // make_new_stream() under the writer lock.
+    bool broadcast_ = false;
+    endpoint broadcast_ep_;
+    std::atomic<AooId> broadcast_stream_{kAooIdInvalid};
+    cached_broadcast cached_broadcast_; // only for the send thread
     // thread synchronization
     sync::shared_mutex update_mutex_;
     // options
@@ -371,6 +394,15 @@ class Source final : public AooSource, rt_memory_pool_client {
     AooError get_format(AooFormat& fmt, size_t size);
 
     sink_desc * find_sink(const ip_address& addr, AooId id);
+
+    // Jamsa: the stream ID for a sink that becomes active now: the shared
+    // one in broadcast mode, else a new one. Call with update_mutex_ held
+    // (at least shared), so make_new_stream() can't change it in between.
+    AooId new_sink_stream_id() const {
+        return broadcast_ ? broadcast_stream_.load() : get_random_id();
+    }
+
+    void cache_broadcast();
 
     sink_desc *get_sink_arg(intptr_t index);
 

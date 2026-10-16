@@ -71,7 +71,9 @@ Tests (`tests/`):
   counted call came from (glibc).
 - `live_unit_test [test]`: what Live adds to AOO: coupled stereo Opus and
   its bitrate (encoded sizes, the decoder's channel layout, through the
-  source too).
+  source too), broadcast mode with three sinks (one upload per block, a lost
+  copy resent to its sink only, a sink that joins late, a channel offset,
+  turning it on and off).
 
 ## Changes from upstream
 
@@ -286,3 +288,33 @@ out (1 MB by default) or for a block larger than `large_alloc_limit`
 - `codec/opus.cpp`, `OPUS_GET_BITRATE`: returns the bitrate last set
   (`OPUS_AUTO` if none). Upstream returned `OPUS_AUTO` always, because the
   multistream encoder's own getter was broken in Opus 1.3.2.
+
+### Broadcast mode
+
+The design's main saving: a player uploads its stream once, and our server
+sends a copy to each listener, instead of uploading one copy per listener.
+Upstream AOO can't do that: each sink gets its own stream ID and its own
+copy of every data packet (`source.cpp`, `send_packet()`).
+
+- `AooSource::setBroadcastEndpoint(ep)` (`kAooCtlSetBroadcastEndpoint`,
+  one of our controls from `kAooCtlUserDefined` on; `nullptr` turns it
+  off; `getBroadcast()` reads it). In broadcast mode every active sink gets
+  the same stream ID, one per stream, made in `make_new_stream()`. A data
+  packet is then the same for all those sinks (our source ID, the broadcast
+  endpoint's sink ID, channel 0, the shared stream ID), and `send_packet()`
+  sends it once, to the broadcast endpoint, instead of once per sink. The
+  glue gives the endpoint peer ID 0, which our UDP header turns into "every
+  other Live player in the room".
+- `/start`, `/stop`, pings, pongs and resent data stay per sink (unicast),
+  so a sink that lost a copy gets it again on its own, and one that
+  receives data for a stream it doesn't know asks for `/start` as usual: a
+  sink the source doesn't know yet gets nothing back until it is added,
+  then joins the running stream without restarting it for the others.
+- A sink the broadcast copy can't serve still gets its own copy: one with
+  another sink ID, a channel offset, or a stream ID of its own (an
+  accepted invitation, whose token becomes the stream ID).
+- A sink that becomes active (`addSink()`, `activate()`) takes the shared
+  stream ID. Both hold the source's reader lock until the sink has it, so
+  `make_new_stream()`, which changes the ID under the writer lock on the
+  audio thread, can't run in between and leave the new sink on the old
+  stream. Turning broadcast mode on or off restarts a running stream.

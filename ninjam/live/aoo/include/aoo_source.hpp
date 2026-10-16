@@ -445,6 +445,26 @@ public:
         return control(kAooCtlGetStreamTimeSendInterval, 0, AOO_ARG(s));
     }
 
+    /** \brief (Jamsa) Send the data to a broadcast endpoint
+     *
+     * Every active sink then gets the same stream ID, and each data packet
+     * (identical for these sinks: channel 0, the broadcast endpoint's ID)
+     * goes out once, to `ep`, instead of once per sink; whatever is at that
+     * address passes it on to the sinks (in Jamsa: our server). /start,
+     * /stop, pings and resent data stay per sink. A sink with another ID, a
+     * channel offset or a stream of its own (an accepted invitation) still
+     * gets its own copy. Pass `nullptr` to turn it off. The address is
+     * copied. Changing it restarts a running stream.
+     */
+    AooError setBroadcastEndpoint(const AooEndpoint *ep) {
+        return control(kAooCtlSetBroadcastEndpoint, 0, (void *)ep, ep ? sizeof(AooEndpoint) : 0);
+    }
+
+    /** \brief (Jamsa) Is broadcast mode on? */
+    AooError getBroadcast(AooBool& b) {
+        return control(kAooCtlGetBroadcast, 0, AOO_ARG(b));
+    }
+
     /** \brief Set the sink channel offset
      *
      * Set the starting channel where the source signal should be received

@@ -29,12 +29,12 @@ const int32_t kBinDataHeaderSize = kAooBinMsgLargeHeaderSize + 40;
 //-------------------- sink_desc ------------------------//
 
 // called while locked
-void sink_desc::start(){
+void sink_desc::start(AooId stream_id){
     // clear requests, just to make sure we don't resend
     // frames with a previous format.
     data_requests_.clear();
     if (is_active()){
-        stream_id_.store(get_random_id());
+        stream_id_.store(stream_id);
         LOG_DEBUG("AooSource: " << ep << ": start new stream (" << stream_id() << ")");
         notify_start();
     }
@@ -114,9 +114,9 @@ void sink_desc::handle_uninvite(Source &s, AooId token, bool accept){
     }
 }
 
-void sink_desc::activate(Source& s, bool b) {
+void sink_desc::activate(Source& s, bool b, AooId stream_id) {
     if (b){
-        stream_id_.store(get_random_id());
+        stream_id_.store(stream_id);
         LOG_DEBUG("AooSource: " << ep << ": activate (" << stream_id() << ")");
         if (s.is_running()){
             notify_start();
@@ -151,6 +151,8 @@ aoo::Source::Source(AooId id)
     // Jamsa: nodes for the /stop requests that process() pushes when the
     // stream stops, one per sink (more come from the RT pool)
     requests_.reserve(64);
+    // Jamsa: valid before the first stream, see new_sink_stream_id()
+    broadcast_stream_.store(get_random_id());
 }
 
 AOO_API void AOO_CALL AooSource_free(AooSource *src){
@@ -192,7 +194,9 @@ AooError AOO_CALL aoo::Source::control(
         CHECKARG(AooBool);
         GETSINKARG
         bool active = as<AooBool>(ptr);
-        sink->activate(*this, active);
+        // Jamsa: see new_sink_stream_id()
+        scoped_shared_lock lock3(update_mutex_);
+        sink->activate(*this, active, new_sink_stream_id());
 
         break;
     }
@@ -414,6 +418,34 @@ AooError AOO_CALL aoo::Source::control(
         CHECKARG(AooSeconds);
         as<AooSeconds>(ptr) = tt_interval_.load();
         break;
+    // Jamsa: broadcast mode, see AooSource::setBroadcastEndpoint()
+    case kAooCtlSetBroadcastEndpoint:
+    {
+        endpoint ep;
+        if (ptr) {
+            CHECKARG(AooEndpoint);
+            auto& e = as<AooEndpoint>(ptr);
+            if (!e.address || e.addrlen <= 0 || e.addrlen > ip_address::max_length) {
+                return kAooErrorBadArgument;
+            }
+            ep = endpoint(ip_address((const sockaddr *)e.address, e.addrlen), e.id, false);
+        }
+        scoped_lock lock(update_mutex_); // writer lock!
+        broadcast_ = ptr != nullptr;
+        broadcast_ep_ = ep;
+        broadcast_stream_.store(get_random_id());
+        // a new stream gives every active sink the shared stream ID (or,
+        // with broadcast mode off, an ID of its own again)
+        restart_stream();
+        break;
+    }
+    case kAooCtlGetBroadcast:
+    {
+        CHECKARG(AooBool);
+        scoped_shared_lock lock(update_mutex_);
+        as<AooBool>(ptr) = broadcast_;
+        break;
+    }
     // unknown
     default:
         LOG_WARNING("AooSource: unsupported control " << ctl);
@@ -947,7 +979,12 @@ AooError AOO_CALL aoo::Source::addSink(const AooEndpoint& ep, AooBool active) {
         LOG_WARNING("AooSource: sink already added!");
         return kAooErrorAlreadyExists;
     }
-    AooId stream = active ? get_random_id() : kAooIdInvalid;
+    // Jamsa: hold the reader lock until the sink is in the list, so that in
+    // broadcast mode make_new_stream() can't change the shared stream ID in
+    // between (see new_sink_stream_id()). NB: do_add_sink() only takes the
+    // writer lock with IDLE_IF_NO_SINKS, which is off.
+    scoped_shared_lock lock3(update_mutex_);
+    AooId stream = active ? new_sink_stream_id() : kAooIdInvalid;
     do_add_sink(addr, ep.id, stream);
     // always succeeds
     return kAooOk;
@@ -1240,9 +1277,14 @@ void Source::make_new_stream(aoo::time_tag tt, AooData *md) {
         AooEncoder_reset(encoder_.get());
     }
 
+    // Jamsa: in broadcast mode all active sinks share the new stream's ID
+    // (get_random_id() is real-time safe in our copy)
+    auto shared_id = get_random_id();
+    broadcast_stream_.store(shared_id);
+
     sink_lock lock(sinks_);
     for (auto& s : sinks_){
-        s.start();
+        s.start(broadcast_ ? shared_id : get_random_id());
     }
 
     notify_start();
@@ -1657,8 +1699,17 @@ void send_packet_bin(const endpoint& ep, AooId id, AooId stream_id,
     ep.send(buf, size, fn);
 }
 
-void send_packet(const aoo::vector<cached_sink>& sinks, const AooId id,
-                 data_packet& d, const sendfn &fn, bool binary) {
+// Jamsa: in broadcast mode the sinks that 'bc' covers get one copy, sent to
+// the broadcast endpoint; the others (if any) get their own as before.
+void send_packet(const aoo::vector<cached_sink>& sinks, const cached_broadcast& bc,
+                 const AooId id, data_packet& d, const sendfn &fn, bool binary) {
+    bool broadcast = false;
+    for (auto& s : sinks) {
+        if (bc.covers(s)) {
+            broadcast = true;
+            break;
+        }
+    }
     if (binary){
         AooByte buf[AOO_MAX_PACKET_SIZE];
 
@@ -1668,30 +1719,56 @@ void send_packet(const aoo::vector<cached_sink>& sinks, const AooId id,
                                       kAooIdInvalid, d);
         auto end = args + argsize;
 
-        for (auto& s : sinks) {
+        auto send_to = [&](const endpoint& ep, AooId stream_id, int32_t channel) {
         #if AOO_DEBUG_DATA
             LOG_DEBUG("AooSource: send block: seq = " << d.sequence << << ", tt = " << d.tt
-                      << ", sr = " << d.samplerate << ", chn = " << s.channel << ", msgsize = "
+                      << ", sr = " << d.samplerate << ", chn = " << channel << ", msgsize = "
                       << d.msgsize << ", totalsize = " << d.totalsize << ", nframes = "
                       << d.nframes << ", frame = " << d.frame << ", size " << d.size);
         #endif
             // write header
-            bool large =  s.ep.id > 255 || id > 255;
+            bool large =  ep.id > 255 || id > 255;
             auto start = large ? buf : (args - kAooBinMsgHeaderSize);
             aoo::binmsg_write_header(start, args - start, kAooMsgTypeSink,
-                                     kAooBinMsgCmdData, s.ep.id, id);
+                                     kAooBinMsgCmdData, ep.id, id);
             // replace stream ID and channel
-            aoo::to_bytes(s.stream_id, args);
-            args[8] = s.channel;
+            aoo::to_bytes(stream_id, args);
+            args[8] = channel;
 
-            s.ep.send(start, end - start, fn);
+            ep.send(start, end - start, fn);
+        };
+
+        if (broadcast) {
+            send_to(bc.ep, bc.stream_id, 0);
+        }
+        for (auto& s : sinks) {
+            if (!(broadcast && bc.covers(s))) {
+                send_to(s.ep, s.stream_id, s.channel);
+            }
         }
     } else {
+        if (broadcast) {
+            d.channel = 0;
+            send_packet_osc(bc.ep, id, bc.stream_id, d, fn);
+        }
         for (auto& s : sinks){
+            if (broadcast && bc.covers(s)) {
+                continue;
+            }
             // set channel!
             d.channel = s.channel;
             send_packet_osc(s.ep, id, s.stream_id, d, fn);
         }
+    }
+}
+
+// Jamsa: snapshot of broadcast mode for send_packet(); call on the send
+// thread with update_mutex_ held (at least shared)
+void Source::cache_broadcast() {
+    cached_broadcast_.enabled = broadcast_;
+    if (broadcast_) {
+        cached_broadcast_.ep = broadcast_ep_;
+        cached_broadcast_.stream_id = broadcast_stream_.load();
     }
 }
 
@@ -1751,6 +1828,7 @@ void Source::send_xruns(const sendfn &fn) {
             }
         }
         lock.unlock();
+        cache_broadcast(); // Jamsa
         // if we don't have any (active) sinks, we do not actually need to send anything!
         if (cached_sinks_.empty()) {
             return;
@@ -1798,7 +1876,7 @@ void Source::send_xruns(const sendfn &fn) {
             updatelock.unlock();
 
             // send block to all sinks
-            send_packet(cached_sinks_, id(), d, fn, binary_.load());
+            send_packet(cached_sinks_, cached_broadcast_, id(), d, fn, binary_.load());
 
             updatelock.lock();
         }
@@ -1915,6 +1993,7 @@ void Source::send_data(const sendfn& fn){
             }
         }
         lock.unlock();
+        cache_broadcast(); // Jamsa
         // if we don't have any (active) sinks, we do not actually need
         // to encode and send the data!
         if (cached_sinks_.empty()) {
@@ -2013,7 +2092,7 @@ void Source::send_data(const sendfn& fn){
             d.data = data;
             d.size = n;
             // send block to all sinks
-            send_packet(cached_sinks_, id(), d, fn, binary);
+            send_packet(cached_sinks_, cached_broadcast_, id(), d, fn, binary);
         };
 
         auto ntimes = redundancy_.load();

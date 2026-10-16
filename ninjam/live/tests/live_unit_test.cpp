@@ -13,7 +13,10 @@
   Live mode's own additions to AOO, on a virtual clock and network:
 
   - Opus: one coupled stream for stereo (and mono stays one stream), the
-    bitrate given with the format, and OPUS_GET_BITRATE.
+    bitrate given with the format, and OPUS_GET_BITRATE;
+  - broadcast mode: a source sends each data packet once, to an address
+    that passes it on to every sink, with /start, /stop, pings and resends
+    still per sink. Three sinks.
 
   Run with a test name to run only the tests whose names start with it.
 
@@ -287,6 +290,207 @@ static void test_opus_bitrate_source()
   CHECK(average[1] > average[0] * 2);
 }
 
+// ---------------------------------------------------------------------------
+// Broadcast mode
+// ---------------------------------------------------------------------------
+
+// records every sink's left channel, from 'from' seconds on
+struct recorder
+{
+  session &s;
+  double from;
+  std::vector<std::vector<float>> left;
+  recorder(session &s_, double from_) : s(s_), from(from_), left(s_.sinks.size()) {}
+  void run(double seconds)
+  {
+    const double end = s.now + seconds;
+    while (s.now < end)
+    {
+      const int k = s.tick();
+      if (k > 0 && s.now >= from)
+        left[k - 1].insert(left[k - 1].end(), s.nodes[k].buffers[0].begin(), s.nodes[k].buffers[0].end());
+    }
+  }
+};
+
+struct data_counter
+{
+  long broadcast = 0;  // copies of broadcast data packets, all sinks
+  long unicast[8] = {};  // data packets the source sent to one sink
+  void count(const datagram &d)
+  {
+    if (d.from != 0 || !is_data(d.bytes)) return;
+    if (d.broadcast) broadcast++;
+    else if (d.to < 8) unicast[d.to]++;
+  }
+};
+
+static void test_broadcast_three_sinks()
+{
+  if (!selected("broadcast_three_sinks")) return;
+  long uploads[2] = {};
+  for (int bc = 0; bc < 2; bc++)
+  {
+    source_options so;
+    so.broadcast = bc == 1;
+    sink_options si;
+    si.latency = 0.03;
+    session s(so, { si, si, si });
+    data_counter n;
+    s.filter = [&](datagram &d) { n.count(d); return true; };
+    s.start();
+    recorder r(s, 1.0);
+    r.run(3.0);
+    for (int k = 1; k <= 3; k++)
+    {
+      CHECK_EQ(s.nodes[k].stream_active, 1);
+      CHECK_EQ(s.nodes[k].dropped, 0);
+      const double snr = tone_snr(r.left[k - 1].data(), r.left[k - 1].size(), 440, 48000);
+      CHECK(snr > 20);
+      if (bc) CHECK_EQ(n.unicast[k], 0);
+      else CHECK(n.unicast[k] > 500);
+    }
+    if (bc)
+    {
+      // 3 s of 5 ms blocks, sent once, reaching all three sinks
+      CHECK(s.broadcast_sent > 550 && s.broadcast_sent < 650);
+      CHECK_EQ(n.broadcast, s.broadcast_sent * 3);
+      uploads[1] = s.broadcast_sent;
+    }
+    else
+    {
+      CHECK_EQ(s.broadcast_sent, 0);
+      CHECK_EQ(n.broadcast, 0);
+      uploads[0] = n.unicast[1] + n.unicast[2] + n.unicast[3];
+    }
+    printf("  %s: %ld data packets sent\n", bc ? "broadcast" : "per sink", uploads[bc]);
+  }
+  CHECK(uploads[0] > uploads[1] * 29 / 10);
+}
+
+// A copy lost on the way to one sink is resent to that sink only.
+static void test_broadcast_resend()
+{
+  if (!selected("broadcast_resend")) return;
+  source_options so;
+  so.broadcast = true;
+  session s(so, { sink_options(), sink_options(), sink_options() });
+  data_counter n;
+  long lost = 0, copies = 0;
+  s.filter = [&](datagram &d) {
+    if (d.broadcast && d.to == 2 && s.now > 0.5 && (++copies % 10) == 0) { lost++; return false; }
+    n.count(d);
+    return true;
+  };
+  s.start();
+  s.run(4.0);
+  printf("  lost %ld copies to sink 2; resent %d; unicast data %ld/%ld/%ld\n",
+    lost, s.nodes[2].resent, n.unicast[1], n.unicast[2], n.unicast[3]);
+  CHECK(lost > 50);
+  CHECK(s.nodes[2].resent >= lost - 2); // the last ones may still be on their way
+  CHECK_EQ(s.nodes[2].dropped, 0);
+  CHECK(n.unicast[2] >= lost - 2);
+  for (int k : { 1, 3 })
+  {
+    CHECK_EQ(s.nodes[k].resent, 0);
+    CHECK_EQ(s.nodes[k].dropped, 0);
+    CHECK_EQ(n.unicast[k], 0);
+  }
+  for (int k = 1; k <= 3; k++) CHECK_EQ(s.nodes[k].stream_active, 1);
+  CHECK(s.outputs_finite);
+}
+
+// A sink the source doesn't know asks for /start in vain; once added it
+// joins the running stream (the shared stream ID) without restarting it
+// for the others. A sink with a channel offset gets copies of its own.
+static void test_broadcast_late_sink()
+{
+  if (!selected("broadcast_late_sink")) return;
+  source_options so;
+  so.broadcast = true;
+  so.add_sinks = false;
+  session s(so, { sink_options(), sink_options(), sink_options() });
+  s.source->addSink(s.nodes[1].endpoint(), true);
+  s.source->addSink(s.nodes[2].endpoint(), true);
+  data_counter n;
+  long start_requests = 0;
+  s.filter = [&](datagram &d) {
+    n.count(d);
+    if (d.from == 3 && d.bytes.size() > 9 && !memcmp(d.bytes.data(), "/aoo/src/", 9)
+      && strstr((const char *)d.bytes.data(), "/start")) start_requests++;
+    return true;
+  };
+  s.start();
+  s.run(1.0);
+  CHECK_EQ(s.nodes[1].stream_active, 1);
+  CHECK_EQ(s.nodes[2].stream_active, 1);
+  CHECK_EQ(s.nodes[3].stream_active, 0); // it gets the data but no /start
+  CHECK(start_requests > 0);
+
+  s.source->addSink(s.nodes[3].endpoint(), true);
+  CHECK(s.run_until([&] { return s.nodes[3].stream_active == 1; }, 0.5));
+  s.run(0.5);
+  CHECK(s.block_rms(3) > 0.2);
+  CHECK_EQ(s.nodes[1].stream_active, 1); // no new stream for the others
+  CHECK_EQ(s.nodes[2].stream_active, 1);
+  for (int k = 1; k <= 3; k++) CHECK_EQ(n.unicast[k], 0);
+
+  // a channel offset needs packets of its own
+  const long before = n.unicast[3];
+  int32_t offset = 1;
+  AooEndpoint ep = s.nodes[3].endpoint();
+  CHECK_EQ(s.source->setSinkChannelOffset(ep, offset), kAooOk);
+  s.run(0.5);
+  CHECK(n.unicast[3] - before > 80);
+  CHECK_EQ(n.unicast[1], 0);
+  CHECK_EQ(n.unicast[2], 0);
+}
+
+// Turning broadcast mode on or off restarts the stream; every sink follows.
+static void test_broadcast_toggle()
+{
+  if (!selected("broadcast_toggle")) return;
+  source_options so;
+  session s(so, { sink_options(), sink_options(), sink_options() });
+  data_counter n;
+  s.filter = [&](datagram &d) { n.count(d); return true; };
+  s.start();
+  s.run(1.0);
+  CHECK_EQ(s.broadcast_sent, 0);
+  AooEndpoint ep;
+  ep.address = &s.broadcast_addr;
+  ep.addrlen = sizeof(s.broadcast_addr);
+  ep.id = 1;
+  CHECK_EQ(s.source->setBroadcastEndpoint(&ep), kAooOk);
+  AooBool on = kAooFalse;
+  CHECK_EQ(s.source->getBroadcast(on), kAooOk);
+  CHECK(on == kAooTrue);
+  const long unicast_before = n.unicast[1];
+  s.run(1.0);
+  CHECK(s.broadcast_sent > 150);
+  CHECK(n.unicast[1] - unicast_before < 5); // the old stream's last packets
+  for (int k = 1; k <= 3; k++)
+  {
+    CHECK_EQ(s.nodes[k].stream_active, 2);
+    CHECK(s.block_rms(k) > 0.2);
+  }
+  CHECK_EQ(s.source->setBroadcastEndpoint(nullptr), kAooOk);
+  CHECK_EQ(s.source->getBroadcast(on), kAooOk);
+  CHECK(on == kAooFalse);
+  const long broadcast_before = s.broadcast_sent;
+  s.run(1.0);
+  CHECK(s.broadcast_sent - broadcast_before < 5);
+  for (int k = 1; k <= 3; k++)
+  {
+    CHECK_EQ(s.nodes[k].stream_active, 3);
+    CHECK(s.block_rms(k) > 0.2);
+  }
+  // bad arguments
+  AooEndpoint bad = ep;
+  bad.addrlen = 0;
+  CHECK(s.source->setBroadcastEndpoint(&bad) != kAooOk);
+}
+
 int main(int argc, char **argv)
 {
   printf("live_unit_test\n");
@@ -296,6 +500,11 @@ int main(int argc, char **argv)
   test_opus_coupled_stereo();
   test_opus_bitrate();
   test_opus_bitrate_source();
+
+  test_broadcast_three_sinks();
+  test_broadcast_resend();
+  test_broadcast_late_sink();
+  test_broadcast_toggle();
 
   return test_summary("live_unit_test");
 }
