@@ -13,7 +13,7 @@ import unittest
 
 from njclient import (Client, chat_fields, live_info, udp_hello, udp_ack, udp_data, udp_parse, CHAT, LIVE, CAP_LIVE,
                       CAP_OPUS, LIVE_ROOM_ON, LIVE_UDP_OPEN, LIVE_MAY_SEND, LIVE_PEER_BOUND, UDP_HELLO, UDP_DATA)
-from test_server import SERVER, Server, ServerTest, PortMappingTestCase, closed_url
+from test_server import SERVER, Server, ServerTest, PortMappingTestCase, closed_url, free_port
 from fake_router import FakeIGD, FakeNatPmp
 
 EMBEDDED = "embedded" in os.path.basename(SERVER)
@@ -421,13 +421,26 @@ class RelayTests(LiveTest):
 
     def test_a_flood_is_cut_to_the_rate_limit(self):
         a, b, c = self.three()
+        b.udp.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)  # so that it's the server that drops them
+
+        def flood(count, size):
+            """How many of count datagrams of size bytes, sent as fast as possible, get through; and how long
+            sending them took."""
+            t0 = time.perf_counter()
+            for i in range(count):
+                a.send_live(struct.pack("<I", i) + b"f" * (size - 24), dest=b.live["peer_id"])
+            elapsed = time.perf_counter() - t0
+            return len(self.got(b, 0.5)), elapsed
+
         # 128 kbps and 240-sample frames allow 65600 bytes/s and 450 datagrams/s, a quarter second ahead
-        sent = 1000
-        for i in range(sent):
-            a.send_live(struct.pack("<I", i) + b"f" * 96, dest=b.live["peer_id"])
-        n = len(self.got(b, 0.5))
-        self.assertGreater(n, 40)
-        self.assertLess(n, 400)
+        time.sleep(0.3)  # all of that
+        n, elapsed = flood(1000, 120)  # the datagrams run out first: 112 at once, then 450 a second
+        self.assertGreaterEqual(n, 110)
+        self.assertLessEqual(n, 112.5 + 450 * elapsed + 2)
+        time.sleep(1.2)  # a long pause saves up a quarter second's worth, and no more
+        n, elapsed = flood(200, 1472)  # the bytes run out first: 16400 bytes is 11 of these, then 44.6 a second
+        self.assertGreaterEqual(n, 10)
+        self.assertLessEqual(n, 11.2 + 44.6 * elapsed + 2)
         time.sleep(0.3)
         a.send_live(b"later", dest=b.live["peer_id"])
         self.assertEqual(self.got(b), [(a.live["peer_id"], b"later")])
@@ -633,15 +646,23 @@ class LatencyTests(LiveTest):
         lat = []
         next_send = time.perf_counter()
         for i in range(1000):
-            # 500 a second, well under the rate limit
+            # at most 500 a second, well under the rate limit
             while time.perf_counter() < next_send:
                 pass
-            next_send += 0.002
+            next_send = time.perf_counter() + 0.002  # from now: no catching up (a burst) after a stall
             t0 = time.perf_counter()
             a.send_live(struct.pack("<I", i), dest=dest)
-            d, _ = b.udp.recvfrom(100)
+            while True:
+                try:
+                    d, _ = b.udp.recvfrom(100)
+                except socket.timeout:
+                    d = None  # lost: counts as a very slow one
+                    break
+                if struct.unpack("<I", udp_parse(d)[2])[0] >= i:  # skips one that came after its timeout
+                    break
             lat.append(time.perf_counter() - t0)
-            self.assertEqual(udp_parse(d)[2], struct.pack("<I", i))
+            if d is not None:
+                self.assertEqual(udp_parse(d)[2], struct.pack("<I", i))
             if i % 200 == 0:
                 a.keepalive()
                 b.keepalive()
@@ -689,13 +710,26 @@ class PrivateRoomTests(LiveTest):
 
 class UdpPortTakenTests(unittest.TestCase):
     def start(self, live):
-        blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        blocker.bind(("0.0.0.0", 0))
+        # a port that is free for TCP and taken for UDP
+        for _ in range(20):
+            port = free_port()
+            blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                blocker.bind(("0.0.0.0", port))
+                break
+            except OSError:
+                blocker.close()
         self.addCleanup(blocker.close)
-        s = Server("Live %s\n" % live, port=blocker.getsockname()[1])
+        # a sanitizer that stops the server exits with 99, not with the 1 of a port that is taken
+        asan = ":".join(o for o in (os.environ.get("ASAN_OPTIONS", ""), "exitcode=99") if o)
+        s = Server("Live %s\n" % live, port=port, env={"ASAN_OPTIONS": asan})
         self.addCleanup(s.log.close)
         self.addCleanup(s.stop)
         return s
+
+    def assertNoSanitizerReports(self, out):
+        for report in ("runtime error", "AddressSanitizer", "ThreadSanitizer"):
+            self.assertNotIn(report, out)
 
     def test_live_yes_warns_and_runs_without_live(self):
         s = self.start("yes").wait_ready()
@@ -710,6 +744,7 @@ class UdpPortTakenTests(unittest.TestCase):
         out = s.output()
         self.assertIn("warning: Live is off, could not open UDP port %d" % s.port, out)
         self.assertNotIn("Error listening", out)
+        self.assertNoSanitizerReports(out)
 
     def test_live_require_fails_like_a_taken_port(self):
         s = self.start("require")
@@ -717,8 +752,10 @@ class UdpPortTakenTests(unittest.TestCase):
             code = s.proc.wait(5)
         except subprocess.TimeoutExpired:
             code = None
-        self.assertEqual(code, 1)
-        self.assertIn("Error listening on UDP port %d for Live" % s.port, s.output())
+        out = s.output()
+        self.assertEqual(code, 1, out)
+        self.assertIn("Error listening on UDP port %d for Live" % s.port, out)
+        self.assertNoSanitizerReports(out)
 
 
 class ReloadTests(LiveTest):
@@ -753,7 +790,20 @@ class ReloadTests(LiveTest):
         c = self.fresh_client(lambda i: i is None, "bob")
         c.udp_open()
         c.udp_send(udp_hello(a.live["peer_id"], a.live["key"]))
-        self.assertIsNone(c.udp_recv(0.3))  # the UDP port is closed
+        self.assertIsNone(c.udp_recv(0.3))
+        # the server closed its UDP port: this machine can take it
+        deadline = time.time() + 5
+        while True:
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                u.bind(("0.0.0.0", self.server.port))
+                break
+            except OSError:
+                if time.time() > deadline:
+                    self.fail("the server kept its UDP port")
+                time.sleep(0.1)
+            finally:
+                u.close()
 
         self.set_live("on")
         c = self.fresh_client(lambda i: i is not None and i["flags"] == LIVE_ROOM_ON | LIVE_UDP_OPEN | LIVE_MAY_SEND, "carol")
