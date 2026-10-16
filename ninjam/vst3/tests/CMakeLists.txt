@@ -11,6 +11,7 @@
 #                      host whose tempo the room follows and whose bars the intervals start on,
 #                      and a host that is a Link peer (as Live with its Link on), which the room's
 #                      tempo and intervals lead
+#   live_aoo_test      (ninjam/live) AOO's lock-free queue and RT memory pool under threads
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp
@@ -36,6 +37,9 @@ if(SMTG_LINUX)
         add_test(NAME plugin_clipboard COMMAND ${XVFB_RUN} -a $<TARGET_FILE:plugin_unit_test> clipboard)
     endif()
 endif()
+
+# Live mode's tests, defined in ninjam/live/CMakeLists.txt
+ninjam_live_add_tests()
 
 if(NOT WIN32)
     # POSIX only (it reads its stdin with select)
