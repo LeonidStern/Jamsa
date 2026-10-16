@@ -25,8 +25,9 @@
   SetStrictAddress (the default), comes from the address of the sender's TCP
   connection; then only to players in the same room who may send and have been
   heard from in the last 20 seconds, never to an address taken from the packet.
-  Each sender may send at most twice the room's Live bitrate plus 8 KB/s, and
-  twice the room's frame rate plus 50 datagrams/s, with a quarter second of burst.
+  Each sender may send at most twice its stream (the room's Live bitrate plus 64
+  bytes of headers per frame) plus 8 KB/s, and twice the room's frame rate plus 50
+  datagrams/s, with a quarter second of burst.
 
 */
 

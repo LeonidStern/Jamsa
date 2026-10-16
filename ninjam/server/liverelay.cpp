@@ -98,6 +98,7 @@ enum
 
 const double FRESH_SECONDS = 20.0; // a player not heard from for this long gets no more audio
 const double BURST_SECONDS = 0.25;
+const double DATAGRAM_OVERHEAD = 64.0; // bytes of headers in a datagram of audio, see TakeTokens
 const int SOCKET_BUFFER = 1 << 20;
 
 // why datagrams were dropped, for the summary in the log
@@ -645,10 +646,14 @@ bool LiveRelay::State::TakeTokens(Peer &p, const Room *room, int len, double now
 {
   const int kbps = room && room->kbps > 0 ? room->kbps : 128;
   const int frame = room && room->frame > 0 ? room->frame : 240;
-  // per sender: every datagram is copied to ndest players, so what the server sends for
-  // it is ndest times this
-  const double bytes_per_second = kbps * 1000.0 / 8.0 * 2.0 + 8000.0;
-  const double packets_per_second = 2.0 * 48000.0 / frame + 50.0;
+  // Per sender, charged once for each datagram it sends (every datagram is copied to
+  // ndest players, so what the server sends for it is ndest times this): twice its
+  // stream, which is its Opus bitrate plus about 64 bytes of headers in each datagram
+  // (ours 20, AOO's 16 to 32, Opus's few), plus room for HELLOs and AOO's own messages.
+  // Small frames make many small datagrams, whose headers can be as big as the audio.
+  const double frames_per_second = 48000.0 / frame;
+  const double bytes_per_second = 2.0 * (kbps * 1000.0 / 8.0 + frames_per_second * DATAGRAM_OVERHEAD) + 8000.0;
+  const double packets_per_second = 2.0 * frames_per_second + 50.0;
   const double max_bytes = bytes_per_second * BURST_SECONDS;
   const double max_packets = packets_per_second * BURST_SECONDS;
 

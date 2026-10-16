@@ -380,7 +380,7 @@ class RelayTests(LiveTest):
 
     def test_a_flood_is_cut_to_the_rate_limit(self):
         a, b, c = self.three()
-        # 128 kbps and 240-sample frames allow 40000 bytes/s and 450 datagrams/s, a quarter second ahead
+        # 128 kbps and 240-sample frames allow 65600 bytes/s and 450 datagrams/s, a quarter second ahead
         sent = 1000
         for i in range(sent):
             a.send_live(struct.pack("<I", i) + b"f" * 96, dest=b.live["peer_id"])
@@ -427,6 +427,40 @@ class ServerAddressTests(LiveTest):
         self.assertEqual(self.got(b), [(a.live["peer_id"], b"to everyone")])
         b.send_live(b"to alice", dest=a.live["peer_id"])
         self.assertEqual(self.got(a), [(b.live["peer_id"], b"to alice")])
+
+
+class SmallFramesTests(LiveTest):
+    # the smallest frames at the lowest bitrate: datagrams whose headers are bigger than their audio
+    extra_config = "Live on\nLiveFrame 120\nLiveKbps 32\n"
+
+    def test_a_steady_stream_is_never_cut(self):
+        a = self.live_client("alice")
+        b = self.live_client("bob")
+        self.bind(a, b)
+        b.udp.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+        b.udp.setblocking(False)
+        # what a Jamsa sends for each 2.5 ms of Opus at 32 kbps: AOO's headers (16 bytes, and 8 for the sample
+        # rate) and about 13 bytes of audio, behind our 20; 400 a second, for 5 seconds
+        sent, got = 2000, 0
+        next_send = time.perf_counter()
+        for i in range(sent):
+            while time.perf_counter() < next_send:
+                pass
+            next_send = time.perf_counter() + 1 / 400  # never faster, even to catch up after a stall
+            a.send_live(struct.pack("<I", i) + b"a" * 33)
+            if i % 400 == 0:
+                a.keepalive()
+                b.keepalive()
+            while True:
+                try:
+                    b.udp.recv(2048)
+                    got += 1
+                except BlockingIOError:
+                    break
+        got += len(b.udp_drain(0.3))
+        self.assertEqual(got, sent)
+        self.server.stop()  # flushes its output
+        self.assertNotIn("over the rate limit", self.server.output())
 
 
 class RelayOffTests(LiveTest):
