@@ -39,19 +39,19 @@ The editor uses X11. It needs the usual desktop libraries: xcb, cairo, pango and
 ## Play
 
 1. Put Jamsa on an audio track with your instrument or microphone as the input, and set monitoring to In.
-2. **To host**, click **Host** in the bottom bar. Use **Copy** to send players outside your network the WAN address. Players on your own network use the LAN address.
+2. **To host**, click **Host** in the bottom bar, and use **Copy** to send players the WAN address.
 3. **To join**, type the address under Server and click **Connect**.
 4. These settings belong to the room, so changing one changes it for everyone:
    - **BPM**: drag it, or double-click and type.
    - **BPI**: beats per interval.
    - **Codec**: Opus, or lossless FLAC, which needs several times the bandwidth.
-   - **Opus bitrate**: 64 to 510 kbps.
+   - **Opus bitrate**: 64 to 510 kbps. A new Jamsa starts at 510, the best Opus sounds.
 5. **Sync** lets Ableton lead. When you change Ableton's tempo, the room follows, and intervals start on Ableton's bars.
 6. You can also type room commands in the chat: `!vote bpm 120`, `!vote bpi 16`, `!codec opus` or `!codec flac`, and `!bitrate 128`.
 
 Hosting tips:
-- Jamsa asks your router to forward its port (UPnP or NAT-PMP). If the router doesn't allow that, forward TCP port 2049 to your computer yourself (Jamsa tries ports 2049 to 2058).
-- The host's connection sends every player everyone else's audio. With 4 players at 128 kbps, that's about 1.2 Mbit/s of upload.
+- Jamsa asks your router to forward its port (UPnP or NAT-PMP). If the router doesn't allow that, forward TCP port 2049 to your computer yourself (Jamsa tries ports 2049 to 2058). The WAN address still shows: Jamsa asks a "what's my IP" service (api.ipify.org) for it.
+- The host's connection sends every player everyone else's audio. With 4 players at 510 kbps, that's about 4.6 Mbit/s of upload; at 128 kbps, about 1.2 Mbit/s.
 - The room closes when the host closes Ableton. For a room that stays up, run the server on a machine that's always on (see below).
 
 ## Build from source

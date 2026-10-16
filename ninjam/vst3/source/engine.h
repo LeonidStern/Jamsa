@@ -139,7 +139,7 @@ struct Settings
 {
   // the Opus bitrates (kbps) to pick from; 510 is libopus's stereo maximum
   static constexpr int OPUS_KBPS[] = { 64, 96, 128, 160, 256, 510 };
-  static constexpr int NUM_OPUS_KBPS = 6, DEFAULT_OPUS_KBPS = 128;
+  static constexpr int NUM_OPUS_KBPS = 6, DEFAULT_OPUS_KBPS = 510; // the best Opus there is, by default
   static int nearestOpusKbps(int kbps);
 
   std::string userName;

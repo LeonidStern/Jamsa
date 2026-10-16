@@ -4,9 +4,10 @@ test_codecs_and_bitrates: plugin_e2e_host loads Jamsa.vst3 into a small VST3 hos
 starts its built-in server and joins it; a second NJClient joins too. Each plays a tone, and the
 host measures how well each side hears the other while the room's codec goes from Opus (the
 default) to FLAC and back, switched by typing !codec into the plug-in's chat, and while the
-plug-in's Opus bitrate goes from 128 to 256 and 510 kbps, last with 16 second intervals. This
-script also joins the server at the protocol level: it checks that a client that only plays
-Vorbis is refused, and it watches the codec and size of every interval the plug-in uploads.
+plug-in's Opus bitrate goes from 128 (it starts at 510) to 256 and 510 kbps, last with 16 second
+intervals. This script also joins the server at the protocol level: it checks that a client that
+only plays Vorbis is refused, and it watches the codec and size of every interval the plug-in
+uploads.
 The plug-in also asks a "what's my IP" service for the host bar's WAN address (this script's own,
 so no test asks the real one).
 
@@ -308,9 +309,9 @@ class PluginEndToEndTest(unittest.TestCase):
         self.assertEqual((two.get("a_state"), two.get("b_state")), ("connected", "connected"), log)
         self.assertIn(name + "@127.0.0.1.2/0 ", log)  # the name the server gave the second
         # the room's bitrate and codec: bob changes them for both; the room starts at the host's own bitrate
-        self.assertEqual(room.get("start_kbps"), "128", log)
+        self.assertEqual(room.get("start_kbps"), "510", log)
         self.assertEqual((room.get("a_kbps"), room.get("b_kbps")), ("256", "256"), log)
-        self.assertEqual((room.get("a_own"), room.get("b_own")), ("128", "256"), log)
+        self.assertEqual((room.get("a_own"), room.get("b_own")), ("510", "256"), log)
         self.assertEqual(room.get("b_saw_note"), "1", log)
         self.assertEqual((room.get("flac"), room.get("opus")), ("FLAC/FLAC", "Opus/OPUS"), log)
         self.assertEqual(swap.get("a_kbps"), "256", "bob hosts at his own bitrate\n" + log)

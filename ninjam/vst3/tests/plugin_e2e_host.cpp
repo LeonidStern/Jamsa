@@ -912,7 +912,10 @@ int main(int argc, char **argv)
            s["bpi"] == "4" && atof(s["bpm"].c_str()) == 240.0 && atoi(s["users"].c_str()) >= 1;
   });
   if (!ready) return fail(host, go ? "the peer did not join, or the vote did not change the tempo" : "no \"go\" from the watcher");
-  if (host.status()["kbps"] != "128") return fail(host, "the Opus bitrate is not 128 kbps by default");
+  if (host.status()["kbps"] != "510") return fail(host, "the Opus bitrate is not 510 kbps by default");
+  // the phases go up from 128 kbps
+  host.command("bitrate 128");
+  host.runUntil(&peer, 10.0, [&]() { return host.status()["kbps"] == "128"; });
 
   struct Phase
   {

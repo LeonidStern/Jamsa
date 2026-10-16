@@ -99,12 +99,12 @@ static void test_state()
   Settings older;
   CHECK(older.deserialize("NINJAM-VST3-STATE 1\neditor_size=960x640\n"));
   CHECK(older.editorWidth == 0 && older.editorHeight == 0);
-  CHECK_EQ(e.opusKbps, 128);
+  CHECK_EQ(e.opusKbps, 510);
 
   // the Opus bitrate is one of the choices: the nearest one, or the default for junk
   struct { const char *saved; int kbps; } bitrates[] = {
     { "64", 64 }, { "96", 96 }, { "160", 160 }, { "256", 256 }, { "510", 510 }, { "300", 256 }, { "999999999999", 510 },
-    { "-5", 64 }, { "abc", 128 }, { "", 128 }, { "128x", 128 },
+    { "-5", 64 }, { "abc", 510 }, { "", 510 }, { "128x", 510 }, { "128", 128 },
   };
   for (auto &b : bitrates)
   {
@@ -115,7 +115,7 @@ static void test_state()
   // a state saved before the bitrate was a setting
   Settings old;
   CHECK(old.deserialize("NINJAM-VST3-STATE 1\nuser=x\n"));
-  CHECK_EQ(old.opusKbps, 128);
+  CHECK_EQ(old.opusKbps, 510);
 
   // Sync (following the host): on by default, and in states saved before it was a setting
   CHECK(Settings().followHostTempo);
