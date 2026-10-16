@@ -345,6 +345,7 @@ jobs:
       - name: Screenshot the disk image in Finder (temporary, to check the layout)
         continue-on-error: true
         run: |
+          sudo mkdir -p /Library/Audio/Plug-Ins/VST3 # as on a Mac with plug-ins, so the shortcut has a folder icon
           hdiutil attach -noautoopen -mountpoint /Volumes/Jamsa dist/Jamsa-vst3-macos.dmg
           open /Volumes/Jamsa
           sleep 8
