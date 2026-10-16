@@ -187,7 +187,7 @@ public:
 
     bool empty() const {
         auto head = head_.load(std::memory_order_relaxed);
-        return head.get_value() != sentinel;
+        return head.get_value() == sentinel;
     }
 
     void reset() {

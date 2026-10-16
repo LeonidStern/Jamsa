@@ -146,7 +146,7 @@ void received_block::init(const data_packet& d)
     assert(frames_.size() == 0);
     assert((d.total_size > 0) == (d.num_frames > 0));
 
-    auto prev_sequence = d.sequence;
+    auto prev_sequence = sequence;
     sequence = d.sequence;
     total_size = d.total_size;
     message_size = d.msg_size;
@@ -250,7 +250,7 @@ received_block* jitter_buffer::find(int32_t seq) {
             // [begin, head] + [tail, end]
             auto result = dofind(begin, begin + head_);
             if (!result){
-                result = dofind(begin + tail_, begin + data_.capacity());
+                result = dofind(begin + tail_, begin + data_.size());
             }
             return result;
         }
