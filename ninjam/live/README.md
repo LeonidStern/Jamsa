@@ -10,7 +10,10 @@ concealment the rest.
 The streaming itself is AOO ("Audio over OSC"), trimmed to what Jamsa needs:
 an `AooSource` that sends, an `AooSink` that receives and plays back, and the
 Opus codec. Jamsa never lets AOO open a socket: it hands AOO's packets to its
-own UDP socket and the packets that arrive back to AOO.
+own UDP socket and the packets that arrive back to AOO. That glue is
+`liveclient.h` (the API the plug-in uses), `liveclient.cpp` (the socket and
+the threads) and `livecore.h/.cpp` (everything else, testable without a
+socket); see "The glue" below.
 
 ## Where AOO comes from
 
@@ -40,7 +43,8 @@ Layout: `aoo/include` (public headers), `aoo/src` (upstream's `aoo/src`),
 
 ## Building
 
-`CMakeLists.txt` builds the static library `ninjam_live` (AOO and oscpack),
+`CMakeLists.txt` builds the static library `ninjam_live` (AOO, oscpack and
+the glue),
 with `AOO_NET=0`, `AOO_USE_OPUS=1`, `AOO_SAMPLE_SIZE=32` and AOO's log level
 at Error. It probes whether 64-bit and double atomics are lock free
 (`AOO_HAVE_ATOMIC_INT64`, `AOO_HAVE_ATOMIC_DOUBLE`) and links libatomic only
@@ -74,6 +78,126 @@ Tests (`tests/`):
   source too), broadcast mode with three sinks (one upload per block, a lost
   copy resent to its sink only, a sink that joins late, a channel offset,
   turning it on and off) and `removeSource()`.
+
+## The glue
+
+### Threads
+
+- The engine's network thread (the "control thread") calls `start()`,
+  `update()`, `setPeers()`, `setJitterMs()`, `stop()`, `poll()` (every
+  ~30 ms: AOO's events become statistics and slot health) and `stats()`.
+- The audio thread calls `processBlock()` once per host block, then
+  `slotOf()`, `slotHealthy()` and `stem()`. None of them waits (one
+  try-lock against `prepare()`), allocates or logs; the only system call
+  is the semaphore post that wakes the send thread, at most once per block
+  and only when AOO has something to send and the send thread has run since
+  the last post.
+- The receive thread: `recv()` on the socket with a 100 ms timeout.
+- The send thread, at a raised priority where the system allows it
+  (`SCHED_FIFO` on Linux, which a plug-in usually can't get - then it keeps
+  the normal one; the user-interactive QoS class on macOS;
+  `THREAD_PRIORITY_TIME_CRITICAL` on Windows; `Counters` says which): wakes
+  when the audio thread posts it, and every 10 ms, sends the HELLOs and
+  whatever AOO has.
+
+### Protocol (UDP)
+
+All integers little-endian; datagrams over 1500 bytes are dropped. From a
+player to the server (20-byte header):
+
+    0  'N' 'L'   magic
+    2  u8  version = 1
+    3  u8  type      1 = HELLO, 2 = DATA
+    4  u32 sender    our peer ID (from MESSAGE_SERVER_LIVE)
+    8  u64 key       the connection's secret
+    16 u32 dest      DATA: 0 = every other Live player in the room, else one
+                     peer ID. HELLO: 0
+    20 ...           HELLO: u64 time stamp (echoed), u64 cookie (the latest
+                     one the server sent us, 0 for none), 4 zero bytes:
+                     40 bytes in all. DATA: the AOO packet, 1..1452 bytes
+
+From the server (8-byte header): magic, version, type (1 = HELLO_ACK,
+2 = DATA), u32 from (DATA: the sender's peer ID; HELLO_ACK: 0), then
+HELLO_ACK: the echoed time stamp and the cookie for the HELLO's source
+address (24 bytes, smaller than the HELLO); DATA: the AOO packet. The
+server forwards a DATA datagram by writing its header at offset 12 and
+sending from there.
+
+The client socket is `connect()`ed to the server, so the system drops
+what comes from anywhere else. A HELLO goes out at start, every 2 s, and
+at once when a HELLO_ACK brings a cookie other than the one we echoed (the
+server binds our address only to a HELLO with a valid cookie, so binding
+takes one round trip). We take a cookie only from an ACK that echoes one of
+our last 8 HELLOs' time stamps (steady-clock microseconds), so a forged ACK
+from our address can't change it; that ACK also gives the round trip to
+the server (`serverRttMs()`).
+
+### AOO's side
+
+- One `AooSource` (ID 1) in broadcast mode: its data packets go once to
+  peer 0, which our header turns into "the room". Opus,
+  `OPUS_APPLICATION_RESTRICTED_LOWDELAY`, 48 kHz, 2 channels (a mono input
+  is sent as L = R; coupled stereo costs little more), frames of the
+  room's `frameSamples`, the room's bitrate (`update()` changes it during
+  the stream; a new frame size restarts it).
+- A fixed pool of `MAX_PEERS` (8) two-channel `AooSink`s (ID 1), created
+  once; a slot is bound to a peer through an atomic, so the audio thread
+  reads the mapping without a lock. `setPeers()` keeps the slots of those
+  still there, frees the others (`removeSink()` on the source,
+  `removeSource()` on the slot's sink, statistics reset) and gives free
+  slots to new players in the order given; a ninth player gets none and its
+  packets are dropped (`droppedPeer`).
+- AOO knows the players by made-up IPv4 addresses: peer N is `N.N.N.N`
+  (`sin_addr = htonl(N)`), port 1, `addrlen` 16. The send callback turns
+  them back into peer IDs.
+- In front of AOO, for every DATA datagram (`Core::classify()`): the size;
+  a sender with a slot; the room's Live flag on; binary messages only
+  `/data` between ID 1 and ID 1 in the short header; OSC only
+  `/aoo/sink/1/{start,stop,data,ping,pong}` (to the slot's sink) and
+  `/aoo/src/1/{start,stop,data,ping,pong}` (to our source; no invitations),
+  first argument the other side's ID 1; a `/start` only for Opus, 1 or 2
+  channels, 48 kHz, 120..480-sample blocks. AOO's own checks come after.
+- The adapter: host blocks of any size go into AOO in blocks of 64 samples
+  (`kAooFixedBlockSize`, which dynamic resampling needs; it is on at both
+  ends). The stems are copied out of each sink's last block, so a stem lags
+  by up to 64 samples. Each 64-sample block's time stamp is the host
+  block's plus the samples before it (t + done / sr).
+- Time stamps come from the steady clock (`std::chrono::steady_clock`), not
+  `aoo_getCurrentNtpTime()` (the wall clock): AOO only takes differences of
+  them (its time DLLs, the sink's elapsed time), and a wall clock that
+  steps (NTP, a user) would look like an xrun or warp the DLL. AOO's pings
+  still use the wall clock, but only within one machine.
+- When the host stops calling for more than 100 ms (processing suspended,
+  a long xrun), the next block reports the gap (at most 0.5 s) to the
+  source and the sinks as an xrun, so the source fills it with empty blocks
+  and the sinks skip it.
+- `processBlock(..., send = false)` sends silence; the stream goes on.
+- The room's Live flag off (`update()`): the source stops, every slot goes
+  unhealthy at once and drops its source, and nothing reaches AOO until it
+  is on again. HELLOs go on. `maySend` false: the source stops, we still
+  listen.
+- AOO logs through `aoo_setLogFunction()` into a small ring (try-lock: a
+  message that would have to wait is counted and dropped); `poll()` writes
+  it to stderr.
+
+### Statistics and health
+
+- `healthy`: the stream has been active for 1 s or more, with at most two
+  dropouts (underruns, overruns, blocks lost for good) in the last 2 s, and
+  the room's flag is on. The engine mixes a slot's stem instead of the
+  player's intervals only while it is healthy.
+- `oneWayMs`, how late we hear a player, without either audio interface:
+  half the round trip AOO's pings measure, the encoder's and decoder's
+  latency (frame, lookahead, resampling: AOO's `sourceLatency` and
+  `sinkLatency`), our jitter buffer, and 64 samples for the two adapters.
+  On a virtual network it is within 3 ms of the measured delay with host
+  blocks of 64..128 samples; larger host blocks shift the jitter buffer's
+  fill by up to about a block either way.
+- `lossPct`: blocks lost on the way (resent or not) since the stream went
+  active, over the blocks it has played since.
+- A stream's first data packet can overtake its `/start` (network jitter);
+  AOO then drops it and asks for `/start`, so one block at the start may be
+  counted as dropped or resent before the slot is healthy.
 
 ## Changes from upstream
 

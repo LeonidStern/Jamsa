@@ -6,7 +6,8 @@
 #   cmake --build build-live && ctest --test-dir build-live
 #
 # Targets:
-#   ninjam_live      static library: AOO's source and sink with Opus, and oscpack
+#   ninjam_live      static library: AOO's source and sink with Opus, oscpack, and
+#                    the glue the plug-in uses (liveclient.h)
 #   live_aoo_test    AOO's lock-free queue and RT memory pool under threads, and
 #                    the AOO bugs fixed in our copy
 #   live_fuzz_test   hostile and mangled packets into a running source and sinks
@@ -136,9 +137,15 @@ target_compile_definitions(ninjam_live_aoo_internal INTERFACE
     $<$<NOT:$<PLATFORM_ID:Windows>>:AOO_HAVE_PTHREAD_RWLOCK>
 )
 
-add_library(ninjam_live STATIC ${NINJAM_LIVE_AOO_SOURCES})
+# the glue: Client (liveclient.h, the API) and Core (no sockets, no threads)
+set(NINJAM_LIVE_GLUE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/livecore.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/liveclient.cpp
+)
+
+add_library(ninjam_live STATIC ${NINJAM_LIVE_AOO_SOURCES} ${NINJAM_LIVE_GLUE_SOURCES})
 target_compile_features(ninjam_live PUBLIC cxx_std_17)
-target_include_directories(ninjam_live PUBLIC ${NINJAM_LIVE_AOO_DIR}/include)
+target_include_directories(ninjam_live PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${NINJAM_LIVE_AOO_DIR}/include)
 # the public headers' layout depends on these, so whoever includes them gets them too
 target_compile_definitions(ninjam_live PUBLIC AOO_NET=0 AOO_USE_OPUS=1 AOO_SAMPLE_SIZE=32)
 target_link_libraries(ninjam_live PRIVATE ninjam_live_aoo_internal)
