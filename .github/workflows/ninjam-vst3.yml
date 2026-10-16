@@ -348,10 +348,10 @@ jobs:
           hdiutil attach -noautoopen -mountpoint /Volumes/Jamsa dist/Jamsa-vst3-macos.dmg
           open /Volumes/Jamsa
           sleep 8
-          screencapture -x -R 120,40,800,560 "$RUNNER_TEMP/light.png"
+          screencapture -x "$RUNNER_TEMP/light.png"
           if osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'; then
             sleep 5
-            screencapture -x -R 120,40,800,560 "$RUNNER_TEMP/dark.png"
+            screencapture -x "$RUNNER_TEMP/dark.png"
           fi
           for f in light dark; do
             [ -f "$RUNNER_TEMP/$f.png" ] || continue
