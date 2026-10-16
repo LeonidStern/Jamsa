@@ -77,7 +77,32 @@ Tests (`tests/`):
   its bitrate (encoded sizes, the decoder's channel layout, through the
   source too), broadcast mode with three sinks (one upload per block, a lost
   copy resent to its sink only, a sink that joins late, a channel offset,
-  turning it on and off) and `removeSource()`.
+  turning it on and off) and `removeSource()`. Then the glue's `Core`, with
+  players on a virtual clock and network through a server that copies to
+  the room as ours does (`live_sim.h`: a queue ordered by delivery time,
+  delay, jitter and reordering, loss, loss bursts and duplicates in both
+  directions, one seeded generator): the datagrams' layout and the server's
+  in-place rewrite, a room of four (one upload per block each, tones heard
+  at 50+ dB SNR), how late a player is heard against the statistics' estimate
+  (within 3 ms, and the jitter buffer setting plus 2..15 ms), 7% loss
+  resent in time, burst loss concealed by Opus without silent holes, 44.1,
+  48 and 96 kHz in one room, two clocks 200 ppm apart for five minutes
+  (the delay holds within 2 ms, no dropouts; without dynamic resampling
+  the buffer overruns), slot reuse with nine others for eight slots, the
+  filter in front of AOO verdict by verdict, fuzzed packets into a playing
+  Core, the room's Live flag off and on, a host that stops calling for a
+  second, and bitrate and frame size changes. About 15 s.
+- `live_client_test`: the `Client` on real sockets: four players with
+  audio threads paced by the clock and a minimal server on the loopback
+  interface (HELLO / HELLO_ACK with the address cookie, DATA copied to the
+  room). Binding within a round trip, everybody hears everybody (tones
+  and bursts, at 44.1 and 48 kHz, with clocks 100 ppm off), the delay
+  against the estimate, 5% lost copies resent, a forged HELLO_ACK and
+  garbage ignored, the room's flag off and on, a player who leaves and one
+  who takes the slot, stopping. About 20 s. With `-fsanitize=thread`, run
+  it with `TSAN_OPTIONS=suppressions=ninjam/live/tests/tsan.supp`: AOO's
+  lock-free free lists read a node another thread may be reusing, on
+  purpose (see the file); the timing checks only print there.
 
 ## The glue
 

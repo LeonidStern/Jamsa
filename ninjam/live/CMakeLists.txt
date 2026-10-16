@@ -15,7 +15,9 @@
 #   live_rt_test     no heap allocation in the source's and sinks' process(), clean
 #                    network or not
 #   live_unit_test   what Live adds to AOO: coupled stereo Opus, its bitrate,
-#                    broadcast mode, removeSource()
+#                    broadcast mode, removeSource(); the glue (Core) with players
+#                    on a virtual network: loss, drift, slot reuse, the filter
+#   live_client_test the Client on real sockets (loopback), with a minimal server
 #
 # The plug-in's build (ninjam/vst3) adds this folder after it has downloaded
 # Opus and registers the tests from vst3/tests. A build of this folder alone
@@ -187,13 +189,21 @@ endif()
 # ---------------------------------------------------------------------------
 function(ninjam_live_add_tests)
     set(dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/tests)
-    foreach(name live_aoo_test live_fuzz_test live_rt_test live_unit_test)
+    foreach(name live_aoo_test live_fuzz_test live_rt_test live_unit_test live_client_test)
         add_executable(${name} ${dir}/${name}.cpp)
         target_compile_features(${name} PRIVATE cxx_std_17)
         target_link_libraries(${name} PRIVATE ninjam_live ninjam_live_aoo_internal)
+        if(WIN32)
+            # (the tests include winsock2.h, and with it windows.h's min and max)
+            target_compile_definitions(${name} PRIVATE NOMINMAX _WINSOCK_DEPRECATED_NO_WARNINGS)
+        endif()
         add_test(NAME ${name} COMMAND ${name})
         set_tests_properties(${name} PROPERTIES TIMEOUT 300)
     endforeach()
+    if(WIN32)
+        # timeBeginPeriod(), for the audio threads' sleeps
+        target_link_libraries(live_client_test PRIVATE winmm)
+    endif()
 endfunction()
 
 if(PROJECT_IS_TOP_LEVEL)

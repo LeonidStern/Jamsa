@@ -18,7 +18,10 @@
 #   live_rt_test       (ninjam/live) no heap allocation in AOO's process(), clean network
 #                      or not
 #   live_unit_test     (ninjam/live) what Live adds to AOO: coupled stereo Opus, its
-#                      bitrate, broadcast mode, removeSource()
+#                      bitrate, broadcast mode, removeSource(); the glue with players on a
+#                      virtual network: loss, clock drift, slot reuse, the filter, fuzzing
+#   live_client_test   (ninjam/live) jamsa_live::Client on real sockets (loopback), four
+#                      players and a minimal server
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp

@@ -51,7 +51,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test plugin_e2e_host -- -k 0
+          cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test live_client_test plugin_e2e_host -- -k 0
           # what gets validated, tested and shipped
           strip --strip-unneeded build/VST3/Release/Jamsa.vst3/Contents/x86_64-linux/Jamsa.so
           ls -l build/VST3/Release/Jamsa.vst3/Contents/x86_64-linux/
@@ -110,7 +110,7 @@ jobs:
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           where ninja >nul 2>nul || choco install ninja --no-progress -y || exit /b 1
           cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DSMTG_USE_STATIC_CRT=ON || exit /b 1
-          cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test -- -k 0 || exit /b 1
+          cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test live_client_test -- -k 0 || exit /b 1
 
       - name: Find the plug-in and the validator
         shell: bash
@@ -195,7 +195,7 @@ jobs:
         run: cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
 
       - name: Build
-        run: cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test plugin_e2e_host -- -k 0
+        run: cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test live_client_test plugin_e2e_host -- -k 0
 
       - name: Strip and sign (ad hoc)
         run: |
