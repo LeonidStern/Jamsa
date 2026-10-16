@@ -80,6 +80,7 @@ struct RemoteChannelView
   float volume = 1.0f, pan = 0.0f;
   bool mute = false, solo = false;
   float peak[2] = { 0, 0 };
+  int playerOut = 0; // the plug-in's extra output that plays it alone (1 to Engine::NUM_PLAYER_OUTS), 0 for none
 };
 
 struct RemoteUserView
@@ -108,6 +109,7 @@ struct Snapshot
   int roomOpusKbps = 0;      // the room's, while connected to a server that sets one; 0: none
   int sendKbps = 0;          // what you send in Opus rooms: the room's, else your own (from the next interval)
   float localPeak[2] = { 0, 0 };
+  bool sendPaused = false;   // the host is stopped, so nothing is sent (transmit stays on)
 
   std::vector<RemoteUserView> users;
   unsigned int usersRevision = 0; // changes when users or channels come or go (not for levels)
@@ -197,10 +199,23 @@ public:
   struct HostTiming // from the host's ProcessContext
   {
     bool offline = false; // rendering faster than real time: the intervals are left alone
+    bool transport = false; // the host passed its transport (position.playing means something)
     HostPosition position;
   };
+  // Besides the main output (everyone, your monitoring and the click), the plug-in has this many
+  // stereo outputs, "Player 1" to "Player 8", that each play one player alone. NJClient gives each
+  // player who joins the least used one, so a ninth player shares one.
+  static constexpr int NUM_PLAYER_OUTS = 8;
+  struct PlayerOuts
+  {
+    float **bus[NUM_PLAYER_OUTS] = {}; // nullptr for an output the host doesn't use
+    int channels[NUM_PLAYER_OUTS] = {};
+  };
   void setupProcessing(double sampleRate, int maxBlockSize); // not while processing
-  void process(float **in, int numIn, float **out, int numOut, int frames, const HostTiming *timing = nullptr);
+  // While the host says it is stopped, the plug-in sends silence, and nothing from the next
+  // interval on; your monitoring goes on.
+  void process(float **in, int numIn, float **out, int numOut, int frames, const HostTiming *timing = nullptr,
+               const PlayerOuts *playerOuts = nullptr);
 
   // any thread
   void getSnapshot(Snapshot &out) const;
@@ -261,6 +276,7 @@ private:
   void applyLocalSettings();
   int sendKbps();       // the Opus bitrate to send: the room's, else your own
   void applySendKbps(); // sets the local channel's bitrate to it
+  void applyBroadcast(); // sends while transmit is on and the host isn't stopped
   void updateConnection();
   void updateUsers(Snapshot &snap);
   void pollHosting(Snapshot &snap);
@@ -309,6 +325,10 @@ private:
   std::atomic<unsigned int> m_processCalls { 0 };
   int m_maxBlock = 0;
   std::vector<float> m_bufL, m_bufR, m_spare;
+  std::vector<float> m_monL, m_monR;      // the input, for your monitoring
+  std::vector<std::vector<float>> m_mix;  // NJClient's outputs: the main pair, then a pair per player output
+  std::atomic<bool> m_monitor { true }, m_anySolo { false };
+  std::atomic<bool> m_hostStopped { false }; // the host said it is stopped
   BarSync m_barSync;
   std::atomic<bool> m_follow { true }, m_barReset { false };
   int64_t m_sampleTime = 0; // samples processed since setupProcessing()
@@ -332,6 +352,7 @@ private:
   bool m_warnedCantSend = false; // told the user this room can't hear them
   double m_lastPublish = 0;
   unsigned int m_seenProcessCalls = 0;
+  std::map<std::string, int> m_playerOutSaid; // the player output we last told about, by user name
   double m_lastAudio = -10;
   TempoFollower m_tempoFollower;
   double m_noteSince = -1; // since when the host's tempo isn't the room's

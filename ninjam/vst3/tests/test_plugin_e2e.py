@@ -318,6 +318,9 @@ class PluginEndToEndTest(unittest.TestCase):
         self.assertEqual(two.get("b_host_refused"), "1", "told to join the server already in this process\n" + log)
         self.assertGreater(float(two["a_hears_snr"]), MIN_SNR["opus"], log)
         self.assertGreater(float(two["b_hears_snr"]), MIN_SNR["opus"], log)
+        # the output Player 1 plays bob alone, the other player outputs nothing
+        self.assertGreater(float(two["a_player1_snr"]), MIN_SNR["opus"], log)
+        self.assertLess(float(two["a_other_players_peak"]), 0.001, log)
         self.assertEqual(two.get("b_got_chat"), "1", log)
         self.assertEqual((two.get("a_users"), two.get("b_users")), ("1", "1"), log)
         # one name twice, from one address: the second is name.2, and neither drops the other
