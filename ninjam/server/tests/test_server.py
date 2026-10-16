@@ -8,13 +8,14 @@ Each test starts its own server on a free port with a temporary config.
 import os
 import signal
 import socket
+import struct
 import subprocess
 import tempfile
 import time
 import unittest
 import uuid
 
-from njclient import (Client, chat_fields, codec_mask, mask_opus_kbps, CHAT, CODEC_MASK, DOWNLOAD_BEGIN,
+from njclient import (Client, chat_fields, codec_mask, mask_opus_kbps, CHAT, CODEC_MASK, CONFIG_CHANGE, DOWNLOAD_BEGIN,
                       DOWNLOAD_WRITE, CAP_OPUS, CAP_FLAC)
 from fake_router import FakeIGD, FakeNatPmp
 
@@ -165,6 +166,22 @@ class ChatTests(ServerTest):
         b.drain(0.2)
         a.chat("MSG", "hello", terminate_last=False)
         self.assertIsNone(b.wait_for(lambda m: m[0] == CHAT and chat_fields(m[1])[0] == "MSG", 0.5))
+
+
+class AdminCommandTests(ServerTest):
+    extra_config = "User admin secret *\n"
+
+    def test_commands_work_without_a_space(self):
+        # NINJAM clients send "/bpm 120" as ADMIN "bpm 120", and "/bpm120" as ADMIN "bpm120", which has always worked
+        a = Client(self.server.port)
+        self.clients.append(a)
+        self.assertTrue(a.login("admin", "secret")[0])
+        a.drain(0.3)
+        for cmd, bpm in (("bpm 100", 100), ("bpm90", 90)):
+            a.chat("ADMIN", cmd)
+            m = a.wait_for(lambda m: m[0] == CONFIG_CHANGE)
+            self.assertIsNotNone(m, cmd)
+            self.assertEqual(struct.unpack("<HH", m[1][:4]), (bpm, 8))
 
 
 class DuplicateLoginTests(ServerTest):

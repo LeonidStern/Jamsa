@@ -1596,12 +1596,25 @@ void User_Group::AddConnection(JNL_IConnection *con, int isres)
   m_users.Add(p);
 }
 
+// Whether str starts with tok. It looks meant to check that the word ends there too, but
+// it checks tok, not str, so it doesn't: old clients' users type "/bpm120" and "/kickbob",
+// so the /commands keep matching this way. (!topic too, as it always has.)
 static bool str_begins_tok(const char *str, const char *tok)
 {
   size_t l = strlen(tok);
   if (strncasecmp(str,tok,l)) return false;
 
-  return str[l] == ' ' || str[l] == '\t' || str[l] == 0; // the whole word: !bitrates isn't !bitrate
+  return tok[l] == ' ' || tok[l] == 0;
+}
+
+// whether str is the command tok, alone or followed by a space and what it takes: for the
+// newer !commands, so "!livestream" isn't "!live" and "!bitrates" isn't "!bitrate"
+static bool str_is_cmd(const char *str, const char *tok)
+{
+  size_t l = strlen(tok);
+  if (strncasecmp(str,tok,l)) return false;
+
+  return str[l] == ' ' || str[l] == '\t' || str[l] == 0;
 }
 
 void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
@@ -1792,7 +1805,7 @@ void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
         }
       }
     }
-    else if (str_begins_tok(p,"!codec"))
+    else if (str_is_cmd(p,"!codec"))
     {
       p += 6;
       while (*p == ' ' || *p == '\t') p++;
@@ -1802,7 +1815,7 @@ void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
       onCodecCommand(con,arg.Get());
       return;
     }
-    else if (str_begins_tok(p,"!bitrate"))
+    else if (str_is_cmd(p,"!bitrate"))
     {
       p += 8;
       while (*p == ' ' || *p == '\t') p++;
@@ -1812,7 +1825,7 @@ void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
       onBitrateCommand(con,arg.Get());
       return;
     }
-    else if (str_begins_tok(p,"!live"))
+    else if (str_is_cmd(p,"!live"))
     {
       p += 5;
       while (*p == ' ' || *p == '\t') p++;
