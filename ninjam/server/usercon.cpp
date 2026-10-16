@@ -1373,7 +1373,7 @@ static bool str_begins_tok(const char *str, const char *tok)
   size_t l = strlen(tok);
   if (strncasecmp(str,tok,l)) return false;
 
-  return tok[l] == ' ' || tok[l] == 0;
+  return str[l] == ' ' || str[l] == '\t' || str[l] == 0; // the whole word: !bitrates isn't !bitrate
 }
 
 void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
