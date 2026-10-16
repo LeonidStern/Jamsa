@@ -31,6 +31,7 @@
 #include "clipboard.h"
 #include "plugin.h"
 #include "uitext.h"
+#include "version.h"
 
 using namespace VSTGUI;
 using namespace Steinberg;
@@ -392,10 +393,10 @@ void NinjamEditor::buildViews()
   m_root->setBackgroundColor(Colors::window());
   frame->addView(m_root);
 
-  // header: NINJAM  Name [..]  Server [..]  Connect          (o) Connected · Opus
+  // header: Jamsa  Name [..]  Server [..]  Connect          (o) Connected · Opus
   m_header = new StripContainer(z, Colors::strip());
   m_root->addView(m_header);
-  m_title = makeLabel(z, "NINJAM", f.bold, CColor(0xe8, 0xe8, 0xe8));
+  m_title = makeLabel(z, NINJAM_VST3_NAME, f.bold, CColor(0xe8, 0xe8, 0xe8));
   m_header->addView(m_title);
   m_nameLabel = makeLabel(z, "Name", f.label, Colors::label());
   m_header->addView(m_nameLabel);
@@ -1123,7 +1124,7 @@ void NinjamEditor::updateHostBar(const Snapshot &s)
     std::string hint;
     if (s.hostBusy) hint = m_host->getValue() > 0.5f ? "Starting the server\xe2\x80\xa6" : "Stopping the server\xe2\x80\xa6";
     else if (s.hostedElsewherePort)
-      hint = "Another NINJAM plug-in here hosts a server: join localhost:" + std::to_string(s.hostedElsewherePort);
+      hint = "Another Jamsa here hosts a server: join localhost:" + std::to_string(s.hostedElsewherePort);
     else hint = "Host a server in this plug-in: anyone can join without an account, and one vote changes BPM or BPI";
     setLabel(m_hostHint, hint, true);
   }

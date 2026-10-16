@@ -15,7 +15,7 @@
 #define NINJAM_VST3_VERSION "0.1.0" // CMake sets it from the project version
 #endif
 
-#define NINJAM_VST3_NAME "NINJAM"
+#define NINJAM_VST3_NAME "Jamsa"
 #define NINJAM_VST3_VENDOR "LeonidStern/ninjam"
 #define NINJAM_VST3_URL "https://github.com/LeonidStern/ninjam"
 

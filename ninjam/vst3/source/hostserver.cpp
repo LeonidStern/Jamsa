@@ -37,7 +37,7 @@ static const size_t MAX_MESSAGES = 200;
 // router to forward its port. Two players with one name from one address (two
 // instances in a DAW that both keep the default name) both stay: the second is name.2.
 static const char *CONFIG =
-    "# Written by the NINJAM plug-in each time it starts its server.\n"
+    "# Written by Jamsa each time it starts its server.\n"
     "Port %d\n"
     "MaxUsers 8\n"
     "MaxChannels 32 32\n"
@@ -46,7 +46,7 @@ static const char *CONFIG =
     "AnonymousMaskIP no\n"
     "DefaultBPM 120\n"
     "DefaultBPI 16\n"
-    "DefaultTopic \"Hosted by the NINJAM plug-in. Type !vote bpm 100, !vote bpi 8 or !codec flac to change the room\"\n"
+    "DefaultTopic \"Hosted by Jamsa. Type !vote bpm 100, !vote bpi 8 or !codec flac to change the room\"\n"
     "SetVotingThreshold 1\n"
     "SetVotingVoteTimeout 60\n"
     "AllowCodecs opus flac\n"
@@ -95,7 +95,7 @@ bool HostServer::start(const void *owner, std::string *error)
       if (error)
       {
         char buf[200];
-        snprintf(buf, sizeof(buf), "Another NINJAM plug-in in this program already hosts a server (port %d). Connect to localhost:%d to join it.",
+        snprintf(buf, sizeof(buf), "Another Jamsa in this program already hosts a server (port %d). Connect to localhost:%d to join it.",
                  m_state.port, m_state.port);
         *error = buf;
       }

@@ -12,10 +12,10 @@
 
   A small VST3 host for the end-to-end test (test_plugin_e2e.py).
 
-  It loads NINJAM.vst3, plays a 997 Hz tone into it in real time, and drives
+  It loads Jamsa.vst3, plays a 997 Hz tone into it in real time, and drives
   it through its text command interface.
 
-  Usage: plugin_e2e_host path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two | sync]]]
+  Usage: plugin_e2e_host path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync]]]
 
   Hosting (the default): the plug-in hosts a server and joins it, and a second
   NJClient ("peer", in this process) joins too and plays a 661 Hz tone. The
@@ -205,13 +205,13 @@ public:
     const auto &factory = m_module->getFactory();
     for (auto &ci : factory.classInfos())
     {
-      if (ci.category() != kVstAudioEffectClass || ci.name() != "NINJAM") continue;
+      if (ci.category() != kVstAudioEffectClass || ci.name() != "Jamsa") continue;
       m_component = factory.createInstance<IComponent>(ci.ID());
       break;
     }
     if (!m_component)
     {
-      printf("error: no NINJAM audio effect class in the module\n");
+      printf("error: no Jamsa audio effect class in the module\n");
       return false;
     }
     if (m_component->initialize(m_hostApp) != kResultOk)
@@ -835,7 +835,7 @@ int main(int argc, char **argv)
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2)
   {
-    fprintf(stderr, "usage: %s path/to/NINJAM.vst3 [samplerate [blocksize [join host:port | two | sync]]]\n", argv[0]);
+    fprintf(stderr, "usage: %s path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync]]]\n", argv[0]);
     return 2;
   }
   const int srate = argc > 2 ? atoi(argv[2]) : 48000;

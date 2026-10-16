@@ -1,6 +1,6 @@
 """End-to-end tests of the VST3 plug-in, run by ctest (see CMakeLists.txt).
 
-test_codecs_and_bitrates: plugin_e2e_host loads NINJAM.vst3 into a small VST3 host. The plug-in
+test_codecs_and_bitrates: plugin_e2e_host loads Jamsa.vst3 into a small VST3 host. The plug-in
 starts its built-in server and joins it; a second NJClient joins too. Each plays a tone, and the
 host measures how well each side hears the other while the room's codec goes from Opus (the
 default) to FLAC and back, switched by typing !codec into the plug-in's chat, and while the

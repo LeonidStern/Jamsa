@@ -4,7 +4,7 @@
 #                      the metronome's click, the editor's texts and BPM dragging
 #   plugin_clipboard   (Linux, with xvfb-run) the Copy buttons' text, read back the way a
 #                      program that pastes reads it
-#   plugin_e2e         test_plugin_e2e.py: plugin_e2e_host loads NINJAM.vst3, which hosts a
+#   plugin_e2e         test_plugin_e2e.py: plugin_e2e_host loads Jamsa.vst3, which hosts a
 #                      server; a second client joins; audio both ways in Opus and FLAC.
 #                      Also two instances in one process, playing together, and a host whose
 #                      tempo the room follows and whose bars the intervals start on
@@ -45,7 +45,7 @@ if(NOT WIN32)
         find_library(COCOA_FRAMEWORK Cocoa)
         target_link_libraries(plugin_e2e_host PRIVATE ${COCOA_FRAMEWORK})
     endif()
-    add_dependencies(plugin_e2e_host NINJAM)
+    add_dependencies(plugin_e2e_host Jamsa)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_FOUND)
@@ -55,7 +55,7 @@ if(NOT WIN32)
         )
         set_tests_properties(plugin_e2e PROPERTIES
             TIMEOUT 600
-            ENVIRONMENT "NINJAM_VST3_PLUGIN=$<TARGET_PROPERTY:NINJAM,SMTG_PLUGIN_PACKAGE_PATH>;NINJAM_VST3_E2E_HOST=$<TARGET_FILE:plugin_e2e_host>"
+            ENVIRONMENT "NINJAM_VST3_PLUGIN=$<TARGET_PROPERTY:Jamsa,SMTG_PLUGIN_PACKAGE_PATH>;NINJAM_VST3_E2E_HOST=$<TARGET_FILE:plugin_e2e_host>"
         )
     endif()
 endif()
