@@ -821,6 +821,28 @@ class ReloadTests(LiveTest):
         self.assertIsNone(a.udp_recv(0.3))
 
 
+    @unittest.skipIf(EMBEDDED, "the embedded runner restarts the server, which drops everyone")
+    def test_a_new_port_reaches_live_clients(self):
+        a = self.live_client("alice")
+        self.bind(a)
+        new = free_port()
+        with open(self.server.cfg) as f:
+            cfg = f.read()
+        with open(self.server.cfg, "w") as f:
+            f.write(cfg.replace("Port %d\n" % self.server.port, "Port %d\n" % new, 1))
+        self.server.proc.send_signal(signal.SIGHUP)
+        # alice is still connected to the old port, which has no UDP any more
+        info = a.wait_live(lambda i: i["udp_port"] == new, timeout=5)
+        self.assertIsNotNone(info, "alice wasn't told the new UDP port")
+        a.port = new  # where her UDP goes now
+        self.bind(a)
+        # who connects to the new port gets 0: the port it connected to
+        c = Client(new)
+        self.clients.append(c)
+        self.assertTrue(c.login("anonymous:carol", caps=CAP_LIVE)[0])
+        self.assertEqual(c.wait_live()["udp_port"], 0)
+
+
 class LivePortMappingTests(PortMappingTestCase):
     """With Live, the router is asked to forward the UDP port too."""
 

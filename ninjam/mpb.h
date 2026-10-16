@@ -239,7 +239,8 @@ class mpb_server_codec_mask
 //   1   u8   fixed_len        32
 //   2   u8   flags            LIVE_FLAG_*
 //   3   u8   reserved, 0
-//   4   u16  udp_port         0 = the port number the client connected to over TCP
+//   4   u16  udp_port         the server's UDP port; 0 = the port number the client
+//                             connected to over TCP
 //   6   u16  live_kbps        the room's Live Opus bitrate (kbps)
 //   8   u32  peer_id          the client's own id on the server (never 0)
 //   12  u64  key              a secret for this connection, only ever sent to its owner

@@ -125,7 +125,7 @@ static void trimTransferList(WDL_PtrList<User_TransferState> *list, unsigned int
 }
 
 User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_codec_mask_sent(-1), m_opus_kbps_sent(0),
-      m_live_key(0), m_live_room(0), m_live_sent_gen(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
+      m_live_key(0), m_live_room(0), m_live_sent_gen(0), m_tcp_port(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
       m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0)
 {
   m_id = ++g_next_connection_id;
@@ -133,6 +133,12 @@ User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth
   m_last_transfer_sweep = 0;
 
   m_netcon.attach(con);
+
+  // the server's port it connected to, which Live's UDP port is, until a reload moves it
+  struct sockaddr_in local;
+  socklen_t local_len = sizeof(local);
+  memset(&local,0,sizeof(local));
+  if (con && !getsockname(con->get_socket(),(struct sockaddr *)&local,&local_len)) m_tcp_port = ntohs(local.sin_port);
 
   WDL_RNG_bytes(m_challenge,sizeof(m_challenge));
 
@@ -1363,7 +1369,7 @@ void User_Group::SendLiveState()
   // what the room's Live state depends on: worked out again only when one of these changes
   const bool open = g_live.IsOpen();
   const unsigned int relay_gen = g_live.Generation(); // a player was heard from, or went quiet
-  const int params[7] = { m_allow_live, m_room_live, open, m_live_kbps, m_live_frame, m_live_max_peers, m_live_port };
+  const int params[8] = { m_allow_live, m_room_live, open, g_live.Port(), m_live_kbps, m_live_frame, m_live_max_peers, m_live_port };
   int x, n = 0;
   bool newcomer = false;
   for (x = 0; x < m_users.GetSize(); x ++)
@@ -1411,7 +1417,9 @@ void User_Group::SendLiveState()
     u->m_live_sent_gen = m_live_gen;
 
     mpb_server_live ml;
-    ml.udp_port = m_live_port;
+    // 0 means the port the client connected to, which is the UDP one unless a reload
+    // moved the server to another port since
+    ml.udp_port = m_live_port ? m_live_port : g_live.Port() != u->m_tcp_port ? g_live.Port() : 0;
     ml.live_kbps = m_live_kbps;
     ml.peer_id = u->m_id;
     ml.key = u->m_live_key;

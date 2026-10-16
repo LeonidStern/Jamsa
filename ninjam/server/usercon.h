@@ -175,7 +175,7 @@ class User_Group
     // what the room's Live state was last worked out from
     unsigned int m_live_relay_gen;
     int m_live_users;
-    int m_live_params[7];
+    int m_live_params[8];
 
 #define LOBBY_ALLOW_CHAT 2
     int m_is_lobby_mode; // nonzero for lobby (and LOBBY_ALLOW_CHAT etc optional)
@@ -282,6 +282,7 @@ class User_Connection
     unsigned int m_live_room; // m_live_room_id of the room whose Live state it has, 0 for none
     int m_live_sent_gen; // that room's m_live_gen then
     WDL_HeapBuf m_live_sent; // the last MESSAGE_SERVER_LIVE it got, empty for none
+    int m_tcp_port; // the server's port it connected to
 
     int m_auth_privs;
 
