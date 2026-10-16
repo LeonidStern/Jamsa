@@ -295,11 +295,13 @@ jobs:
           # folder unless its bundle bit is set (kHasBundle in its Finder info), so set it: then
           # Jamsa.vst3 shows as one file, like other plug-ins. It is set last, after the checks
           # above, because codesign --strict rejects any extended attribute on the bundle; the
-          # signature itself covers the files inside and stays valid. ditto keeps it in the zip.
+          # signature itself covers the files inside and stays valid. The zip keeps it the way
+          # Finder's Compress does (--sequesterRsrc: in __MACOSX/), which unzipping restores.
           xattr -wx com.apple.FinderInfo 0000000000000000200000000000000000000000000000000000000000000000 "$BUNDLE"
           mkdir -p dist
-          ditto -c -k --keepParent "$BUNDLE" dist/Jamsa-vst3-macos.zip
+          ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" dist/Jamsa-vst3-macos.zip
           ls -l dist
+          zipinfo -1 dist/Jamsa-vst3-macos.zip | grep -F "__MACOSX/._Jamsa.vst3"
           # what someone gets after unzipping: the bundle bit, a valid signature, a plug-in that loads
           ditto -x -k dist/Jamsa-vst3-macos.zip "$RUNNER_TEMP/unzipped"
           UNZIPPED="$RUNNER_TEMP/unzipped/Jamsa.vst3"
