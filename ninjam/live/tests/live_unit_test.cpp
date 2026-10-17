@@ -1689,9 +1689,12 @@ static void test_glue_host_stopped()
   }
   for (int k = 0; k < 7; k++) CHECK(l.core->slotHealthy(k));
   const Core::Totals &t = l.core->totals();
-  const uint64_t accepted = t.accepted.load(), idle = t.idle.load();
+  const uint64_t idle = t.idle.load();
   l.host_running = false;
-  n.run(pause);
+  // (what comes in the first Core::kIdleSeconds still goes to the sinks)
+  n.run(1.0);
+  const uint64_t accepted = t.accepted.load();
+  n.run(pause - 1);
   const uint64_t accepted_paused = t.accepted.load() - accepted, idle_paused = t.idle.load() - idle;
   l.host_running = true;
   const int64_t blocks = l.nblocks;
@@ -1702,13 +1705,13 @@ static void test_glue_host_stopped()
   n.run(3.0);
   int healthy = 0;
   for (int k = 0; k < 7; k++) healthy += l.core->slotHealthy(k);
-  printf("  %.0f s stopped: %llu packets dropped, %llu let through (for our source); first block after"
+  printf("  %.0f s stopped: %llu packets dropped, %llu let through after the first second (for our source); first block after"
          " %.2f ms (typical %.2f ms, budget %.2f ms); healthy 3 s later: %d of 7\n", pause,
          (unsigned long long)idle_paused, (unsigned long long)accepted_paused, first, median(before),
          budget, healthy);
   // 7 players' 200 packets a second
   CHECK(idle_paused > (uint64_t)(7 * 200 * (pause - 1)));
-  CHECK(accepted_paused < (uint64_t)(20 * pause));
+  CHECK(accepted_paused < (uint64_t)(20 * (pause - 1)));
 #if defined(NDEBUG) && !defined(LIVE_SANITIZED)
   CHECK(first < 2 * budget); // (twice: a busy machine)
 #endif
