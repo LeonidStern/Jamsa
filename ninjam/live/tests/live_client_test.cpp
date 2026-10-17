@@ -643,6 +643,31 @@ static void test_restart()
            r.server.data_in.load() - in);
     CHECK(back);
   }
+
+  // C stops (its audio thread still runs, as in a host): A and B see its
+  // stream end at once, without an underrun (a dropout in the statistics)
+  auto streaming = [&](player &l, uint32_t from, int *underruns) {
+    const std::vector<PeerStats> st = l.client.stats();
+    const PeerStats *ps = stats_of(st, from);
+    if (ps && underruns) *underruns = ps->underruns;
+    return ps && ps->streaming;
+  };
+  int ua0 = -1, ub0 = -1, ua1 = -1, ub1 = -1;
+  CHECK(streaming(a, 3, &ua0) && streaming(b, 3, &ub0));
+  const double s0 = seconds_now();
+  c.client.stop();
+  const double stop_ms = 1000 * (seconds_now() - s0);
+  const bool quiet = r.run_until([&] { return !streaming(a, 3, nullptr) && !streaming(b, 3, nullptr); }, 2.0);
+  const double quiet_s = seconds_now() - s0;
+  r.run(0.3);
+  streaming(a, 3, &ua1);
+  streaming(b, 3, &ub1);
+  printf("  C's stop() took %.1f ms; A and B saw its stream stop after %.2f s, with %d and %d underruns\n",
+         stop_ms, quiet_s, ua1 - ua0, ub1 - ub0);
+  CHECK(quiet);
+  CHECK(stop_ms < 300);
+  CHECK_EQ(ua1, ua0);
+  CHECK_EQ(ub1, ub0);
   for (player *p : { &a, &b, &c })
   {
     p->client.stop();
