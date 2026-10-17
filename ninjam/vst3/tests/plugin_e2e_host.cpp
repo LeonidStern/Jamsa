@@ -107,7 +107,8 @@
     LINK nopeers                                       (no Link peer seen: the rest is skipped)
     LINK joined room_bpm=<bpm> peer_tempo=<bpm> tempovotes=<n> leads=<0|1> link=<state> restores=<n>
     LINK vote room_bpm=<bpm> peer_tempo=<bpm>
-    LINK timing late_min=<ms> late_mean=<ms> late_max=<ms>  (how late this host called process(), while it played)
+    LINK timing late_min=<ms> late_mean=<ms> late_max=<ms> rt=<0|1>  (how late this host called process(), while it
+                           played; rt: its audio thread got real-time scheduling, see realtime_audio_thread())
     SYNC phase link100 ... latency=<ms the plug-in measured>  (as in sync, on the host's position)
     LINK follow room_bpm=<bpm> peer_tempo=<bpm> tempovotes=<n>
     SYNC phase link110 ...
@@ -131,11 +132,18 @@
 #include <ableton/Link.hpp> // first: it includes asio
 
 #include <math.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -170,6 +178,43 @@ static double now_seconds()
   using namespace std::chrono;
   return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
+
+// The calling thread, which plays a block every `period` seconds, scheduled as a DAW's audio
+// thread is (the thread an audio interface's driver calls it on): on macOS CoreAudio's
+// time-constraint policy, on Linux SCHED_FIFO at 70, in the range JACK and PipeWire use (70..88;
+// where this process may: as root, or with an rtprio limit, else it stays as it is). A normal
+// thread that sleeps until its next block wakes up late on a busy machine: on macOS CI VMs 22 ms
+// on average and up to 80 ms (the system coalesces a normal thread's timers and runs others
+// first), so that Live never played well there, which no audio interface does to a DAW. Returns
+// whether it got it.
+static bool realtime_audio_thread(double period)
+{
+#ifdef __APPLE__
+  // in mach_absolute_time() units: ns * denom / numer (125/3 on Apple silicon, 1/1 on Intel)
+  mach_timebase_info_data_t tb;
+  if (mach_timebase_info(&tb) != KERN_SUCCESS || tb.numer == 0) return false;
+  auto ticks = [&](double s) { return (uint32_t)(s * 1e9 * tb.denom / tb.numer); };
+  thread_time_constraint_policy_data_t p;
+  p.period = ticks(period);
+  p.computation = ticks(std::min(period / 2, 0.05)); // (the kernel takes 50 us to 50 ms)
+  p.constraint = ticks(period);
+  p.preemptible = TRUE;
+  return thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&p,
+                           THREAD_TIME_CONSTRAINT_POLICY_COUNT) == KERN_SUCCESS;
+#else
+  (void)period;
+  sched_param sp;
+  memset(&sp, 0, sizeof(sp));
+  sp.sched_priority = 70;
+  int policy = SCHED_FIFO;
+#ifdef SCHED_RESET_ON_FORK
+  policy |= SCHED_RESET_ON_FORK; // (the threads it starts don't inherit it; rtkit asks for that too)
+#endif
+  return pthread_setschedparam(pthread_self(), policy, &sp) == 0;
+#endif
+}
+// whether every thread that played blocks got it (printed with how late they played)
+static std::atomic<bool> g_realtime { true };
 
 static double tone_snr(const std::vector<float> &x, size_t start, size_t end, double freq, int srate)
 {
@@ -335,6 +380,14 @@ public:
   // one block of audio through the plug-in and the peer, in real time
   void block(NJClient *peer, bool record)
   {
+    // the thread that plays the blocks is an audio thread, from its first block on
+    static thread_local bool audioThread = false;
+    if (!audioThread)
+    {
+      audioThread = true;
+      if (!realtime_audio_thread((double)m_block / m_srate)) g_realtime = false;
+    }
+
     for (int i = 0; i < m_block; i ++)
     {
       m_in0[i] = m_in1[i] = m_signal ? m_signal(m_pos + i) : (float)(0.5 * sin(2*PI*m_freq*(m_pos + i)/m_srate));
@@ -1158,7 +1211,7 @@ static std::map<std::string, std::string> live_peer(Host &h, const std::string &
 // (dropouts, blocks late, bob back on intervals for a while) the phase isn't judged; with too
 // little left, or with dropouts the hosts didn't cause, it is measured again, up to three times.
 //   PORT <port>
-//   LIVE ready b_offered=<0|1> b_room=<on|off> b_peers=<n> old_users=<n>
+//   LIVE ready b_offered=<0|1> b_room=<on|off> b_peers=<n> old_users=<n> rt=<0|1: the hosts' thread got real-time scheduling>
 //   LIVE intervals found=<n>/<m> lag_ms=<median> old_found=<n>/<m> old_lag_ms=<median>
 //   LIVE on b_live=<0|1> waited_s=<s> marker=<0|1: " · live" on alice's channel in bob's users>
 //   LIVE retry <phase> clean=<n>/<m> late_blocks=<n> dropouts=<n> ontime=<n>   (the phase again, up to 3 times)
@@ -1267,8 +1320,8 @@ static int live_latency(Host &a, Host &b)
     return fail(b, "bob and old did not join alice's server, or bob doesn't see alice as a Live player");
   }
   auto lb = live_room(b);
-  printf("LIVE ready b_offered=%s b_room=%s b_peers=%s old_users=%d\n", lb["offered"].c_str(), lb["live"].c_str(), lb["peers"].c_str(),
-         old.GetNumUsers());
+  printf("LIVE ready b_offered=%s b_room=%s b_peers=%s old_users=%d rt=%d\n", lb["offered"].c_str(), lb["live"].c_str(), lb["peers"].c_str(),
+         old.GetNumUsers(), g_realtime ? 1 : 0);
 
   const int ilen = atoi(a.status()["len"].c_str());
   const double interval = (double)ilen / srate, ivMs = interval * 1000;
@@ -1931,8 +1984,8 @@ static int link_sync(Host &host, ableton::Link &peer)
       return fabs(l) > 0.5 && now_seconds() - since >= 3.0;
     });
   }
-  printf("LINK timing late_min=%.3f late_mean=%.3f late_max=%.3f\n", host.m_lateMin, host.m_lateSum / std::max(1L, host.m_lateN),
-         host.m_lateMax);
+  printf("LINK timing late_min=%.3f late_mean=%.3f late_max=%.3f rt=%d\n", host.m_lateMin, host.m_lateSum / std::max(1L, host.m_lateN),
+         host.m_lateMax, g_realtime ? 1 : 0);
   if (!record("link100", 4)) return fail(host, "Link did not line up with the intervals at 100 BPM");
 
   // the host's tempo is dragged to 109.6 (on Link, as Live does): one vote, and the room and Link at 110

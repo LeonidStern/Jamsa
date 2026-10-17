@@ -11,11 +11,11 @@
 /*
 
   jamsa_live::Client on real sockets: four players (Clients, each with an
-  audio thread paced by the clock, as an audio interface would call it) and
-  a minimal server on the loopback interface that speaks the UDP protocol
-  (README.md): HELLO / HELLO_ACK with the address cookie, DATA copied to the
-  room with its header rewritten in place. The main thread is the engine's
-  network thread: setPeers(), poll(), stats().
+  audio thread paced by the clock, as an audio interface would call it, and
+  scheduled as one) and a minimal server on the loopback interface that
+  speaks the UDP protocol (README.md): HELLO / HELLO_ACK with the address
+  cookie, DATA copied to the room with its header rewritten in place. The
+  main thread is the engine's network thread: setPeers(), poll(), stats().
 
   Checked: binding through the cookie within a round trip, every player
   hears the others (tones, SNR) and how late (bursts, against the
@@ -36,9 +36,16 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <pthread.h>
+#include <sched.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#endif
 #endif
 
 #include "liveclient.h"
@@ -100,6 +107,48 @@ static double seconds_now()
 static void sleep_ms(int ms)
 {
   std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+// The calling thread, which plays a block every `period` seconds, scheduled
+// as an audio interface's driver schedules the thread it calls its host on:
+// on macOS CoreAudio's time-constraint policy (that of its IOProc thread), on
+// Linux SCHED_FIFO at 70, in the range JACK and PipeWire use (70..88; where
+// this process may: as root, or with an rtprio limit, else it stays as it
+// is), on Windows the Client's send thread's priority. A normal thread that
+// sleeps until its next block wakes up late on a busy machine: on macOS CI
+// VMs 10 ms on average and up to 80 ms (the system coalesces a normal
+// thread's timers and runs others first), which no audio interface does to
+// its host. Returns whether it got it.
+static bool realtime_audio_thread(double period)
+{
+#ifdef _WIN32
+  (void)period;
+  return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != 0;
+#elif defined(__APPLE__)
+  // in mach_absolute_time() units: ns * denom / numer (125/3 on Apple
+  // silicon, 1/1 on Intel)
+  mach_timebase_info_data_t tb;
+  if (mach_timebase_info(&tb) != KERN_SUCCESS || tb.numer == 0) return false;
+  auto ticks = [&](double s) { return (uint32_t)(s * 1e9 * tb.denom / tb.numer); };
+  thread_time_constraint_policy_data_t p;
+  p.period = ticks(period);
+  p.computation = ticks(std::min(period / 2, 0.05)); // (the kernel takes 50 us to 50 ms)
+  p.constraint = ticks(period);
+  p.preemptible = TRUE;
+  return thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
+                           (thread_policy_t)&p, THREAD_TIME_CONSTRAINT_POLICY_COUNT) == KERN_SUCCESS;
+#else
+  (void)period;
+  sched_param sp;
+  memset(&sp, 0, sizeof(sp));
+  sp.sched_priority = 70;
+  int policy = SCHED_FIFO;
+#ifdef SCHED_RESET_ON_FORK
+  // (the threads it starts don't inherit it; rtkit asks for that too)
+  policy |= SCHED_RESET_ON_FORK;
+#endif
+  return pthread_setschedparam(pthread_self(), policy, &sp) == 0;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +332,7 @@ struct player
   double start = 0;          // steady time of block 0
   // how late the calls came (seconds): the first one, on average, at most
   std::atomic<double> late_first{0}, late_mean{0}, late_max{0};
+  std::atomic<bool> realtime{false}; // the audio thread got an audio thread's scheduling
 
   // recording (the audio thread writes, the main thread reads what it has counted)
   static const size_t kMaxBlocks = 1000;
@@ -314,6 +364,7 @@ struct player
 
   void audio()
   {
+    realtime.store(realtime_audio_thread(block / eff_rate()));
     std::vector<float> l(block), r(block);
     client.prepare(rate, block);
     uint64_t n = 0;
@@ -710,7 +761,7 @@ static void test_room()
   b.client.setPeers(room::peers({ 1, 3 }));
   c.client.setPeers(room::peers({ 1, 2 }));
   // (more than the default 20 ms: this machine may be busy with other things,
-  // and the audio threads have no real-time priority)
+  // and the audio threads may not get real-time scheduling)
   for (auto &p : r.players) p->client.setJitterMs(40);
   const double t0 = seconds_now();
   for (player *p : { &a, &b, &c })
@@ -805,11 +856,14 @@ static void test_room()
   // moved from its first call's lateness to d, over a minute, and its
   // listeners' delay moves by that much meanwhile (a listener's own
   // lateness moves it the other way; README.md, "AOO's side"). An audio
-  // interface calls on time; macOS CI VMs wake these threads up to 80 ms
-  // late, and they catch up.
-  printf("  audio threads late (first, mean, max): A %.2f, %.2f, %.1f ms; B %.2f, %.2f, %.1f; C %.2f, %.2f, %.1f\n",
+  // interface calls on time, and so do these threads with its scheduling;
+  // without it a busy machine wakes them late (macOS CI VMs did, up to
+  // 80 ms), and they catch up.
+  printf("  audio threads late (first, mean, max): A %.2f, %.2f, %.1f ms; B %.2f, %.2f, %.1f; C %.2f, %.2f, %.1f;"
+         " real-time scheduling: %s\n",
          1000 * a.late_first, 1000 * a.late_mean, 1000 * a.late_max, 1000 * b.late_first, 1000 * b.late_mean,
-         1000 * b.late_max, 1000 * c.late_first, 1000 * c.late_mean, 1000 * c.late_max);
+         1000 * b.late_max, 1000 * c.late_first, 1000 * c.late_mean, 1000 * c.late_max,
+         a.realtime && b.realtime && c.realtime ? "yes" : "no (not allowed)");
   auto settling = [](const player &p) { return fabs(p.late_mean - p.late_first); };
   CHECK_TIMING(dropouts == 0);
   CHECK_TIMING(fabs(ab1 - ab0) < 0.0015 + settling(a) + settling(b));
