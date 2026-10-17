@@ -281,6 +281,8 @@ struct player
   std::atomic<bool> quit{false};
   std::atomic<uint64_t> blocks{0};
   double start = 0;          // steady time of block 0
+  // how late the calls came (seconds): the first one, on average, at most
+  std::atomic<double> late_first{0}, late_mean{0}, late_max{0};
 
   // recording (the audio thread writes, the main thread reads what it has counted)
   static const size_t kMaxBlocks = 1000;
@@ -315,12 +317,19 @@ struct player
     std::vector<float> l(block), r(block);
     client.prepare(rate, block);
     uint64_t n = 0;
+    double late_sum = 0, late_top = 0;
     while (!quit.load())
     {
       // when the "interface" wants this block; late wake-ups catch up
       const double due = start + (double)n * block / eff_rate();
       const double wait = due - seconds_now();
       if (wait > 0) std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+      const double late = seconds_now() - due;
+      late_sum += late;
+      late_top = std::max(late_top, late);
+      if (n == 0) late_first.store(late);
+      late_mean.store(late_sum / (double)(n + 1));
+      late_max.store(late_top);
       input((int64_t)n * block, l.data(), r.data(), block);
       client.processBlock(l.data(), r.data(), block, true);
       const size_t b = rec_blocks.load(std::memory_order_relaxed);
@@ -788,9 +797,20 @@ static void test_room()
   for (const PeerStats *s : { stats_of(bst1, 1), stats_of(cst1, 1) }) if (s) dropouts += s->underruns + s->overruns + s->dropped;
   printf("  %.1f s later: A -> B %.2f ms (was %.2f), A -> C %.2f ms (was %.2f), %d dropouts\n", 5.0,
          1000 * ab1, 1000 * ab0, 1000 * ac1, 1000 * ac0, dropouts);
+  // AOO's clocks are the times processBlock() is called at: a sender whose
+  // calls come late by d on average claims a slower clock until its DLL has
+  // moved from its first call's lateness to d, over a minute, and its
+  // listeners' delay moves by that much meanwhile (a listener's own
+  // lateness moves it the other way; README.md, "AOO's side"). An audio
+  // interface calls on time; macOS CI VMs wake these threads up to 80 ms
+  // late, and they catch up.
+  printf("  audio threads late (first, mean, max): A %.2f, %.2f, %.1f ms; B %.2f, %.2f, %.1f; C %.2f, %.2f, %.1f\n",
+         1000 * a.late_first, 1000 * a.late_mean, 1000 * a.late_max, 1000 * b.late_first, 1000 * b.late_mean,
+         1000 * b.late_max, 1000 * c.late_first, 1000 * c.late_mean, 1000 * c.late_max);
+  auto settling = [](const player &p) { return fabs(p.late_mean - p.late_first); };
   CHECK_TIMING(dropouts == 0);
-  CHECK_TIMING(fabs(ab1 - ab0) < 0.0015);
-  CHECK_TIMING(fabs(ac1 - ac0) < 0.0015);
+  CHECK_TIMING(fabs(ab1 - ab0) < 0.0015 + settling(a) + settling(b));
+  CHECK_TIMING(fabs(ac1 - ac0) < 0.0015 + settling(a) + settling(c));
 
   // 5% of the copies to C lost: resent
   r.server.with(3, [](fake_server::peer &p) { p.loss = 0.05; });

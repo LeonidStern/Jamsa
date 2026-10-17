@@ -247,6 +247,15 @@ the server (`serverRttMs()`).
   them (its time DLLs, the sink's elapsed time), and a wall clock that
   steps (NTP, a user) would look like an xrun or warp the DLL. AOO's pings
   still use the wall clock, but only within one machine.
+- So a host that calls late and catches up gives AOO late stamps. A time
+  DLL takes its first stamp's lateness as its phase and moves to the
+  average lateness over about a minute (`AOO_DLL_BANDWIDTH`, 0.012 Hz);
+  meanwhile a late sender claims a slower clock, and its listeners' delay
+  grows by the difference, then holds (a listener's own lateness moves it
+  the other way). That keeps the jitter buffer centered on when the
+  packets really come. An audio interface calls within a fraction of a
+  millisecond; CI VMs that wake threads tens of ms late move the delay a
+  few ms, which `live_client_test` allows for.
 - When the host stops calling for more than 20 ms, or two of its longest
   blocks when that is more (processing suspended, an xrun), the next block
   reports the gap (at most 0.5 s) to the source and the sinks as an xrun,
