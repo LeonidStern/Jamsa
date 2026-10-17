@@ -15,7 +15,7 @@
   It loads Jamsa.vst3, plays a 997 Hz tone into it in real time, and drives
   it through its text command interface.
 
-  Usage: plugin_e2e_host path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link]]]
+  Usage: plugin_e2e_host path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link | live]]]
 
   Hosting (the default): the plug-in hosts a server and joins it, and a second
   NJClient ("peer", in this process) joins too and plays a 661 Hz tone. The
@@ -140,6 +140,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -336,7 +337,7 @@ public:
   {
     for (int i = 0; i < m_block; i ++)
     {
-      m_in0[i] = m_in1[i] = (float)(0.5 * sin(2*PI*m_freq*(m_pos + i)/m_srate));
+      m_in0[i] = m_in1[i] = m_signal ? m_signal(m_pos + i) : (float)(0.5 * sin(2*PI*m_freq*(m_pos + i)/m_srate));
       m_peerIn[i] = (float)(0.5 * sin(2*PI*PEER_FREQ*(m_pos + i)/m_srate));
     }
 
@@ -420,13 +421,19 @@ public:
     data.numOutputs = 1 + PLAYER_OUTS;
     data.inputs = &inBus;
     data.outputs = outBus;
+    const double called = now_seconds();
     m_processor->process(data);
+    m_maxProcessMs = std::max(m_maxProcessMs, (now_seconds() - called) * 1000);
     if (record || m_taping)
     {
       std::lock_guard<std::mutex> lock(m_heardMutex);
       if (record)
       {
+        if (m_pluginHeard.empty()) m_heardFrom = m_pos;
         m_pluginHeard.insert(m_pluginHeard.end(), m_out0.begin(), m_out0.end());
+        if (m_recordPlayers)
+          for (int p = 0; p < PLAYER_OUTS; p ++)
+            m_playersHeard[p].insert(m_playersHeard[p].end(), m_playerOut[2 * p].begin(), m_playerOut[2 * p].end());
         m_heardTransport.push_back(played);
         m_player1Heard.insert(m_player1Heard.end(), m_playerOut[0].begin(), m_playerOut[0].end());
         for (int c = 2; c < 2 * PLAYER_OUTS; c ++)
@@ -448,6 +455,14 @@ public:
     const double due = m_start + (double)m_pos / m_srate;
     const double wait = due - now_seconds();
     if (wait > 0) std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+    // as a sound card after a stall (the test analysing audio): on from now, without the blocks
+    // it missed in a burst
+    else if (m_noCatchUp && wait < -0.02)
+    {
+      m_start -= wait;
+      m_skips++;
+      m_skippedMs += -wait * 1000;
+    }
     if (m_jitterMs > 0)
     {
       // late, as on a busy machine: a little after each block, and more now and then
@@ -501,6 +516,7 @@ public:
     m_otherPlayersPeak = 0;
     m_peerHeard.clear();
     m_heardTransport.clear();
+    for (auto &p : m_playersHeard) p.clear();
   }
 
   // the host's transport (sync), changed on the thread that plays the blocks
@@ -552,6 +568,14 @@ public:
 
   int m_srate, m_block;
   double m_freq; // of the tone played into the plug-in
+  std::function<float(long)> m_signal; // what the plug-in gets instead of the tone, by sample position
+  long m_heardFrom = 0;                // the position of m_pluginHeard[0] (and m_peerHeard[0], m_playersHeard[p][0])
+  bool m_recordPlayers = false;        // record each player output's left channel too (live)
+  std::vector<float> m_playersHeard[8];
+  bool m_noCatchUp = false;            // after a stall, go on in real time from now (live)
+  int m_skips = 0;                     // how often it did, and the time it skipped in all
+  double m_maxProcessMs = 0;           // the longest process() call
+  double m_skippedMs = 0;
   long m_pos = 0;
   double m_start = 0;
   double m_jitterMs = getenv("NINJAM_E2E_JITTER_MS") ? atof(getenv("NINJAM_E2E_JITTER_MS")) : 0.0;
@@ -888,6 +912,502 @@ static int odd_intervals(const std::vector<float> &x, int srate, const std::vect
   return acc.empty() ? 0 : (int)acc.size() - 1;
 }
 
+// ---------------------------------------------------------------------------
+// live: Live mode between two instances, through the plug-in's own server
+// ---------------------------------------------------------------------------
+
+// What alice plays: 20 ms chirps (500 Hz to 4 kHz, a Hann window), 250 to 450 ms apart (seeded).
+// A copy 0 to 240 ms after a chirp is that chirp's; further away (the intervals), the uneven gaps
+// tell which chirp a copy is (see find_pattern()).
+struct Bursts
+{
+  explicit Bursts(int srate) : m_srate(srate), m_next(srate)
+  {
+    const int len = srate / 50;
+    chirp.resize(len);
+    const double T = (double)len / srate, f0 = 500, f1 = 4000;
+    for (int i = 0; i < len; i ++)
+    {
+      const double t = (double)i / srate;
+      const double w = 0.5 - 0.5 * cos(2 * PI * i / (len - 1));
+      chirp[i] = (float)(0.5 * w * sin(2 * PI * (f0 * t + (f1 - f0) * t * t / (2 * T))));
+    }
+  }
+  // the input at pos (called with pos going up, one sample after the other)
+  float at(long pos)
+  {
+    if (pos >= m_next)
+    {
+      starts.push_back(m_next);
+      m_rng = m_rng * 1103515245u + 12345u;
+      m_next += (long)(m_srate * (0.25 + 0.2 * ((m_rng >> 8) & 0xffff) / 65536.0));
+    }
+    const long k = starts.empty() ? -1 : pos - starts.back();
+    return k >= 0 && k < (long)chirp.size() ? chirp[(size_t)k] : 0.0f;
+  }
+  std::vector<float> chirp;
+  std::vector<long> starts; // where each chirp starts, in the hosts' samples (both run in step)
+private:
+  int m_srate;
+  long m_next;
+  unsigned int m_rng = 12345;
+};
+
+static const double LIVE_WINDOW_MS = 240; // a live copy is this late at most (less than the chirps' gaps)
+
+// The best match of the chirp in x at positions from..to (normalized cross-correlation, 1 is a
+// perfect copy at any level): its position in *at, and the value.
+static double best_match(const std::vector<float> &x, const std::vector<float> &c, long from, long to, long *at)
+{
+  const long len = (long)c.size();
+  from = std::max(from, 0L);
+  to = std::min(to, (long)x.size() - len);
+  *at = -1;
+  if (from > to) return 0;
+  double cc = 0;
+  for (float v : c) cc += (double)v * v;
+  double e = 0, best = 0;
+  for (long i = 0; i < len; i ++) e += (double)x[from + i] * x[from + i];
+  for (long p = from; p <= to; p ++)
+  {
+    if (p > from)
+    {
+      e += (double)x[p + len - 1] * x[p + len - 1] - (double)x[p - 1] * x[p - 1];
+      if (((p - from) & 4095) == 0)
+      {
+        e = 0; // again, against rounding
+        for (long i = 0; i < len; i ++) e += (double)x[p + i] * x[p + i];
+      }
+    }
+    if (e < 1e-10) continue;
+    double dot = 0;
+    for (long i = 0; i < len; i ++) dot += (double)x[p + i] * c[i];
+    const double r = dot / sqrt(cc * e);
+    if (r > best)
+    {
+      best = r;
+      *at = p;
+    }
+  }
+  return best;
+}
+
+struct Found
+{
+  long start;   // the chirp's start in alice's input
+  double lagMs; // where it was found, after that (-1: not found)
+  double corr;
+};
+
+static const double LIVE_MATCH = 0.5; // a normalized correlation above this is the chirp
+
+static int found_count(const std::vector<Found> &f)
+{
+  int n = 0;
+  for (auto &x : f) if (x.lagMs >= 0) n++;
+  return n;
+}
+
+// Each chirp whose copy, from minMs to maxMs after it, lies in x (recorded from heardFrom on).
+static std::vector<Found> find_chirps(const std::vector<float> &x, long heardFrom, const Bursts &b, int srate, double minMs, double maxMs)
+{
+  std::vector<Found> out;
+  const long len = (long)b.chirp.size();
+  for (long s : b.starts)
+  {
+    const long from = s + (long)(minMs * srate / 1000) - heardFrom, to = s + (long)(maxMs * srate / 1000) - heardFrom;
+    if (from < 0 || to + len > (long)x.size()) continue;
+    long at = -1;
+    const double r = best_match(x, b.chirp, from, to, &at);
+    Found f;
+    f.start = s;
+    f.corr = r;
+    f.lagMs = r >= LIVE_MATCH && at >= 0 ? (at + heardFrom - s) * 1000.0 / srate : -1;
+    out.push_back(f);
+  }
+  return out;
+}
+
+// The copies of the chirps from minMs to maxMs after them (the intervals: a window with copies of
+// other chirps in it too): the lag that most chirps have a copy at (the gaps between the chirps
+// are uneven, so only the right lag fits them all), and each chirp's copy near it.
+static std::vector<Found> find_pattern(const std::vector<float> &x, long heardFrom, const Bursts &b, int srate, double minMs, double maxMs)
+{
+  const long len = (long)b.chirp.size(), tol = srate * 3 / 1000;
+  // candidates: what looks like a copy in the windows of the first three chirps in x
+  std::vector<long> lags;
+  int tried = 0;
+  for (long s : b.starts)
+  {
+    const long from = s + (long)(minMs * srate / 1000) - heardFrom, to = s + (long)(maxMs * srate / 1000) - heardFrom;
+    if (from < 0 || to + len > (long)x.size()) continue;
+    for (long p = from; p <= to;)
+    {
+      long at = -1;
+      const double r = best_match(x, b.chirp, p, std::min(to, p + len), &at);
+      if (r >= LIVE_MATCH && at >= 0)
+      {
+        const long lag = at + heardFrom - s;
+        bool seen = false;
+        for (long l : lags) if (labs(l - lag) <= tol) seen = true;
+        if (!seen) lags.push_back(lag);
+        p = at + len;
+      }
+      else
+        p += len + 1;
+    }
+    if (++tried == 3) break;
+  }
+  std::vector<Found> best;
+  int bestCount = -1;
+  for (long lag : lags)
+  {
+    std::vector<Found> out;
+    for (long s : b.starts)
+    {
+      const long c = s + lag - heardFrom;
+      if (c - tol < 0 || c + tol + len > (long)x.size()) continue;
+      long at = -1;
+      const double r = best_match(x, b.chirp, c - tol, c + tol, &at);
+      Found f;
+      f.start = s;
+      f.corr = r;
+      f.lagMs = r >= LIVE_MATCH && at >= 0 ? (at + heardFrom - s) * 1000.0 / srate : -1;
+      out.push_back(f);
+    }
+    const int n = found_count(out);
+    if (n > bestCount)
+    {
+      bestCount = n;
+      best = out;
+    }
+  }
+  if (lags.empty())
+    for (long s : b.starts)
+    {
+      const long from = s + (long)(minMs * srate / 1000) - heardFrom, to = s + (long)(maxMs * srate / 1000) - heardFrom;
+      if (from >= 0 && to + len <= (long)x.size()) best.push_back(Found { s, -1, 0 });
+    }
+  return best;
+}
+
+// the median or another percentile of the lags found
+static double lag_percentile(const std::vector<Found> &f, double pct)
+{
+  std::vector<double> v;
+  for (auto &x : f) if (x.lagMs >= 0) v.push_back(x.lagMs);
+  if (v.empty()) return -1;
+  std::sort(v.begin(), v.end());
+  const size_t i = std::min(v.size() - 1, (size_t)floor(pct / 100.0 * (v.size() - 1) + 0.5));
+  return v[i];
+}
+
+// the first line of `live status` (key=value): the room's and our own
+static std::map<std::string, std::string> live_room(Host &h)
+{
+  const std::string st = h.command("live status");
+  return parse_status(st.substr(0, st.find('\n')));
+}
+
+// one line of `live status` (key=value) for the peer named `who`
+static std::map<std::string, std::string> live_peer(Host &h, const std::string &who)
+{
+  const std::string st = h.command("live status");
+  size_t at = 0;
+  while (at < st.size())
+  {
+    size_t eol = st.find('\n', at);
+    if (eol == std::string::npos) eol = st.size();
+    const std::string line = st.substr(at, eol - at);
+    if (line.compare(0, 5 + who.size(), "peer=" + who) == 0) return parse_status(line);
+    at = eol + 1;
+  }
+  return std::map<std::string, std::string>();
+}
+
+// Two instances in step (one thread, as two tracks of a DAW): alice hosts the server and plays
+// chirps, bob joins and plays nothing, and an NJClient without Live ("old", sending nothing)
+// joins too. Before Live, bob hears alice through intervals (one interval and some late); then
+// alice turns the room's Live on (!live on) and bob hears her live, the intervals' copy muted;
+// on his output Player N (hers) and nowhere else; old still hears her through intervals. Then
+// bob's jitter buffer goes to 40 ms, and last alice turns Live off: bob hears her intervals at
+// once. The hosts never stop: the test looks at what they played while they go on.
+//   PORT <port>
+//   LIVE ready b_offered=<0|1> b_room=<on|off> b_peers=<n> old_users=<n>
+//   LIVE intervals found=<n>/<m> lag_ms=<median> old_found=<n>/<m> old_lag_ms=<median>
+//   LIVE on b_live=<0|1> waited_s=<s> marker=<0|1: " · live" on alice's channel in bob's users>
+//   LIVE phase <live|buffer40> found=<n>/<m> median_ms=<> p95_ms=<> min_ms=<> max_ms=<> mean_corr=<>
+//        estimate_ms=<bob's estimate> outside=<energy outside the copies / inside> interval_copy=<heard>/<checked>
+//        player=<N> player_found=<n>/<m> other_players_peak=<> old_found=<n>/<m> old_lag_ms=<>
+//        dropouts=<bob's for alice, in the phase> b_live=<0|1>
+//        late_blocks=<blocks the test host called more than 20 ms late, as a busy machine> late_ms=<in all>
+//        late_before=<the same, before the phase> process_max_ms=<alice's longest process() call>/<bob's>
+//   LIVE off found=<n>/<m> lag_ms=<median> b_live=<0|1> b_room=<on|off>
+//   chat (bob): ...
+//   DONE
+static int live_latency(Host &a, Host &b)
+{
+  const int srate = a.m_srate;
+  Bursts bursts(srate);
+  a.m_signal = [&bursts](long pos) { return bursts.at(pos); };
+  b.m_signal = [](long) { return 0.0f; };
+  a.m_noCatchUp = b.m_noCatchUp = true;
+  for (const char *c : { "name alice", "metronome off", "monitor off", "host on" })
+  {
+    const std::string r = a.command(c);
+    if (r != "ok") return fail(a, ("alice: command failed: " + std::string(c) + ": " + r).c_str());
+  }
+  for (const char *c : { "name bob", "metronome off", "monitor off" })
+  {
+    const std::string r = b.command(c);
+    if (r != "ok") return fail(b, ("bob: command failed: " + std::string(c) + ": " + r).c_str());
+  }
+  if (getenv("NINJAM_E2E_LIVE_BUFFER"))
+  {
+    // another jitter buffer than the default, for trying things by hand
+    a.command(std::string("live buffer ") + getenv("NINJAM_E2E_LIVE_BUFFER"));
+    b.command(std::string("live buffer ") + getenv("NINJAM_E2E_LIVE_BUFFER"));
+  }
+
+  JNL::open_socketlib();
+  NJClient old; // a client without Live
+  old.config_metronome_mute = true;
+  old.config_metronome = 0.0f;
+  old.SetLocalChannelInfo(0, "quiet", true, 0, true, 64, true, false); // sends nothing
+  old.SetLocalChannelMonitoring(0, false, 0.0f, false, 0.0f, true, true, false, false);
+
+  // both in step: alice's block, then bob's (and old's), in real time
+  auto both = [&](double seconds, bool record) {
+    const long blocks = (long)ceil(seconds * srate / a.m_block);
+    for (long i = 0; i < blocks; i ++)
+    {
+      a.block(nullptr, false);
+      b.block(&old, record);
+    }
+  };
+  auto until = [&](double timeout, std::function<bool()> pred) {
+    const double end = now_seconds() + timeout;
+    while (now_seconds() < end)
+    {
+      if (pred()) return true;
+      both(0.05, false);
+    }
+    return pred();
+  };
+  // work on what was recorded (on another thread), the hosts going on meanwhile
+  auto meanwhile = [&](std::function<void()> work) {
+    std::atomic<bool> done(false);
+    std::thread worker([&]() {
+      work();
+      done = true;
+    });
+    while (!done) both(0.02, false);
+    worker.join();
+  };
+  int result = 0;
+  auto finish = [&]() {
+    old.Disconnect();
+    b.command("disconnect");
+    a.command("host off");
+    until(10.0, [&]() { return a.status()["hosting"] == "0"; });
+    JNL::close_socketlib();
+  };
+
+  if (!until(15.0, [&]() { auto s = a.status(); return s["state"] == "connected" && s["hosting"] == "1"; }))
+    return fail(a, "alice did not start her server and join it");
+  const std::string port = a.status()["port"];
+  printf("PORT %s\n", port.c_str());
+  old.Connect(("127.0.0.1:" + port).c_str(), "anonymous:old", "");
+  b.command("connect localhost:" + port);
+  if (!until(20.0, [&]() {
+        auto sa = a.status(), sb = b.status();
+        return sb["state"] == "connected" && atoi(sa["users"].c_str()) >= 2 && atoi(sb["users"].c_str()) >= 2 &&
+               old.GetStatus() == NJClient::NJC_STATUS_OK && old.GetNumUsers() >= 1 && !live_peer(b, "alice@").empty();
+      }))
+  {
+    finish();
+    return fail(b, "bob and old did not join alice's server, or bob doesn't see alice as a Live player");
+  }
+  auto lb = live_room(b);
+  printf("LIVE ready b_offered=%s b_room=%s b_peers=%s old_users=%d\n", lb["offered"].c_str(), lb["live"].c_str(), lb["peers"].c_str(),
+         old.GetNumUsers());
+
+  const int ilen = atoi(a.status()["len"].c_str());
+  const double interval = (double)ilen / srate, ivMs = interval * 1000;
+
+  // before Live: through intervals, a bit more than one interval late
+  both(interval * 2.2, false);
+  a.clearHeard();
+  b.clearHeard();
+  both(interval * 4, true);
+  std::vector<Found> iv, ivOld;
+  {
+    const Bursts played = bursts;
+    const std::vector<float> x = b.pluginHeard(), px = b.m_peerHeard;
+    const long from = b.m_heardFrom;
+    meanwhile([&]() {
+      iv = find_pattern(x, from, played, srate, ivMs - 100, 2 * ivMs + 100);
+      ivOld = find_pattern(px, from, played, srate, ivMs - 100, 2 * ivMs + 100);
+    });
+  }
+  const double ivLag = lag_percentile(iv, 50), oldLag = lag_percentile(ivOld, 50);
+  printf("LIVE intervals found=%d/%d lag_ms=%.1f old_found=%d/%d old_lag_ms=%.1f\n", found_count(iv), (int)iv.size(), ivLag,
+         found_count(ivOld), (int)ivOld.size(), oldLag);
+
+  // alice turns the room's Live on; bob hears her live from one of his intervals' start on
+  a.command("live on");
+  const double t0 = now_seconds();
+  double lastDebug = t0;
+  const bool on = until(20.0, [&]() {
+    if (getenv("NINJAM_E2E_DEBUG") && now_seconds() - lastDebug >= 1.0)
+    {
+      lastDebug = now_seconds();
+      auto pa = live_peer(a, "bob@"), pb = live_peer(b, "alice@");
+      printf("debug: %.1f s: bob hears alice: healthy=%s dropouts=%s (dry %s, over %s), alice hears bob: dropouts=%s (dry %s, over %s)\n",
+             lastDebug - t0, pb["healthy"].c_str(), pb["dropouts"].c_str(), pb["underruns"].c_str(), pb["overruns"].c_str(),
+             pa["dropouts"].c_str(), pa["underruns"].c_str(), pa["overruns"].c_str());
+    }
+    return live_peer(b, "alice@")["live"] == "1";
+  });
+  const bool marker = contains(b.command("users"), "main \xc2\xb7 live");
+  printf("LIVE on b_live=%d waited_s=%.1f marker=%d\n", on ? 1 : 0, now_seconds() - t0, marker ? 1 : 0);
+  if (!on)
+  {
+    printf("live status (alice): %s", a.command("live status").c_str());
+    printf("live status (bob): %s", b.command("live status").c_str());
+    printf("chat (bob):\n%s", b.command("chatlog").c_str());
+    finish();
+    return fail(b, "bob does not hear alice live");
+  }
+
+  // bob's output Player N: alice's
+  int player = 0;
+  {
+    const std::string chat = b.command("chatlog");
+    const size_t at = chat.find("alice plays alone on the output Player ");
+    if (at != std::string::npos) player = atoi(chat.c_str() + at + strlen("alice plays alone on the output Player "));
+  }
+
+  auto phase = [&](const char *name, double seconds) {
+    const int dropoutsBefore = atoi(live_peer(b, "alice@")["dropouts"].c_str());
+    const int skipsBefore = a.m_skips + b.m_skips;
+    a.m_maxProcessMs = b.m_maxProcessMs = 0;
+    const double skippedBefore = a.m_skippedMs + b.m_skippedMs;
+    b.m_recordPlayers = true;
+    a.clearHeard();
+    b.clearHeard();
+    both(seconds, true);
+    b.m_recordPlayers = false;
+    auto lp = live_peer(b, "alice@");
+    const int skips = a.m_skips + b.m_skips - skipsBefore;
+    const double skippedMs = a.m_skippedMs + b.m_skippedMs - skippedBefore;
+    const Bursts played = bursts;
+    const std::vector<float> x = b.pluginHeard(), px = b.m_peerHeard;
+    std::vector<float> players[8];
+    for (int p = 0; p < 8; p ++) players[p] = b.m_playersHeard[p];
+    const long from = b.m_heardFrom;
+    std::vector<Found> f, fo;
+    int checked = 0, heard = 0, playerFound = 0, playerChecked = 0;
+    float othersPeak = 0;
+    double ein = 0, eout = 0;
+    meanwhile([&]() {
+      f = find_chirps(x, from, played, srate, 0, LIVE_WINDOW_MS);
+      // the interval's copy, where it was before Live: not heard (only where no live copy is near)
+      const double liveLag = lag_percentile(f, 50);
+      if (ivLag > 0)
+        for (long s : played.starts)
+        {
+          const long at = s + (long)(ivLag * srate / 1000);
+          bool near = false;
+          for (long o : played.starts)
+          {
+            const long liveAt = o + (long)(liveLag * srate / 1000);
+            if (labs(liveAt - at) < srate * 60 / 1000) near = true;
+          }
+          long pos = at - from - srate * 30 / 1000;
+          if (near || pos < 0 || pos + srate * 60 / 1000 + (long)played.chirp.size() > (long)x.size()) continue;
+          checked++;
+          long m = -1;
+          if (best_match(x, played.chirp, pos, pos + srate * 60 / 1000, &m) >= LIVE_MATCH) heard++;
+        }
+      // what bob plays outside the live copies (from 5 ms before to 30 ms after each)
+      std::vector<char> inside(x.size(), 0);
+      for (auto &k : f)
+      {
+        if (k.lagMs < 0) continue;
+        const long c = k.start + (long)(k.lagMs * srate / 1000) - from;
+        for (long i = std::max(0L, c - srate / 200); i < std::min((long)x.size(), c + srate * 30 / 1000); i ++) inside[(size_t)i] = 1;
+      }
+      for (size_t i = (size_t)srate / 2; i + srate / 2 < x.size(); i ++) (inside[i] ? ein : eout) += (double)x[i] * x[i];
+      // alice on bob's output Player N, and on no other
+      for (int p = 0; p < 8; p ++)
+      {
+        if (p + 1 == player)
+        {
+          std::vector<Found> pf = find_chirps(players[p], from, played, srate, 0, LIVE_WINDOW_MS);
+          playerFound = found_count(pf);
+          playerChecked = (int)pf.size();
+        }
+        else
+          for (float v : players[p]) othersPeak = std::max(othersPeak, fabsf(v));
+      }
+      fo = find_pattern(px, from, played, srate, ivMs - 100, 2 * ivMs + 100);
+    });
+    if (getenv("NINJAM_E2E_DEBUG"))
+    {
+      printf("debug: %s lags:", name);
+      for (auto &k : f) printf(" %.1f", k.lagMs);
+      printf("\n");
+    }
+    double corr = 0;
+    for (auto &k : f) corr += k.corr;
+    corr = f.empty() ? 0 : corr / f.size();
+    printf("LIVE phase %s found=%d/%d median_ms=%.1f p95_ms=%.1f min_ms=%.1f max_ms=%.1f mean_corr=%.3f estimate_ms=%s outside=%.5f "
+           "interval_copy=%d/%d player=%d player_found=%d/%d other_players_peak=%.5f old_found=%d/%d old_lag_ms=%.1f dropouts=%d "
+           "b_live=%s late_blocks=%d late_ms=%.0f late_before=%d/%.0f process_max_ms=%.2f/%.2f\n",
+           name, found_count(f), (int)f.size(), lag_percentile(f, 50), lag_percentile(f, 95), lag_percentile(f, 0),
+           lag_percentile(f, 100), corr, lp["delay"].c_str(), ein > 0 ? eout / ein : -1.0, heard, checked, player, playerFound,
+           playerChecked, othersPeak, found_count(fo), (int)fo.size(), lag_percentile(fo, 50),
+           atoi(lp["dropouts"].c_str()) - dropoutsBefore, lp["live"].c_str(), skips, skippedMs, skipsBefore, skippedBefore, a.m_maxProcessMs, b.m_maxProcessMs);
+  };
+  phase("live", 20.0);
+  printf("live status (bob): %s", b.command("live status").c_str());
+  printf("users (bob): %s", b.command("users").c_str());
+  b.command("chat /live");
+  both(0.2, false);
+
+  // a bigger jitter buffer: later by about as much
+  b.command("live buffer 40");
+  both(1.0, false);
+  until(20.0, [&]() { return live_peer(b, "alice@")["live"] == "1"; });
+  phase("buffer40", 10.0);
+  b.command("live buffer 20");
+
+  // Live off: bob hears alice's intervals at once
+  a.command("live off");
+  until(5.0, [&]() { return live_room(b)["live"] == "off"; });
+  a.clearHeard();
+  b.clearHeard();
+  both(interval * 2.5, true);
+  std::vector<Found> off;
+  {
+    const Bursts played = bursts;
+    const std::vector<float> x = b.pluginHeard();
+    const long from = b.m_heardFrom;
+    meanwhile([&]() { off = find_chirps(x, from, played, srate, ivLag - 30, ivLag + 30); });
+  }
+  printf("LIVE off found=%d/%d lag_ms=%.1f b_live=%s b_room=%s\n", found_count(off), (int)off.size(), lag_percentile(off, 50),
+         live_peer(b, "alice@")["live"].c_str(), live_room(b)["live"].c_str());
+  printf("chat (bob):\n%s", b.command("chatlog").c_str());
+  printf("chat (alice):\n%s", a.command("chatlog").c_str());
+
+  finish();
+  b.unload();
+  a.unload();
+  printf("DONE\n");
+  return result;
+}
+
 // the host leads: the room follows its tempo, and the intervals its bars
 static int host_sync(Host &host)
 {
@@ -1213,7 +1733,7 @@ int main(int argc, char **argv)
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2)
   {
-    fprintf(stderr, "usage: %s path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link]]]\n", argv[0]);
+    fprintf(stderr, "usage: %s path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link | live]]]\n", argv[0]);
     return 2;
   }
   const int srate = argc > 2 ? atoi(argv[2]) : 48000;
@@ -1231,6 +1751,12 @@ int main(int argc, char **argv)
   if (!host.load(argv[1])) return 1;
   if (argc > 5 && !strcmp(argv[4], "join")) return join_vorbis_room(host, argv[5]);
   if (argc > 4 && !strcmp(argv[4], "sync")) return host_sync(host);
+  if (argc > 4 && !strcmp(argv[4], "live"))
+  {
+    Host second(srate, blockSize, PEER_FREQ);
+    if (!second.loadAnother(host)) return fail(host, "could not create a second instance");
+    return live_latency(host, second);
+  }
   if (argc > 4 && !strcmp(argv[4], "two"))
   {
     Host second(srate, blockSize, PEER_FREQ);

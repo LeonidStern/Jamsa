@@ -51,6 +51,13 @@
 #include "clipboard.h"
 #endif
 
+#ifndef _WIN32
+#include <netinet/in.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 using namespace ninjam_vst3;
 
 static int g_failures = 0, g_checks = 0;
@@ -135,6 +142,184 @@ static void test_state()
   CHECK(offLoaded.deserialize(off.serialize()));
   CHECK(!offLoaded.followHostTempo);
   CHECK(e.followHostTempo);
+}
+
+// Live: the jitter buffer is saved with the state (states from before load with the default);
+// the `live` text command, and the /live and /help chat commands out of a room
+static void test_live_commands()
+{
+  CHECK_EQ(Settings().liveBufferMs, 20);
+  CHECK(Settings().serialize().find("\nlive_buffer_ms=20\n") != std::string::npos);
+  Settings s;
+  s.liveBufferMs = 35;
+  Settings r;
+  CHECK(r.deserialize(s.serialize()));
+  CHECK_EQ(r.liveBufferMs, 35);
+  struct { const char *saved; int ms; } buffers[] = {
+    { "5", 5 }, { "200", 200 }, { "1", 5 }, { "0", 5 }, { "-3", 5 }, { "999", 200 }, { "99999999999999999999", 200 },
+    { "abc", 20 }, { "", 20 }, { "30ms", 20 }, { "30", 30 },
+  };
+  for (auto &b : buffers)
+  {
+    Settings k;
+    CHECK(k.deserialize(std::string("NINJAM-VST3-STATE 1\nlive_buffer_ms=") + b.saved + "\n"));
+    CHECK_EQ(k.liveBufferMs, b.ms);
+  }
+  Settings old; // saved before Live
+  CHECK(old.deserialize("NINJAM-VST3-STATE 1\nuser=x\nopus_kbps=128\n"));
+  CHECK_EQ(old.liveBufferMs, 20);
+
+  Engine en;
+  en.start(); // its network thread
+  auto has = [](const std::string &text, const std::string &what) { return text.find(what) != std::string::npos; };
+  // the chat has `what` (the engine's thread writes it), within a few seconds
+  auto chat_has = [&](const std::string &what) {
+    for (int i = 0; i < 300; i ++)
+    {
+      if (has(en.command("chatlog"), what)) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    printf("chat:\n%s", en.command("chatlog").c_str());
+    return false;
+  };
+  auto status_has = [&](const std::string &what) {
+    for (int i = 0; i < 300; i ++)
+    {
+      if (has(en.command("live status"), what)) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    printf("live status: %s", en.command("live status").c_str());
+    return false;
+  };
+  CHECK(status_has(" buffer=20 "));
+  const std::string st = en.command("live status");
+  CHECK(st.compare(0, 9, "live=off ") == 0);
+  CHECK(has(st, " offered=0 ") && has(st, " running=0 ") && has(st, " buffer=20 ") && has(st, " peers=0\n"));
+  CHECK_EQ(st.find('\n'), st.size() - 1); // no players: one line
+
+  CHECK_EQ(en.command("live buffer 30"), "ok");
+  CHECK_EQ(en.getSettings().liveBufferMs, 30);
+  CHECK(status_has(" buffer=30 "));
+  for (const char *bad : { "live buffer 4", "live buffer 201", "live buffer x", "live buffer", "live buffer 30ms" })
+    CHECK(en.command(bad).compare(0, 25, "error: live buffer N, N f") == 0);
+  CHECK(en.command("live maybe").compare(0, 6, "error:") == 0);
+  CHECK_EQ(en.getSettings().liveBufferMs, 30);
+  CHECK(has(en.getSettings().serialize(), "\nlive_buffer_ms=30\n"));
+
+  // Live is the room's: out of a room, nothing to turn on
+  CHECK_EQ(en.command("live on"), "ok");
+  CHECK(chat_has("Not connected: Live mode is the room's, so join a room first."));
+
+  // the chat's /live buffer N, any case
+  en.sendChat("/live buffer 45");
+  CHECK(chat_has("Live's jitter buffer is 45 ms now (it was 30)."));
+  CHECK_EQ(en.getSettings().liveBufferMs, 45);
+  en.sendChat("/live buffer 2");
+  CHECK(chat_has("/live buffer takes a number of ms from 5 to 200, such as /live buffer 30."));
+  CHECK_EQ(en.getSettings().liveBufferMs, 45);
+  en.sendChat("/LIVE Buffer 50");
+  CHECK(chat_has("Live's jitter buffer is 50 ms now (it was 45)."));
+  en.sendChat("/live buffer");
+  CHECK(chat_has("Live's jitter buffer is 50 ms. Type /live buffer 30 to change it (5 to 200)."));
+  {
+    // any case: the answer comes once more for each
+    const std::string answer = "Not connected. In a room with Live mode, /live shows how late you hear each Jamsa player.";
+    auto count = [&]() {
+      const std::string log = en.command("chatlog");
+      int n = 0;
+      for (size_t at = log.find(answer); at != std::string::npos; at = log.find(answer, at + 1)) n ++;
+      return n;
+    };
+    int want = count();
+    for (const char *cmd : { "/live", "/LIVE", " /Live " })
+    {
+      en.sendChat(cmd);
+      want ++;
+      int n = 0;
+      for (int i = 0; i < 300 && (n = count()) < want; i ++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      CHECK_EQ(n, want);
+    }
+    CHECK(chat_has(answer + " Live's jitter buffer is 50 ms"));
+  }
+  en.sendChat("/live off");
+  en.sendChat("/live sideways");
+  CHECK(chat_has("Type /live to see how the Live players sound, or /live buffer 30 to set Live's jitter buffer (ms)."));
+  // /help: what Live adds
+  en.sendChat("/Help");
+  CHECK(chat_has("/live (how the Live players sound), /live buffer 30 (Live's jitter buffer in ms)"));
+  CHECK(chat_has("!live on|off (Live mode: the room's Jamsa players hear each other in real time)"));
+  // anything else still needs a room
+  en.sendChat("hello");
+  CHECK(chat_has("Not connected, so nobody can read that."));
+  // a state loaded later sets it too
+  en.setSettings(old);
+  CHECK_EQ(en.getSettings().liveBufferMs, 20);
+  CHECK(status_has(" buffer=20 inuse=20 "));
+
+  // with the host's long blocks, more: two blocks and 5 ms (a player's audio comes a block at a
+  // time and plays a block at a time)
+  CHECK_EQ(Engine::liveBufferFor(20, 256, 48000), 20);
+  CHECK_EQ(Engine::liveBufferFor(20, 512, 48000), 27);
+  CHECK_EQ(Engine::liveBufferFor(20, 512, 44100), 29);
+  CHECK_EQ(Engine::liveBufferFor(20, 1024, 48000), 48);
+  CHECK_EQ(Engine::liveBufferFor(40, 1024, 48000), 48);
+  CHECK_EQ(Engine::liveBufferFor(60, 1024, 48000), 60);
+  CHECK_EQ(Engine::liveBufferFor(20, 2048, 48000), 91);
+  CHECK_EQ(Engine::liveBufferFor(20, 8192, 48000), 200);
+  CHECK_EQ(Engine::liveBufferFor(20, 0, 48000), 20);
+  CHECK_EQ(Engine::liveBufferFor(1, 0, 0), 5);
+  {
+    std::vector<float> l(1024, 0.0f), r(1024, 0.0f), ol(1024), orr(1024);
+    float *in[2] = { l.data(), r.data() }, *out[2] = { ol.data(), orr.data() };
+    en.process(in, 2, out, 2, 1024, nullptr, nullptr);
+  }
+  CHECK(status_has(" buffer=20 inuse=48 hostblock=1024 "));
+  en.sendChat("/live buffer 30");
+  CHECK(chat_has("Live's jitter buffer is 30 ms now (it was 20). Less is less late, more has fewer dropouts: type /live to see "
+                 "them. Your DAW's audio buffer (1024 samples) needs at least 48 ms, so Live uses 48 ms."));
+  en.stop();
+}
+
+// The built-in server has Live (UDP on its TCP port number); when no port from 2049 has UDP free
+// too, it runs without, and says so.
+static void test_hostserver_live()
+{
+#ifndef _WIN32
+  setenv("JAMSA_WHATSMYIP", "off", 1); // no "what's my IP" service on the internet
+  std::vector<int> taken;
+  for (int p = HostServer::FIRST_PORT; p < HostServer::FIRST_PORT + HostServer::PORTS_TO_TRY; p ++)
+  {
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in a {};
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short)p);
+    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (fd >= 0 && !bind(fd, (sockaddr *)&a, sizeof(a))) taken.push_back(fd);
+    else if (fd >= 0) close(fd); // something else has it: the server can't have it either
+  }
+  int owner = 0;
+  std::string err;
+  HostServer &hs = HostServer::instance();
+  CHECK(hs.start(&owner, 128, &err));
+  HostServer::State st = hs.state();
+  CHECK(st.owner == &owner && !st.live);
+  CHECK(st.port >= HostServer::FIRST_PORT && st.port < HostServer::FIRST_PORT + HostServer::PORTS_TO_TRY);
+  unsigned long long serial = 0;
+  bool told = false;
+  for (const std::string &m : hs.messagesSince(&serial))
+    if (m == "Live mode is off on this server: UDP ports 2049 to 2058 are in use by other programs, so the players hear each "
+             "other through intervals only.") told = true;
+  CHECK(told);
+  hs.stop(&owner);
+  for (int fd : taken) close(fd);
+
+  // UDP free: Live
+  CHECK(hs.start(&owner, 128, &err));
+  CHECK(hs.state().live);
+  hs.stop(&owner);
+  CHECK(hs.state().owner == nullptr);
+  unsetenv("JAMSA_WHATSMYIP");
+#endif
 }
 
 static void test_portmap_messages()
@@ -1492,6 +1677,8 @@ int main(int argc, char **argv)
   }
 
   test_state();
+  test_live_commands();
+  test_hostserver_live();
   test_portmap_messages();
   test_names();
   test_bar_math();

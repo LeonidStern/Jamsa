@@ -3,6 +3,9 @@
 #   plugin_unit_test   saved state, port mapping messages, following the host's tempo and bars,
 #                      the metronome's click, the editor's texts and BPM dragging; Ableton Link:
 #                      the beat, phase and tempo logic, one instance leading Link in real time
+#   njclient_live_test NJClient's Live with the server's code on loopback: what the server
+#                      says, Live that doesn't play changes nothing (bit for bit), the
+#                      callback's audio in place of the intervals, with the user's mix
 #   plugin_clipboard   (Linux, with xvfb-run) the Copy buttons' text, read back the way a
 #                      program that pastes reads it
 #   plugin_e2e         test_plugin_e2e.py: plugin_e2e_host loads Jamsa.vst3, which hosts a
@@ -11,6 +14,9 @@
 #                      host whose tempo the room follows and whose bars the intervals start on,
 #                      and a host that is a Link peer (as Live with its Link on), which the room's
 #                      tempo and intervals lead
+#   plugin_live_e2e    test_live_e2e.py: Live mode between two instances through the plug-in's
+#                      own server (how late, measured from the audio), the intervals' copy
+#                      muted, each player's output, and a client without Live on intervals
 #   live_aoo_test      (ninjam/live) AOO's lock-free queue and RT memory pool under threads,
 #                      and the AOO bugs fixed in our copy
 #   live_fuzz_test     (ninjam/live) hostile and mangled packets into a running AOO source
@@ -48,6 +54,12 @@ if(SMTG_LINUX)
     endif()
 endif()
 
+add_executable(njclient_live_test njclient_live_test.cpp)
+target_compile_features(njclient_live_test PRIVATE cxx_std_17)
+target_link_libraries(njclient_live_test PRIVATE ninjam_client ninjamsrv_embedded)
+add_test(NAME njclient_live_test COMMAND njclient_live_test)
+set_tests_properties(njclient_live_test PROPERTIES TIMEOUT 120)
+
 # Live mode's tests, defined in ninjam/live/CMakeLists.txt
 ninjam_live_add_tests()
 
@@ -76,6 +88,16 @@ if(NOT WIN32)
         )
         set_tests_properties(plugin_e2e PROPERTIES
             TIMEOUT 900
+            RESOURCE_LOCK ableton_link
+            ENVIRONMENT "NINJAM_VST3_PLUGIN=$<TARGET_PROPERTY:Jamsa,SMTG_PLUGIN_PACKAGE_PATH>;NINJAM_VST3_E2E_HOST=$<TARGET_FILE:plugin_e2e_host>"
+        )
+        add_test(NAME plugin_live_e2e
+            COMMAND ${Python3_EXECUTABLE} -m unittest -v test_live_e2e
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        # its server takes the same ports as plugin_e2e's (2049 on), and Jamsa joins Link
+        set_tests_properties(plugin_live_e2e PROPERTIES
+            TIMEOUT 300
             RESOURCE_LOCK ableton_link
             ENVIRONMENT "NINJAM_VST3_PLUGIN=$<TARGET_PROPERTY:Jamsa,SMTG_PLUGIN_PACKAGE_PATH>;NINJAM_VST3_E2E_HOST=$<TARGET_FILE:plugin_e2e_host>"
         )
