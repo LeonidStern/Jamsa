@@ -281,8 +281,20 @@ void Core::setStreaming(bool on)
   std::lock_guard<std::mutex> lock(m_ctlMutex);
   if (on == m_streaming) return;
   m_streaming = on;
-  if (on) m_source->startStream(0, nullptr);
-  else m_source->stopStream(0);
+  m_wantStream.store(on);
+  if (!on) m_source->stopStream(0);
+  else if (m_sendOn.load()) streamOn(m_sendOn);
+}
+
+// Both flags (m_wantStream, m_sendOn) were seen true: start, then look at
+// 'other' (the other thread's flag) again. If it went off in between, that
+// thread may have stopped the stream before we started it: stop it again.
+// (Otherwise it goes off later, and its stop comes after our start.) Only
+// atomics change: also for the audio thread.
+void Core::streamOn(const std::atomic<bool> &other)
+{
+  m_source->startStream(0, nullptr);
+  if (!other.load()) m_source->stopStream(0);
 }
 
 void Core::setRoomOn(bool on)
@@ -521,6 +533,19 @@ bool Core::processBlock(const float *inL, const float *inR, int frames, bool sen
   m_lastFrames = frames;
   m_audioDue.store(t + ntpFromSeconds(frames / m_sampleRate), std::memory_order_relaxed);
 
+  // nothing to send (the host stopped, transmit off): no stream either,
+  // rather than one of silence
+  const bool sending = send && inL;
+  if (sending != m_sendOn.load(std::memory_order_relaxed))
+  {
+    m_sendOn.store(sending);
+    if (m_wantStream.load())
+    {
+      if (sending) streamOn(m_wantStream);
+      else m_source->stopStream(0);
+    }
+  }
+
   for (Slot &s : m_slots) s.bound = s.peer.load(std::memory_order_acquire) != 0;
   const float *inRight = inR ? inR : inL;
   bool wake = false;
@@ -528,7 +553,7 @@ bool Core::processBlock(const float *inL, const float *inR, int frames, bool sen
   while (done < frames)
   {
     const int n = std::min(frames - done, kChunk - m_fill);
-    if (send && inL)
+    if (sending)
     {
       memcpy(m_in[0] + m_fill, inL + done, n * sizeof(float));
       memcpy(m_in[1] + m_fill, inRight + done, n * sizeof(float));

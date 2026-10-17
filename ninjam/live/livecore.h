@@ -150,7 +150,7 @@ public:
   void setSelf(uint32_t id);
   void configure(int kbps, int frameSamples);
   void setRoomOn(bool on);            // off: every slot goes quiet
-  void setStreaming(bool on);         // our stream (room on, may send)
+  void setStreaming(bool on);         // our stream (room on, may send), while processBlock() gets 'send'
   bool streaming() const { return m_streaming; }
   void setPeers(const std::vector<Peer> &peers);
   void setJitterMs(int ms);
@@ -231,6 +231,7 @@ private:
   void bind(int slot, uint32_t peer);
   void unbind(int slot);
   void setSourceSink(uint32_t peer, bool add);
+  void streamOn(const std::atomic<bool> &other);
   bool listed(uint32_t peer) const;
   void updateHealth(double now);
   void applyBufferSize();
@@ -243,6 +244,14 @@ private:
   uint32_t m_self = 0;
   int m_kbps = 128, m_frame = 240;
   bool m_streaming = false;
+  // Our stream runs while both are true: m_wantStream (setStreaming(), the
+  // control thread) and m_sendOn (processBlock()'s 'send', the audio
+  // thread). Each thread stores its own flag and then reads the other's;
+  // whichever sees both true starts the stream (once more is harmless) and
+  // checks again, and whichever turns its own off stops it (see
+  // setStreaming()).
+  std::atomic<bool> m_wantStream{false};
+  std::atomic<bool> m_sendOn{false};
   bool m_roomOn = false;
   std::atomic<bool> m_rxOn{false};  // m_roomOn, for the receive thread
   int m_jitterMs = 20;

@@ -246,7 +246,14 @@ the server (`serverRttMs()`).
   see also `AOO_MAX_QUEUED_PACKETS`). What comes for our source still goes
   through, as the send thread runs on. The streams pick up from the next
   packets.
-- `processBlock(..., send = false)` sends silence; the stream goes on.
+- `processBlock(..., send = false)` (or no input) stops our stream until
+  `send` is on again: nothing goes out rather than a stream of silence, as
+  intervals send nothing while the host is stopped. The stream runs while
+  both `setStreaming()` (the room on, `maySend`) and the last block's
+  `send` say so; each thread turns its flag on or off and then looks at
+  the other's, so neither can leave the stream running alone (see
+  `Core::setStreaming()`). Before, a muted player or a stopped host still
+  sent 200 datagrams of silence a second.
 - The room's Live flag off (`update()`): the source stops, every slot goes
   unhealthy at once and drops its source, and nothing reaches AOO until it
   is on again. HELLOs go on. `maySend` false: the source stops, we still

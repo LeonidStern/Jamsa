@@ -1502,6 +1502,55 @@ static void test_glue_room_off()
   CHECK(heard_snr(a, b, 0.9) > 20);
 }
 
+// processBlock()'s 'send' off (transmit off, the host stopped): no stream
+// at all rather than one of silence, and the listener's slot goes quiet;
+// on again, it is heard again. The stream turned off and on in between
+// (update()) doesn't start it either.
+static void test_glue_send_off()
+{
+  if (!selected("glue_send_off")) return;
+  net n(37);
+  player &a = n.add(1);
+  player &b = n.add(2);
+  n.start_all();
+  n.run(2.0);
+  const int slot = b.core->slotOf(1);
+  CHECK(b.core->slotHealthy(slot));
+  // a's datagrams to the whole room: its stream's data (the rest goes to
+  // one player: /start, /stop, pings, resent blocks)
+  auto data_up = [&] { return a.uploads - a.unicast_uploads; };
+  a.send = false;
+  n.run(0.2);
+  long d0 = data_up();
+  n.run(1.0);
+  const long off = data_up() - d0;
+  CHECK_EQ(off, 0L);
+  CHECK(!b.core->slotHealthy(slot));
+  const std::vector<PeerStats> st = b.core->stats(n.now);
+  const PeerStats *ps = stats_of(st, 1);
+  CHECK(ps && !ps->streaming);
+  a.send = true;
+  d0 = data_up();
+  CHECK(n.run_until([&] { return b.core->slotHealthy(slot); }, 2.5));
+  start_recording(n);
+  n.run(1.0);
+  CHECK(heard_snr(b, a, 0.9) > 20);
+  CHECK(data_up() - d0 > 150);
+  a.send = false;
+  n.run(0.1);
+  a.core->setStreaming(false);
+  a.core->setStreaming(true);
+  n.run(0.1);
+  d0 = data_up();
+  n.run(1.0);
+  const long toggled = data_up() - d0;
+  CHECK_EQ(toggled, 0L);
+  printf("  'send' off: %ld datagrams of the stream a second, also after the stream was turned off and on: %ld\n",
+         off, toggled);
+  a.send = true;
+  CHECK(n.run_until([&] { return b.core->slotHealthy(slot); }, 2.5));
+}
+
 // The host stops calling for a second (processing suspended): both ends
 // get over it.
 static void test_glue_gap()
@@ -1662,6 +1711,7 @@ int main(int argc, char **argv)
   test_glue_prefilter();
   test_glue_fuzz();
   test_glue_room_off();
+  test_glue_send_off();
   test_glue_gap();
   test_glue_host_stopped();
   test_glue_bitrate_frame();

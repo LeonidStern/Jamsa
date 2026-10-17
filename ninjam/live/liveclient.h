@@ -132,8 +132,9 @@ public:
   // Sizes the buffers; from setupProcessing. Not while processBlock() runs
   // (it would skip a block rather than wait).
   void prepare(double sampleRate, int maxBlock);
-  // Once per host block: sends our input (silence unless 'send'), and renders
-  // every slot's stem for this block. inR may be null (mono).
+  // Once per host block: sends our input (while 'send' and inL; otherwise
+  // our stream stops, rather than send silence), and renders every slot's
+  // stem for this block. inR may be null (mono).
   void processBlock(const float *inL, const float *inR, int frames, bool send);
   int slotOf(uint32_t peerId) const;   // -1 if none
   bool slotHealthy(int slot) const;
