@@ -208,7 +208,7 @@ jobs:
           fi
           # which ones are there, by name only (never the values)
           for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
-            if [ -n "${!name}" ]; then echo "$name: set"; else echo "$name: missing"; fi
+            if [ -n "${!name}" ]; then echo "$name: set"; else echo "::warning title=Mac signing::secret $name is missing or empty"; fi
           done
 
       - name: Configure (universal, macOS 12 and later)
