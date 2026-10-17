@@ -160,6 +160,11 @@ Tests (`tests/`):
   whatever AOO has. An exception out of AOO's `send()` (`std::bad_alloc`)
   is caught there and counted (`Totals::sendFailed`): out of the thread it
   would end the host.
+- `stop()` shuts the socket down to wake both threads, while the send
+  thread may be in `send()`. On macOS that `send()` raises SIGPIPE, which
+  ends the host unless it ignores the signal (`live_client_test` died of
+  it on macOS CI), so the socket has `SO_NOSIGPIPE` there; Linux only fails
+  the call with `EPIPE`.
 
 ### Protocol (UDP)
 

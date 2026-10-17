@@ -415,6 +415,13 @@ struct Client::Impl
 #endif
     sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == kNoSocket) return fail("can't open a UDP socket");
+#ifdef SO_NOSIGPIPE
+    // stop() shuts the socket down while the send thread may be in send():
+    // on macOS that send raises SIGPIPE, which ends the host unless it
+    // ignores the signal (Linux only fails it with EPIPE)
+    int one = 1;
+    setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
 
     // big enough for a few hundred ms of the whole room
     int bufsize = 256 * 1024;
