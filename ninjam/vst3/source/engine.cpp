@@ -524,7 +524,8 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
         m_liveL[i] = inL ? inL[done + i] * gain : 0.0f;
         m_liveR[i] = inR ? inR[done + i] * gain : 0.0f;
       }
-      m_live->processBlock(m_liveL.data(), m_liveR.data(), len, liveSend);
+      // (no input from the host, its input bus off: nothing to send, rather than silence)
+      m_live->processBlock(inL ? m_liveL.data() : nullptr, inL ? m_liveR.data() : nullptr, len, liveSend);
       m_liveBlock = true;
     }
     int n = std::min(frames - done, m_maxBlock);
@@ -1244,6 +1245,7 @@ void Engine::stopLive()
   m_liveGen = 0;
   m_liveUsers.clear();
   m_liveDropoutsBase.clear();
+  m_liveCountSince = 0; // a new client counts from the start
   m_toldLiveOffered = m_toldLiveNoAnswer = m_toldLiveError = false;
   m_liveRetryAt = 0;
 }
@@ -1256,11 +1258,31 @@ static std::string ms_text(double ms)
   return buf;
 }
 
+int Engine::liveBufferNeeded(int hostBlock, int sampleRate)
+{
+  return hostBlock > 0 && sampleRate > 0 ? (int)ceil(2000.0 * hostBlock / sampleRate + 5.0) : 0;
+}
+
+int Engine::longestLiveBlock(int sampleRate)
+{
+  int n = 64;
+  while (n < (1 << 16) && liveBufferNeeded(2 * n, sampleRate) <= Settings::MAX_LIVE_BUFFER_MS) n *= 2;
+  return n;
+}
+
 int Engine::liveBufferFor(int askedMs, int hostBlock, int sampleRate)
 {
-  int ms = std::max(askedMs, Settings::MIN_LIVE_BUFFER_MS);
-  if (hostBlock > 0 && sampleRate > 0) ms = std::max(ms, (int)ceil(2000.0 * hostBlock / sampleRate + 5.0));
+  const int ms = std::max(std::max(askedMs, Settings::MIN_LIVE_BUFFER_MS), liveBufferNeeded(hostBlock, sampleRate));
   return std::min(ms, Settings::MAX_LIVE_BUFFER_MS);
+}
+
+// what /live and /live buffer say of a DAW's audio buffer that needs more than Live can use
+static std::string too_long_blocks_text(int hostBlock, int sampleRate)
+{
+  return "Your DAW's audio buffer (" + std::to_string(hostBlock) + " samples) needs at least " +
+         std::to_string(Engine::liveBufferNeeded(hostBlock, sampleRate)) + " ms, more than Live can use (" +
+         std::to_string(Settings::MAX_LIVE_BUFFER_MS) + " ms), so expect dropouts: " +
+         std::to_string(Engine::longestLiveBlock(sampleRate)) + " samples or less plays well.";
 }
 
 void Engine::applyLiveBuffer()
@@ -1278,9 +1300,9 @@ void Engine::applyLiveBuffer()
   if (ms == m_liveBufferApplied) return;
   // a new jitter buffer: each stream starts again (a short gap), and the dropouts count again
   m_live->setJitterMs(ms);
+  if (m_liveBufferApplied > 0) m_liveCountSince = t; // (not the first one: /live counts from the start then)
   m_liveBufferApplied = ms;
   m_liveBufferChangedAt = t;
-  m_liveCountSince = t;
   m_liveDropoutsBase.clear();
   if (m_live->running())
     for (auto &ps : m_live->stats()) m_liveDropoutsBase[ps.name] = ps.underruns + ps.overruns + ps.dropped;
@@ -1343,7 +1365,21 @@ void Engine::updateLive()
     m_liveStartedAt = t;
     m_liveGen = 0; // the players again
   }
-  else m_live->update(c); // (a new id or key from the server restarts it)
+  else
+  {
+    // a new id, key or port from the server (its config reloaded) restarts it: the server gets
+    // its time to answer again, and a server that doesn't is told of again
+    if (c.myId != m_liveId || c.key != m_liveKey || c.serverIp != m_liveIp || c.udpPort != m_livePort)
+    {
+      m_liveStartedAt = t;
+      m_toldLiveNoAnswer = false;
+    }
+    m_live->update(c);
+  }
+  m_liveId = c.myId;
+  m_liveKey = c.key;
+  m_liveIp = c.serverIp;
+  m_livePort = c.udpPort;
 
   const bool running = m_live->running();
   if (running && m_liveGen != gen)
@@ -1500,7 +1536,8 @@ void Engine::updateLiveView(Snapshot &snap)
     v.streaming = ps.streaming;
     v.healthy = ps.healthy;
     auto lu = m_liveUsers.find(ps.name);
-    v.live = lu != m_liveUsers.end() && lu->second.on >= 0;
+    // (not while rendering offline: the intervals play then)
+    v.live = lu != m_liveUsers.end() && lu->second.on >= 0 && !m_offline.load(std::memory_order_relaxed);
     v.delayMs = ps.oneWayMs;
     v.rttMs = ps.rttMs;
     v.bufferMs = ps.bufferMs;
@@ -1547,8 +1584,10 @@ void Engine::liveChatCommand(const std::string &argIn)
     setLiveBufferMs((int)ms); // the dropouts count again from there (applyLocalSettings())
     std::string text = "Live's jitter buffer is " + std::to_string(ms) + " ms now (it was " + std::to_string(buffer) +
                        "). Less is less late, more has fewer dropouts: type /live to see them.";
-    const int use = liveBufferFor((int)ms, m_liveHostBlock, m_sampleRate.load(std::memory_order_relaxed));
-    if (use > ms)
+    const int sr = m_sampleRate.load(std::memory_order_relaxed);
+    const int use = liveBufferFor((int)ms, m_liveHostBlock, sr);
+    if (liveBufferNeeded(m_liveHostBlock, sr) > use) text += " " + too_long_blocks_text(m_liveHostBlock, sr);
+    else if (use > ms)
       text += " Your DAW's audio buffer (" + std::to_string(m_liveHostBlock) + " samples) needs at least " + std::to_string(use) +
               " ms, so Live uses " + std::to_string(use) + " ms.";
     addChat(ChatLine::System, "", text);
@@ -1585,7 +1624,9 @@ void Engine::liveChatCommand(const std::string &argIn)
   }
   const Settings s = getSettings();
   std::string head = "Live is on. Jitter buffer " + std::to_string(m_liveBufferApplied) + " ms";
-  if (m_liveBufferApplied > s.liveBufferMs)
+  const int sr = m_sampleRate.load(std::memory_order_relaxed);
+  if (liveBufferNeeded(m_liveHostBlock, sr) > m_liveBufferApplied) head += ". " + too_long_blocks_text(m_liveHostBlock, sr) + " ";
+  else if (m_liveBufferApplied > s.liveBufferMs)
     head += ": your DAW's audio buffer (" + std::to_string(m_liveHostBlock) + " samples) needs that much, more than the " +
             std::to_string(s.liveBufferMs) + " ms you set. ";
   else head += " (/live buffer N to change it). ";
@@ -1598,7 +1639,7 @@ void Engine::liveChatCommand(const std::string &argIn)
   }
   else head += "The server doesn't answer over UDP yet.";
   if (!(flags & mpb_server_live::LIVE_FLAG_MAY_SEND))
-    head += " The room has no room for more Live players, so the others hear you through intervals.";
+    head += " The room has no room for more Live players, so you hear everyone, and they hear you, through intervals.";
   else if (!s.transmit) head += " Transmit is off, so you send nothing.";
   else if (m_hostStopped.load(std::memory_order_relaxed)) head += " The host is stopped, so you send nothing until it plays.";
   addChat(ChatLine::System, "", head);
@@ -1617,7 +1658,7 @@ void Engine::liveChatCommand(const std::string &argIn)
     {
       line += live ? "live" : ps.healthy ? "live from the next interval" : "intervals (their real-time audio has dropouts)";
       char buf[256];
-      snprintf(buf, sizeof(buf), ", about %.0f ms late (buffer %.0f ms, network %.0f ms, codec %.0f ms), %.1f%% lost", ps.oneWayMs,
+      snprintf(buf, sizeof(buf), ", about %.0f ms late (buffer %.0f ms, network %.0f ms, codec %.0f ms), %.1f%% of the packets lost", ps.oneWayMs,
                ps.bufferMs, ps.rttMs / 2, ps.codecMs, ps.lossPct);
       line += buf;
     }
@@ -1628,10 +1669,10 @@ void Engine::liveChatCommand(const std::string &argIn)
       const int from = base != m_liveDropoutsBase.end() && base->second <= all ? base->second : 0;
       char buf[256];
       if (since >= 0)
-        snprintf(buf, sizeof(buf), ". Dropouts: %d in the %.0f s since the buffer changed, %d in all (%d ran dry, %d overflowed, %d lost)",
+        snprintf(buf, sizeof(buf), ". Dropouts: %d in the %.0f s since the buffer changed, %d in all (%d ran dry, %d overflowed, %d packets lost for good)",
                  all - from, since, all, ps.underruns, ps.overruns, ps.dropped);
       else
-        snprintf(buf, sizeof(buf), ". Dropouts: %d (%d ran dry, %d overflowed, %d lost)", all, ps.underruns, ps.overruns, ps.dropped);
+        snprintf(buf, sizeof(buf), ". Dropouts: %d (%d ran dry, %d overflowed, %d packets lost for good)", all, ps.underruns, ps.overruns, ps.dropped);
       line += buf;
     }
     addChat(ChatLine::System, "", line + ".");
@@ -1743,8 +1784,8 @@ void Engine::updateUsers(Snapshot &snap)
       }
       cv.peak[0] = m_client->GetUserChannelPeak(u, ch, 0);
       cv.peak[1] = m_client->GetUserChannelPeak(u, ch, 1);
-      // Live mode: their real-time audio plays this channel
-      if (ch == 0 && m_client->GetUserLive(u) >= 0)
+      // Live mode: their real-time audio plays this channel (not while rendering offline)
+      if (ch == 0 && m_client->GetUserLive(u) >= 0 && !m_offline.load(std::memory_order_relaxed))
       {
         cv.live = true;
         cv.name += " \xc2\xb7 live";
@@ -1781,6 +1822,7 @@ void Engine::pollHosting(Snapshot &snap)
     snap.hostLocalAddress = st.localAddress;
     snap.hostNote = st.portmapNote;
     snap.hostPortmapPending = st.portmapPending;
+    snap.hostLive = st.live;
     snap.hostLookedUpAddress = st.lookedUpAddress;
     snap.hostLookupPending = st.lookupPending;
     snap.hostJoinedFromInternet = st.joinedFromInternet;

@@ -277,6 +277,21 @@ static void test_live_commands()
   en.sendChat("/live buffer 30");
   CHECK(chat_has("Live's jitter buffer is 30 ms now (it was 20). Less is less late, more has fewer dropouts: type /live to see "
                  "them. Your DAW's audio buffer (1024 samples) needs at least 48 ms, so Live uses 48 ms."));
+  // more than Live can use: said so (not "Live uses 200 ms")
+  CHECK_EQ(Engine::liveBufferNeeded(8192, 48000), 347);
+  CHECK_EQ(Engine::longestLiveBlock(48000), 4096);
+  CHECK_EQ(Engine::longestLiveBlock(44100), 4096);
+  CHECK_EQ(Engine::longestLiveBlock(96000), 8192);
+  {
+    std::vector<float> l(8192, 0.0f), r(8192, 0.0f), ol(8192), orr(8192);
+    float *in[2] = { l.data(), r.data() }, *out[2] = { ol.data(), orr.data() };
+    en.process(in, 2, out, 2, 8192, nullptr, nullptr);
+  }
+  CHECK(status_has(" buffer=30 inuse=200 hostblock=8192 "));
+  en.sendChat("/live buffer 40");
+  CHECK(chat_has("Live's jitter buffer is 40 ms now (it was 30). Less is less late, more has fewer dropouts: type /live to see "
+                 "them. Your DAW's audio buffer (8192 samples) needs at least 347 ms, more than Live can use (200 ms), so "
+                 "expect dropouts: 4096 samples or less plays well."));
   en.stop();
 }
 
@@ -307,8 +322,8 @@ static void test_hostserver_live()
   unsigned long long serial = 0;
   bool told = false;
   for (const std::string &m : hs.messagesSince(&serial))
-    if (m == "Live mode is off on this server: UDP ports 2049 to 2058 are in use by other programs, so the players hear each "
-             "other through intervals only.") told = true;
+    if (m == "Live mode is off on this server: no port from 2049 to 2058 had UDP free as well as TCP (other programs use "
+             "them), so the players hear each other through intervals only.") told = true;
   CHECK(told);
   hs.stop(&owner);
   for (int fd : taken) close(fd);

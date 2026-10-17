@@ -191,6 +191,7 @@ struct Snapshot
   int hostPort = 0;
   std::string hostPublicAddress, hostLocalAddress, hostNote;
   bool hostPortmapPending = false;
+  bool hostLive = false; // the hosted server has Live mode (UDP on the same port)
   std::string hostLookedUpAddress; // from a "what's my IP" service, for when the router doesn't say
   bool hostLookupPending = false;
   bool hostJoinedFromInternet = false; // so the port is open, even if the router didn't say
@@ -314,8 +315,12 @@ public:
   static std::string firstName(const std::string &fullName); // "Leo Stern" is "Leo"
   // Live's jitter buffer for the one asked for: a player's audio comes a host block at a time
   // and plays a block at a time, so with long blocks it needs two of them and a little more
-  // (or it runs dry or overflows every few seconds)
+  // (or it runs dry or overflows every few seconds), at most MAX_LIVE_BUFFER_MS
   static int liveBufferFor(int askedMs, int hostBlock, int sampleRate);
+  // what the host's blocks need (ms; 0 for none), which may be more than Live can use; and the
+  // longest host block (a power of two) that needs no more than that
+  static int liveBufferNeeded(int hostBlock, int sampleRate);
+  static int longestLiveBlock(int sampleRate);
 
 private:
   void threadProc();
@@ -440,6 +445,10 @@ private:
   int m_liveGen = 0;               // NJClient's Live message generation the peers come from
   double m_lastLivePoll = 0;
   double m_liveStartedAt = 0;      // when the client started (for "no answer from the server")
+  // the server, id and key it started with: another restarts it (Client::update())
+  unsigned int m_liveId = 0, m_liveIp = 0;
+  unsigned long long m_liveKey = 0;
+  int m_livePort = 0;
   double m_liveRetryAt = 0;        // when to try starting it again, after it failed
   bool m_toldLiveOffered = false, m_toldLiveNoAnswer = false, m_toldLiveError = false;
   struct LiveUser

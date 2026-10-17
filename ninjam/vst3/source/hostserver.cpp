@@ -152,9 +152,10 @@ bool HostServer::start(const void *owner, int opusKbps, std::string *error)
       m_state.live = live;
       if (!live)
       {
-        char buf[200];
-        snprintf(buf, sizeof(buf), "Live mode is off on this server: UDP ports %d to %d are in use by other programs, so the "
-                 "players hear each other through intervals only.", FIRST_PORT, FIRST_PORT + PORTS_TO_TRY - 1);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "Live mode is off on this server: no port from %d to %d had UDP free as well as TCP (other "
+                 "programs use them), so the players hear each other through intervals only.", FIRST_PORT,
+                 FIRST_PORT + PORTS_TO_TRY - 1);
         m_messages.push_back(buf);
         m_serial ++;
       }

@@ -1163,7 +1163,8 @@ void NinjamEditor::updateHostBar(const Snapshot &s)
       port = "Forward port " + portNo;
       portColor = led = Colors::yellow();
       lit = true;
-      tip = "Your router didn't open port " + portNo + " for Jamsa. Forward port " + portNo + " (TCP) to " + here +
+      tip = "Your router didn't open port " + portNo + " for Jamsa. Forward port " + portNo +
+            (s.hostLive ? " (TCP and UDP, for Live)" : " (TCP)") + " to " + here +
             " in your router's settings" + (wan.empty() ? std::string() : ", and players on the internet join at " + wan) +
             ". If it's forwarded already, they can join now.";
       if (!s.hostNote.empty()) tip += " (The router said: " + s.hostNote + ")";
