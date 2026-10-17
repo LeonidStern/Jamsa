@@ -33,6 +33,7 @@
 #include "njclient.h"
 #include "mpb.h"
 #include "hostserver.h"
+#include "liveclient.h"
 
 namespace ninjam_vst3 {
 
@@ -44,6 +45,11 @@ static const double SYNC_NOTE_DELAY = 3.0; // the host's tempo differs this long
 static const double LINK_POLL = 0.05;
 static const double LINK_DISCOVERY = 2.0;  // Link finds the other apps on the network within this, once on
 static const double LINK_HINT_DELAY = 3.0; // in a room, with no other Link app for this long: "Turn on Link in Live"
+static const double LIVE_POLL = 0.03;      // the Live client's events and statistics
+static const double LIVE_NO_ANSWER = 5.0;  // the server's UDP port doesn't answer for this long: say so
+static const double LIVE_RETRY = 10.0;     // the Live client couldn't start: try again after this
+static const double LIVE_RECOVER = 3.0;    // back on intervals for dropouts: Live again once it plays well this long
+static const double LIVE_REBUFFER = 2.5;   // a new jitter buffer restarts the streams: no switching to intervals for that
 
 static double now_seconds()
 {
@@ -78,6 +84,9 @@ static std::string codec_name(int mask)
 // ---------------------------------------------------------------------------
 
 static const char *STATE_HEADER = "NINJAM-VST3-STATE 1";
+
+// /help, and after an unknown /command
+static const char *HELP_TEXT = "Commands: /me, /msg name text, /topic, /bpm, /bpi, /kick, /admin, /live (how the Live players sound), /live buffer 30 (Live's jitter buffer in ms); !vote bpm 120, !vote bpi 16, !codec opus|flac, !bitrate 128 and !live on|off (Live mode: the room's Jamsa players hear each other in real time) go to the server as typed.";
 
 static std::string escape(const std::string &s)
 {
@@ -127,6 +136,7 @@ static float clamp_volume(float v) { return v != v ? 1.0f : std::min(std::max(v,
 static float clamp_pan(float v) { return v != v ? 0.0f : std::min(std::max(v, -1.0f), 1.0f); }
 
 constexpr int Settings::OPUS_KBPS[];
+constexpr int Settings::MIN_LIVE_BUFFER_MS, Settings::MAX_LIVE_BUFFER_MS, Settings::DEFAULT_LIVE_BUFFER_MS;
 
 int Settings::nearestOpusKbps(int kbps)
 {
@@ -148,6 +158,7 @@ std::string Settings::serialize() const
   s += std::string("transmit=") + (transmit ? "1" : "0") + "\n";
   s += "opus_kbps=" + std::to_string(opusKbps) + "\n";
   s += std::string("follow_host_tempo=") + (followHostTempo ? "1" : "0") + "\n";
+  s += "live_buffer_ms=" + std::to_string(liveBufferMs) + "\n";
   if (editorWidth > 0 && editorHeight > 0) s += "editor_window=" + std::to_string(editorWidth) + "x" + std::to_string(editorHeight) + "\n";
   for (auto &r : remote)
     s += "remote=" + escape(r.first) + "\t" + num(r.second.volume) + "\t" + num(r.second.pan) + "\t" + (r.second.mute ? "1" : "0") + "\n";
@@ -182,6 +193,13 @@ bool Settings::deserialize(const std::string &data)
       char *end = nullptr;
       const long k = strtol(value.c_str(), &end, 10);
       if (end && !*end && !value.empty()) s.opusKbps = nearestOpusKbps((int)std::min(std::max(k, 0L), 100000L));
+    }
+    else if (key == "live_buffer_ms")
+    {
+      char *end = nullptr;
+      const long ms = strtol(value.c_str(), &end, 10);
+      if (end && !*end && !value.empty())
+        s.liveBufferMs = (int)std::min(std::max(ms, (long)MIN_LIVE_BUFFER_MS), (long)MAX_LIVE_BUFFER_MS);
     }
     // "editor_size" was the size of the editor before its 720 x 330 layout: not used
     else if (key == "editor_window")
@@ -306,6 +324,12 @@ Engine::Engine()
   m_client->LicenseAgreement_User = this;
   m_client->ChatMessage_Callback = chatCallback;
   m_client->ChatMessage_User = this;
+  // Live mode: the server tells us about it, and NJClient plays a player's Live slot
+  // (liveAudio()) instead of their intervals while we ask it to
+  m_live.reset(new jamsa_live::Client);
+  m_client->config_live = true;
+  m_client->LiveAudio_Callback = liveAudio;
+  m_client->LiveAudio_User = this;
 
   // our input, in stereo (source channels 0 and 1)
   m_client->SetLocalChannelInfo(0, LOCAL_CHANNEL_NAME, true, 0 | 1024, true, m_settings.opusKbps, true, m_settings.transmit);
@@ -368,6 +392,9 @@ void Engine::setupProcessing(double sampleRate, int maxBlockSize)
   m_monL.assign(m_maxBlock, 0.0f);
   m_monR.assign(m_maxBlock, 0.0f);
   m_mix.assign(2 + 2 * NUM_PLAYER_OUTS, std::vector<float>(m_maxBlock, 0.0f));
+  m_liveL.assign(m_maxBlock, 0.0f);
+  m_liveR.assign(m_maxBlock, 0.0f);
+  m_live->prepare(m_sampleRate, m_maxBlock);
   m_barSync.reset();
   m_click.setSampleRate(m_sampleRate);
   m_sampleTime = 0;
@@ -433,6 +460,14 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
   // a stopped host: we send silence (and the network thread stops sending at the next interval)
   const bool stopped = timing && timing->transport && !timing->offline && !timing->position.playing;
   m_hostStopped.store(stopped, std::memory_order_relaxed);
+  const bool offline = timing && timing->offline;
+  m_offline.store(offline, std::memory_order_relaxed);
+  if (!offline) m_hostFrames.store(frames, std::memory_order_relaxed);
+  // Live: not while rendering faster than real time (NJClient plays the intervals then)
+  const bool live = !offline && m_liveOn.load(std::memory_order_relaxed);
+  const bool liveSend = m_transmit.load(std::memory_order_relaxed) && !stopped;
+  int liveEnd = 0;
+  m_liveBlock = false;
   const bool monitor = m_monitor.load(std::memory_order_relaxed) && !m_anySolo.load(std::memory_order_relaxed);
 
   // the host's bars: the interval playing now may end a little early or late, so the next
@@ -477,7 +512,23 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
   const float click = m_clickVolume.load(std::memory_order_relaxed);
   for (int done = 0; done < frames; )
   {
+    if (live && done == liveEnd)
+    {
+      // Live, once per host block (a block longer than the host said it would be, in pieces):
+      // our input goes out, and each slot's audio for these samples comes in
+      m_liveStart = done;
+      liveEnd = std::min(frames, done + m_maxBlock);
+      const int len = liveEnd - done;
+      for (int i = 0; i < len; i ++)
+      {
+        m_liveL[i] = inL ? inL[done + i] * gain : 0.0f;
+        m_liveR[i] = inR ? inR[done + i] * gain : 0.0f;
+      }
+      m_live->processBlock(m_liveL.data(), m_liveR.data(), len, liveSend);
+      m_liveBlock = true;
+    }
     int n = std::min(frames - done, m_maxBlock);
+    if (live) n = std::min(n, liveEnd - done);
     // a piece doesn't go over the end of the interval playing, so the click knows which
     // interval (and tempo) each sample is in
     int pos = 0, length = 0;
@@ -493,6 +544,7 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
     float *ins[2] = { m_bufL.data(), m_bufR.data() };
     float *mix[2 + 2 * NUM_PLAYER_OUTS];
     for (int c = 0; c < 2 + 2 * NUM_PLAYER_OUTS; c ++) mix[c] = m_mix[c].data();
+    m_pieceStart = done; // for liveAudio()
     m_client->AudioProc(ins, 2, mix, 2 + 2 * NUM_PLAYER_OUTS, n, srate);
 
     // the main output: everyone, and your monitoring (NJClient's own is muted, so it goes on
@@ -533,6 +585,21 @@ void Engine::process(float **in, int numIn, float **out, int numOut, int frames,
     else m_click.reset();
     done += n;
   }
+  m_liveBlock = false;
+}
+
+// NJClient asks for a Live slot's audio (in AudioProc(), on the audio thread)
+bool Engine::liveAudio(void *user, int slot, int offset, int len, const float **left, const float **right)
+{
+  Engine *_this = (Engine *)user;
+  if (!_this->m_liveBlock || !_this->m_liveOn.load(std::memory_order_relaxed) || slot < 0 ||
+      slot >= jamsa_live::Client::MAX_PEERS)
+    return false; // the room turned Live off, or no Live this block: the intervals play
+  const int at = _this->m_pieceStart - _this->m_liveStart + offset;
+  if (at < 0 || at + len > _this->m_maxBlock) return false;
+  *left = _this->m_live->stem(slot, 0) + at;
+  *right = _this->m_live->stem(slot, 1) + at;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -624,11 +691,6 @@ void Engine::sendChat(const std::string &text)
   const std::string t = trim(text);
   if (t.empty()) return;
   post([this, t]() {
-    if (m_state != ConnState::Connected)
-    {
-      addChat(ChatLine::Error, "", "Not connected, so nobody can read that.");
-      return;
-    }
     auto starts = [&t](const char *p) {
       const size_t n = strlen(p);
       if (t.size() < n) return false;
@@ -636,6 +698,22 @@ void Engine::sendChat(const std::string &text)
         if (tolower((unsigned char)t[i]) != p[i]) return false;
       return true;
     };
+    // ours, not the server's: also out of a room
+    if ((t.size() == 5 && starts("/live")) || starts("/live "))
+    {
+      liveChatCommand(trim(t.substr(5)));
+      return;
+    }
+    if ((t.size() == 5 && starts("/help")) || starts("/help "))
+    {
+      addChat(ChatLine::System, "", HELP_TEXT);
+      return;
+    }
+    if (m_state != ConnState::Connected)
+    {
+      addChat(ChatLine::Error, "", "Not connected, so nobody can read that.");
+      return;
+    }
     if (t[0] != '/' || starts("/me "))
     {
       m_client->ChatMessage_Send("MSG", t.c_str());
@@ -660,7 +738,7 @@ void Engine::sendChat(const std::string &text)
         addChat(ChatLine::Private, "-> " + who, what);
       }
     }
-    else addChat(ChatLine::Error, "", "Unknown command. Commands: /me, /msg name text, /topic, /bpm, /bpi, /kick, /admin; !vote bpm 120, !vote bpi 16, !codec opus|flac and !bitrate 128 go to the server as typed.");
+    else addChat(ChatLine::Error, "", std::string("Unknown command. ") + HELP_TEXT);
   });
 }
 
@@ -736,6 +814,25 @@ void Engine::setOpusKbps(int kbps)
     if (room > 0 && room != k) m_client->ChatMessage_Send("MSG", ("!bitrate " + std::to_string(k)).c_str());
     applyLocalSettings();
   });
+}
+
+void Engine::setRoomLive(bool on)
+{
+  post([this, on]() {
+    if (m_state == ConnState::Connected) m_client->ChatMessage_Send("MSG", on ? "!live on" : "!live off");
+    else addChat(ChatLine::Error, "", "Not connected: Live mode is the room's, so join a room first.");
+  });
+}
+
+void Engine::setLiveBufferMs(int ms)
+{
+  ms = std::min(std::max(ms, Settings::MIN_LIVE_BUFFER_MS), Settings::MAX_LIVE_BUFFER_MS);
+  {
+    std::lock_guard<std::mutex> lock(m_settingsMutex);
+    if (m_settings.liveBufferMs == ms) return;
+    m_settings.liveBufferMs = ms;
+  }
+  post([this]() { applyLocalSettings(); });
 }
 
 void Engine::setRoomCodec(const std::string &codec)
@@ -858,6 +955,7 @@ void Engine::threadProc()
     updateConnection();
     applySendKbps(); // the room's bitrate may have changed
     applyBroadcast(); // the host may have started or stopped
+    updateLive();
     updateLink();
     followHostTempo();
 
@@ -884,6 +982,8 @@ void Engine::applyLocalSettings()
   // the engine monitors the input itself (process()), so it goes on while the host is stopped
   m_client->SetLocalChannelMonitoring(0, true, 1.0f, true, 0.0f, true, true, false, false);
   m_monitor = s.monitor;
+  m_transmit = s.transmit;
+  applyLiveBuffer();
 
   applySendKbps();
   applyBroadcast();
@@ -936,6 +1036,7 @@ void Engine::clientConnect(const std::string &server, const std::string &login)
 
 void Engine::clientDisconnect()
 {
+  stopLive(); // (it doesn't need the audio thread to wait)
   std::lock_guard<std::mutex> audio(m_audioMutex);
   m_client->Disconnect();
 }
@@ -1130,6 +1231,411 @@ void Engine::updateLink()
   }
 }
 
+// ---------------------------------------------------------------------------
+// Live mode (network thread)
+// ---------------------------------------------------------------------------
+
+// Stops the Live client and forgets what it knew about this connection's room. NJClient's
+// players go back to their intervals with their slots (NJClient forgets them on Disconnect()).
+void Engine::stopLive()
+{
+  m_liveOn = false; // the audio thread stops feeding it, and plays intervals
+  if (m_live->running()) m_live->stop();
+  m_liveGen = 0;
+  m_liveUsers.clear();
+  m_liveDropoutsBase.clear();
+  m_toldLiveOffered = m_toldLiveNoAnswer = m_toldLiveError = false;
+  m_liveRetryAt = 0;
+}
+
+// how late we hear each player, in whole ms
+static std::string ms_text(double ms)
+{
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%.0f ms", ms);
+  return buf;
+}
+
+int Engine::liveBufferFor(int askedMs, int hostBlock, int sampleRate)
+{
+  int ms = std::max(askedMs, Settings::MIN_LIVE_BUFFER_MS);
+  if (hostBlock > 0 && sampleRate > 0) ms = std::max(ms, (int)ceil(2000.0 * hostBlock / sampleRate + 5.0));
+  return std::min(ms, Settings::MAX_LIVE_BUFFER_MS);
+}
+
+void Engine::applyLiveBuffer()
+{
+  // the host's longest block in the last half minute (a host may change its block size)
+  const double t = now_seconds();
+  const int frames = m_hostFrames.load(std::memory_order_relaxed);
+  if (frames >= m_liveHostBlock) m_liveHostBlockAt = t;
+  if (frames > m_liveHostBlock || (frames > 0 && t - m_liveHostBlockAt > 30.0))
+  {
+    m_liveHostBlock = frames;
+    m_liveHostBlockAt = t;
+  }
+  const int ms = liveBufferFor(getSettings().liveBufferMs, m_liveHostBlock, m_sampleRate.load(std::memory_order_relaxed));
+  if (ms == m_liveBufferApplied) return;
+  // a new jitter buffer: each stream starts again (a short gap), and the dropouts count again
+  m_live->setJitterMs(ms);
+  m_liveBufferApplied = ms;
+  m_liveBufferChangedAt = t;
+  m_liveCountSince = t;
+  m_liveDropoutsBase.clear();
+  if (m_live->running())
+    for (auto &ps : m_live->stats()) m_liveDropoutsBase[ps.name] = ps.underruns + ps.overruns + ps.dropped;
+}
+
+// From what the server says (MESSAGE_SERVER_LIVE, through NJClient): starts the Live client,
+// keeps it up to date (the room's Live on or off, its bitrate and frame, whether we may send, the
+// other players), and decides which players NJClient plays live from the next interval on: those
+// whose slot plays well, while the room's Live is on.
+void Engine::updateLive()
+{
+  applyLiveBuffer();
+  const int gen = m_state == ConnState::Connected ? m_client->GetLiveGeneration() : 0;
+  if (!gen)
+  {
+    // not connected, or a server without Live (or it hasn't said yet)
+    if (m_live->running() || m_liveOn) stopLive();
+    return;
+  }
+  const double t = now_seconds();
+  const int flags = m_client->GetLiveFlags();
+  jamsa_live::Config c;
+  c.myId = m_client->GetLivePeerId();
+  c.key = m_client->GetLiveKey();
+  c.serverIp = m_client->GetServerAddress();
+  c.udpPort = (uint16_t)(m_client->GetLiveUdpPort() > 0 ? m_client->GetLiveUdpPort() : m_client->GetServerPort());
+  if (m_client->GetLiveKbps() > 0) c.kbps = m_client->GetLiveKbps();
+  if (m_client->GetLiveFrameSamples() > 0) c.frameSamples = m_client->GetLiveFrameSamples();
+  c.udpOpen = (flags & mpb_server_live::LIVE_FLAG_UDP_OPEN) != 0;
+  c.roomOn = (flags & mpb_server_live::LIVE_FLAG_ROOM_ON) != 0;
+  // we send while the server takes it, transmit is on and the host plays, as with intervals (but
+  // nothing at all while not: no stream of silence)
+  c.maySend = (flags & mpb_server_live::LIVE_FLAG_MAY_SEND) && getSettings().transmit &&
+              !m_hostStopped.load(std::memory_order_relaxed) && !m_offline.load(std::memory_order_relaxed);
+
+  if (!c.udpOpen)
+  {
+    // the server's Live is off (its UDP port closed, or a new config turned it off)
+    if (m_live->running())
+    {
+      m_liveOn = false;
+      m_live->stop();
+      m_liveGen = 0;
+    }
+  }
+  else if (!m_live->running())
+  {
+    if (t < m_liveRetryAt) return;
+    std::string err;
+    if (!m_live->start(c, &err))
+    {
+      m_liveRetryAt = t + LIVE_RETRY;
+      if (!m_toldLiveError)
+      {
+        m_toldLiveError = true;
+        addChat(ChatLine::Error, "", "Live mode can't start here (" + err + "), so you hear everyone through intervals.");
+      }
+      return;
+    }
+    m_liveStartedAt = t;
+    m_liveGen = 0; // the players again
+  }
+  else m_live->update(c); // (a new id or key from the server restarts it)
+
+  const bool running = m_live->running();
+  if (running && m_liveGen != gen)
+  {
+    m_liveGen = gen;
+    std::vector<jamsa_live::Peer> peers;
+    for (int i = 0; ; i ++)
+    {
+      unsigned int id = 0;
+      int pf = 0;
+      const char *name = m_client->GetLivePeer(i, &id, &pf);
+      if (!name) break;
+      jamsa_live::Peer p;
+      p.id = id;
+      p.name = name;
+      p.bound = (pf & mpb_server_live::LIVE_PEER_BOUND) != 0;
+      peers.push_back(p);
+    }
+    m_live->setPeers(peers);
+  }
+  if (running && t - m_lastLivePoll >= LIVE_POLL)
+  {
+    m_lastLivePoll = t;
+    m_live->poll();
+  }
+  const bool roomOn = running && c.roomOn;
+  m_liveOn = roomOn;
+
+  if (running && !c.roomOn && !m_toldLiveOffered)
+  {
+    m_toldLiveOffered = true;
+    addChat(ChatLine::System, "", "This server has Live mode: type !live on, and the Jamsa players in the room hear each other "
+                                  "in real time (it needs UDP to the server's port " + std::to_string(c.udpPort) + ").");
+  }
+  if (roomOn && m_live->serverRttMs() <= 0 && t - m_liveStartedAt >= LIVE_NO_ANSWER && !m_toldLiveNoAnswer)
+  {
+    m_toldLiveNoAnswer = true;
+    addChat(ChatLine::Error, "", "Live: the server doesn't answer on UDP port " + std::to_string(c.udpPort) +
+                                 ", so you hear everyone through intervals. A firewall or router may block UDP; whoever "
+                                 "hosts the server needs UDP port " + std::to_string(c.udpPort) + " forwarded too.");
+  }
+
+  // Each player: live from the next interval while their slot plays well (after it played badly,
+  // once it has played well for a few seconds); back to intervals from the next one when it
+  // doesn't (NJClient plays the intervals at once while the room's Live is off: liveAudio()).
+  std::vector<jamsa_live::PeerStats> stats;
+  bool haveStats = false;
+  std::set<std::string> present;
+  const int n = m_client->GetNumUsers();
+  for (int u = 0; u < n; u ++)
+  {
+    const char *un = m_client->GetUserState(u);
+    if (!un) continue;
+    const std::string name = un;
+    present.insert(name);
+    LiveUser &lu = m_liveUsers[name];
+    int slot = -1;
+    if (roomOn)
+      for (int i = 0; ; i ++)
+      {
+        unsigned int id = 0;
+        const char *pn = m_client->GetLivePeer(i, &id, nullptr);
+        if (!pn) break;
+        if (name == pn)
+        {
+          slot = m_live->slotOf(id);
+          break;
+        }
+      }
+    const bool healthy = slot >= 0 && m_live->slotHealthy(slot);
+    if (!healthy) lu.healthySince = -1;
+    else if (lu.healthySince < 0) lu.healthySince = t;
+    const double settle = lu.fellBackAt >= 0 && t - lu.fellBackAt < 60.0 ? LIVE_RECOVER : 0.0;
+    bool want = healthy && t - lu.healthySince >= settle;
+    // the stream starting again with a new jitter buffer (/live buffer N): a gap, not dropouts
+    if (!want && lu.want && slot >= 0 && slot == lu.slot && t - m_liveBufferChangedAt < LIVE_REBUFFER) want = true;
+    if (lu.want && !want && roomOn) lu.fellBackAt = t; // it played badly
+    if (want != lu.want || (want && slot != lu.slot))
+    {
+      m_client->SetUserLive(u, want ? slot : -1);
+      lu.want = want;
+      lu.slot = want ? slot : -1;
+    }
+
+    // what NJClient plays now (it changes at an interval's start)
+    const int on = m_client->GetUserLive(u);
+    if ((on >= 0) != (lu.on >= 0))
+    {
+      if (on >= 0)
+      {
+        if (!haveStats)
+        {
+          stats = m_live->stats();
+          haveStats = true;
+        }
+        std::string late;
+        for (auto &ps : stats)
+          if (ps.name == name && ps.oneWayMs > 0) late = ", about " + ms_text(ps.oneWayMs) + " late";
+        addChat(ChatLine::System, "", "You hear " + displayName(name) + " live now" + late + ".");
+      }
+      else if (roomOn)
+        addChat(ChatLine::System, "", displayName(name) + " is back on intervals: their real-time audio stopped or had dropouts.");
+    }
+    lu.on = on;
+  }
+  for (auto it = m_liveUsers.begin(); it != m_liveUsers.end(); )
+    if (!present.count(it->first)) it = m_liveUsers.erase(it);
+    else ++it;
+}
+
+void Engine::updateLiveView(Snapshot &snap)
+{
+  const Settings s = getSettings();
+  snap.liveBufferMs = s.liveBufferMs;
+  snap.liveBufferInUseMs = m_liveBufferApplied;
+  snap.liveHostBlock = m_liveHostBlock;
+  if (m_state != ConnState::Connected || !m_client->GetLiveGeneration()) return;
+  const int flags = m_client->GetLiveFlags();
+  snap.liveOffered = (flags & mpb_server_live::LIVE_FLAG_UDP_OPEN) != 0;
+  snap.liveRoomOn = snap.liveOffered && (flags & mpb_server_live::LIVE_FLAG_ROOM_ON);
+  snap.liveMaySend = snap.liveRoomOn && (flags & mpb_server_live::LIVE_FLAG_MAY_SEND);
+  snap.liveRunning = m_live->running();
+  snap.liveSending = snap.liveRunning && snap.liveMaySend && s.transmit && !m_hostStopped.load(std::memory_order_relaxed) &&
+                     !m_offline.load(std::memory_order_relaxed);
+  snap.liveKbps = m_client->GetLiveKbps();
+  snap.liveFrame = m_client->GetLiveFrameSamples();
+  if (!snap.liveRunning) return;
+  snap.liveServerRttMs = m_live->serverRttMs();
+  const jamsa_live::Counters k = m_live->counters();
+  snap.liveSent = k.sent;
+  snap.liveReceived = k.received;
+  for (const jamsa_live::PeerStats &ps : m_live->stats())
+  {
+    LivePeerView v;
+    v.name = ps.name;
+    v.displayName = displayName(ps.name);
+    v.slot = ps.slot;
+    for (int i = 0; ; i ++)
+    {
+      unsigned int id = 0;
+      int pf = 0;
+      if (!m_client->GetLivePeer(i, &id, &pf)) break;
+      if (id == ps.id) v.bound = (pf & mpb_server_live::LIVE_PEER_BOUND) != 0;
+    }
+    v.streaming = ps.streaming;
+    v.healthy = ps.healthy;
+    auto lu = m_liveUsers.find(ps.name);
+    v.live = lu != m_liveUsers.end() && lu->second.on >= 0;
+    v.delayMs = ps.oneWayMs;
+    v.rttMs = ps.rttMs;
+    v.bufferMs = ps.bufferMs;
+    v.codecMs = ps.codecMs;
+    v.lossPct = ps.lossPct;
+    v.underruns = ps.underruns;
+    v.overruns = ps.overruns;
+    v.dropped = ps.dropped;
+    v.resent = ps.resent;
+    snap.livePeers.push_back(v);
+  }
+}
+
+// "/live": how each Live player sounds; "/live buffer N": the jitter buffer (ms)
+void Engine::liveChatCommand(const std::string &argIn)
+{
+  std::string arg = argIn;
+  for (auto &ch : arg) ch = (char)tolower((unsigned char)ch);
+  const double t = now_seconds();
+  const int buffer = getSettings().liveBufferMs;
+  if (arg == "on" || arg == "off")
+  {
+    if (m_state == ConnState::Connected) m_client->ChatMessage_Send("MSG", arg == "on" ? "!live on" : "!live off");
+    else addChat(ChatLine::Error, "", "Not connected: Live mode is the room's, so join a room first.");
+    return;
+  }
+  if (arg.compare(0, 6, "buffer") == 0)
+  {
+    const std::string v = trim(arg.substr(6));
+    if (v.empty())
+    {
+      addChat(ChatLine::System, "", "Live's jitter buffer is " + std::to_string(buffer) + " ms. Type /live buffer 30 to change it (" +
+                                    std::to_string(Settings::MIN_LIVE_BUFFER_MS) + " to " + std::to_string(Settings::MAX_LIVE_BUFFER_MS) + ").");
+      return;
+    }
+    char *end = nullptr;
+    const long ms = strtol(v.c_str(), &end, 10);
+    if (!end || *end || ms < Settings::MIN_LIVE_BUFFER_MS || ms > Settings::MAX_LIVE_BUFFER_MS)
+    {
+      addChat(ChatLine::Error, "", "/live buffer takes a number of ms from " + std::to_string(Settings::MIN_LIVE_BUFFER_MS) + " to " +
+                                   std::to_string(Settings::MAX_LIVE_BUFFER_MS) + ", such as /live buffer 30.");
+      return;
+    }
+    setLiveBufferMs((int)ms); // the dropouts count again from there (applyLocalSettings())
+    std::string text = "Live's jitter buffer is " + std::to_string(ms) + " ms now (it was " + std::to_string(buffer) +
+                       "). Less is less late, more has fewer dropouts: type /live to see them.";
+    const int use = liveBufferFor((int)ms, m_liveHostBlock, m_sampleRate.load(std::memory_order_relaxed));
+    if (use > ms)
+      text += " Your DAW's audio buffer (" + std::to_string(m_liveHostBlock) + " samples) needs at least " + std::to_string(use) +
+              " ms, so Live uses " + std::to_string(use) + " ms.";
+    addChat(ChatLine::System, "", text);
+    return;
+  }
+  if (!arg.empty())
+  {
+    addChat(ChatLine::Error, "", "Type /live to see how the Live players sound, or /live buffer 30 to set Live's jitter buffer (ms).");
+    return;
+  }
+
+  if (m_state != ConnState::Connected)
+  {
+    addChat(ChatLine::System, "", "Not connected. In a room with Live mode, /live shows how late you hear each Jamsa player. Live's "
+                                  "jitter buffer is " + std::to_string(buffer) + " ms (/live buffer N to change it).");
+    return;
+  }
+  const int flags = m_client->GetLiveGeneration() ? m_client->GetLiveFlags() : 0;
+  if (!(flags & mpb_server_live::LIVE_FLAG_UDP_OPEN))
+  {
+    addChat(ChatLine::System, "", m_client->GetLiveGeneration() ? "This server's Live mode is off, so everyone plays through intervals."
+                                                                 : "This server doesn't have Live mode, so everyone plays through intervals.");
+    return;
+  }
+  if (!(flags & mpb_server_live::LIVE_FLAG_ROOM_ON))
+  {
+    addChat(ChatLine::System, "", "Live is off in this room. Type !live on, and the Jamsa players here hear each other in real time.");
+    return;
+  }
+  if (!m_live->running())
+  {
+    addChat(ChatLine::System, "", "Live is on in this room, but yours couldn't start, so you hear everyone through intervals.");
+    return;
+  }
+  const Settings s = getSettings();
+  std::string head = "Live is on. Jitter buffer " + std::to_string(m_liveBufferApplied) + " ms";
+  if (m_liveBufferApplied > s.liveBufferMs)
+    head += ": your DAW's audio buffer (" + std::to_string(m_liveHostBlock) + " samples) needs that much, more than the " +
+            std::to_string(s.liveBufferMs) + " ms you set. ";
+  else head += " (/live buffer N to change it). ";
+  const double rtt = m_live->serverRttMs();
+  if (rtt > 0)
+  {
+    char buf[96];
+    snprintf(buf, sizeof(buf), "Round trip to the server %.1f ms.", rtt);
+    head += buf;
+  }
+  else head += "The server doesn't answer over UDP yet.";
+  if (!(flags & mpb_server_live::LIVE_FLAG_MAY_SEND))
+    head += " The room has no room for more Live players, so the others hear you through intervals.";
+  else if (!s.transmit) head += " Transmit is off, so you send nothing.";
+  else if (m_hostStopped.load(std::memory_order_relaxed)) head += " The host is stopped, so you send nothing until it plays.";
+  addChat(ChatLine::System, "", head);
+
+  const double since = m_liveCountSince > 0 ? t - m_liveCountSince : -1;
+  std::set<std::string> peers;
+  for (const jamsa_live::PeerStats &ps : m_live->stats())
+  {
+    peers.insert(ps.name);
+    auto lu = m_liveUsers.find(ps.name);
+    const bool live = lu != m_liveUsers.end() && lu->second.on >= 0;
+    std::string line = displayName(ps.name) + ": ";
+    if (ps.slot < 0) line += "intervals (Jamsa hears " + std::to_string(jamsa_live::Client::MAX_PEERS) + " Live players at most)";
+    else if (!ps.streaming) line += "intervals (no real-time audio from them)";
+    else
+    {
+      line += live ? "live" : ps.healthy ? "live from the next interval" : "intervals (their real-time audio has dropouts)";
+      char buf[256];
+      snprintf(buf, sizeof(buf), ", about %.0f ms late (buffer %.0f ms, network %.0f ms, codec %.0f ms), %.1f%% lost", ps.oneWayMs,
+               ps.bufferMs, ps.rttMs / 2, ps.codecMs, ps.lossPct);
+      line += buf;
+    }
+    if (ps.slot >= 0)
+    {
+      const int all = ps.underruns + ps.overruns + ps.dropped;
+      auto base = m_liveDropoutsBase.find(ps.name);
+      const int from = base != m_liveDropoutsBase.end() && base->second <= all ? base->second : 0;
+      char buf[256];
+      if (since >= 0)
+        snprintf(buf, sizeof(buf), ". Dropouts: %d in the %.0f s since the buffer changed, %d in all (%d ran dry, %d overflowed, %d lost)",
+                 all - from, since, all, ps.underruns, ps.overruns, ps.dropped);
+      else
+        snprintf(buf, sizeof(buf), ". Dropouts: %d (%d ran dry, %d overflowed, %d lost)", all, ps.underruns, ps.overruns, ps.dropped);
+      line += buf;
+    }
+    addChat(ChatLine::System, "", line + ".");
+  }
+  // the others in the room play through intervals
+  const int n = m_client->GetNumUsers();
+  for (int u = 0; u < n; u ++)
+  {
+    const char *un = m_client->GetUserState(u);
+    if (un && !peers.count(un)) addChat(ChatLine::System, "", displayName(un) + ": intervals (not a Live player: an older client, or the room is full)");
+  }
+}
+
 void Engine::doSetHosting(bool on)
 {
   if (on == m_hosting) return;
@@ -1228,6 +1734,12 @@ void Engine::updateUsers(Snapshot &snap)
       }
       cv.peak[0] = m_client->GetUserChannelPeak(u, ch, 0);
       cv.peak[1] = m_client->GetUserChannelPeak(u, ch, 1);
+      // Live mode: their real-time audio plays this channel
+      if (ch == 0 && m_client->GetUserLive(u) >= 0)
+      {
+        cv.live = true;
+        cv.name += " \xc2\xb7 live";
+      }
       signature += std::to_string(ch) + ":" + cv.name + "\n";
       uv.channels.push_back(cv);
     }
@@ -1317,6 +1829,7 @@ void Engine::publish()
   snap.localPeak[0] = m_client->GetLocalChannelPeak(0, 0);
   snap.localPeak[1] = m_client->GetLocalChannelPeak(0, 1);
   snap.sendPaused = snap.audioRunning && m_hostStopped.load(std::memory_order_relaxed) && getSettings().transmit;
+  updateLiveView(snap);
 
   // following the host, and its tempo against the room's
   std::string hostName;
@@ -1556,6 +2069,44 @@ std::string Engine::command(const std::string &lineIn)
     const Settings st = getSettings();
     setMetronome(st.metronomeVolume, !(arg == "on" || arg == "1"));
     return "ok";
+  }
+  if (verb == "live")
+  {
+    // live on|off (the room's), live buffer N, live status
+    if (arg == "on" || arg == "off")
+    {
+      setRoomLive(arg == "on");
+      return "ok";
+    }
+    if (arg.compare(0, 6, "buffer") == 0)
+    {
+      char *end = nullptr;
+      const std::string v = trim(arg.substr(6));
+      const long ms = strtol(v.c_str(), &end, 10);
+      if (v.empty() || !end || *end || ms < Settings::MIN_LIVE_BUFFER_MS || ms > Settings::MAX_LIVE_BUFFER_MS)
+        return "error: live buffer N, N from " + std::to_string(Settings::MIN_LIVE_BUFFER_MS) + " to " +
+               std::to_string(Settings::MAX_LIVE_BUFFER_MS) + " (ms)";
+      setLiveBufferMs((int)ms);
+      return "ok";
+    }
+    if (arg != "status") return "error: live on, live off, live buffer N or live status";
+    Snapshot s;
+    getSnapshot(s);
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "live=%s offered=%d running=%d maysend=%d sending=%d buffer=%d inuse=%d hostblock=%d serverrtt=%.3f "
+             "kbps=%d frame=%d sent=%llu received=%llu peers=%d\n",
+             s.liveRoomOn ? "on" : "off", s.liveOffered ? 1 : 0, s.liveRunning ? 1 : 0, s.liveMaySend ? 1 : 0, s.liveSending ? 1 : 0,
+             s.liveBufferMs, s.liveBufferInUseMs, s.liveHostBlock, s.liveServerRttMs, s.liveKbps, s.liveFrame, s.liveSent, s.liveReceived, (int)s.livePeers.size());
+    std::string out = buf;
+    for (const LivePeerView &p : s.livePeers)
+    {
+      snprintf(buf, sizeof(buf), "peer=%s shown=%s slot=%d bound=%d streaming=%d healthy=%d live=%d delay=%.3f rtt=%.3f bufferms=%.3f "
+               "codec=%.3f loss=%.3f dropouts=%d underruns=%d overruns=%d dropped=%d resent=%d\n",
+               p.name.c_str(), p.displayName.c_str(), p.slot, p.bound ? 1 : 0, p.streaming ? 1 : 0, p.healthy ? 1 : 0, p.live ? 1 : 0,
+               p.delayMs, p.rttMs, p.bufferMs, p.codecMs, p.lossPct, p.dropouts(), p.underruns, p.overruns, p.dropped, p.resent);
+      out += buf;
+    }
+    return out;
   }
   if (verb == "status")
   {

@@ -40,6 +40,18 @@
   when it changes, and puts the room's tempo back on Link when the room
   doesn't take it or another app set it (LinkTempoKeeper).
 
+  Live mode (ninjam/live, liveclient.h): in a room whose server has Live, while
+  the room's Live is on (!live on), the Jamsa players hear each other in real
+  time. Our input goes to the server in UDP datagrams, and each other player's
+  real-time audio (a "slot" of the Live client) takes the place of their
+  intervals in NJClient's mix, from an interval's start on, while it plays
+  well; they go back to intervals at an interval's start when it doesn't (at
+  once when the room turns Live off). Intervals keep flowing both ways, for
+  everyone else. The network thread runs the Live client (updateLive()); the
+  audio thread feeds it and reads the slots' audio, without waiting. The
+  jitter buffer is the one set (/live buffer N), or two of the host's blocks
+  and 5 ms when that is more (liveBufferFor()).
+
 */
 
 #ifndef _NINJAM_VST3_ENGINE_H_
@@ -63,6 +75,8 @@
 
 class NJClient;
 
+namespace jamsa_live { class Client; }
+
 namespace ninjam_vst3 {
 
 struct ChatLine
@@ -81,6 +95,7 @@ struct RemoteChannelView
   bool mute = false, solo = false;
   float peak[2] = { 0, 0 };
   int playerOut = 0; // the plug-in's extra output that plays it alone (1 to Engine::NUM_PLAYER_OUTS), 0 for none
+  bool live = false; // you hear this channel live (Live mode), not its intervals; its name ends in " · live"
 };
 
 struct RemoteUserView
@@ -91,6 +106,22 @@ struct RemoteUserView
 };
 
 enum class ConnState { Disconnected, Connecting, Connected, Failed };
+
+// another player in Live mode, as the Live client sees them
+struct LivePeerView
+{
+  std::string name;        // as the server names the user (name@address)
+  std::string displayName; // without the @address
+  int slot = -1;           // the Live client's receiver for them, -1 for none (more than it has)
+  bool bound = false;      // the server has their UDP address
+  bool streaming = false;  // their real-time audio comes in
+  bool healthy = false;    // and has for a second, with few dropouts
+  bool live = false;       // you hear them live now (not their intervals)
+  double delayMs = 0;      // how late you hear them, without either audio interface (estimate)
+  double rttMs = 0, bufferMs = 0, codecMs = 0, lossPct = 0;
+  int underruns = 0, overruns = 0, dropped = 0, resent = 0;
+  int dropouts() const { return underruns + overruns + dropped; }
+};
 
 struct Snapshot
 {
@@ -110,6 +141,20 @@ struct Snapshot
   int sendKbps = 0;          // what you send in Opus rooms: the room's, else your own (from the next interval)
   float localPeak[2] = { 0, 0 };
   bool sendPaused = false;   // the host is stopped, so nothing is sent (transmit stays on)
+
+  // Live mode
+  bool liveOffered = false;  // the server has Live, and its UDP port is open
+  bool liveRoomOn = false;   // the room's Live is on
+  bool liveRunning = false;  // our Live client runs (talks to the server over UDP)
+  bool liveMaySend = false;  // the server takes our real-time audio (one of the room's first Live players)
+  bool liveSending = false;  // we send it: may send, transmit on, the host not stopped
+  int liveBufferMs = 0;      // the jitter buffer asked for (Settings::liveBufferMs)
+  int liveBufferInUseMs = 0; // the one Live uses: more with the host's long blocks (Engine::liveBufferFor())
+  int liveHostBlock = 0;     // the host's longest block lately (samples)
+  double liveServerRttMs = 0; // the round trip to the server's UDP port, 0 until it answers
+  int liveKbps = 0, liveFrame = 0; // the room's Live Opus bitrate and frame (samples at 48 kHz)
+  unsigned long long liveSent = 0, liveReceived = 0; // datagrams
+  std::vector<LivePeerView> livePeers;
 
   std::vector<RemoteUserView> users;
   unsigned int usersRevision = 0; // changes when users or channels come or go (not for levels)
@@ -173,6 +218,9 @@ struct Settings
   bool transmit = true;
   int opusKbps = DEFAULT_OPUS_KBPS; // what we send in Opus rooms; FLAC is lossless and ignores it
   bool followHostTempo = true; // Sync: follow the host's tempo (and line up with its bars)
+  // Live mode's jitter buffer (ms): lower is less late, higher has fewer dropouts
+  static constexpr int MIN_LIVE_BUFFER_MS = 5, MAX_LIVE_BUFFER_MS = 200, DEFAULT_LIVE_BUFFER_MS = 20;
+  int liveBufferMs = DEFAULT_LIVE_BUFFER_MS;
   int editorWidth = 0, editorHeight = 0; // the editor's size, 0 for the default
 
   struct Remote
@@ -240,6 +288,8 @@ public:
   // (see mpb.h), the room's too (!bitrate N). It applies from the next interval.
   void setOpusKbps(int kbps);
   void setRoomCodec(const std::string &codec); // "opus" or "flac": the room's (!codec), while connected
+  void setRoomLive(bool on); // the room's Live mode (!live on|off), while connected
+  void setLiveBufferMs(int ms); // Live's jitter buffer, MIN_LIVE_BUFFER_MS to MAX_LIVE_BUFFER_MS
   void setEditorSize(int width, int height);
   void setFollowHostTempo(bool on); // Sync, and with it Ableton Link
   void setHostName(const std::string &name); // the host's name, for the editor
@@ -251,7 +301,9 @@ public:
   //   connect host:port [name], disconnect, name X, host on|off, chat text (sent as typed),
   //   license accept|decline, transmit on|off, monitor on|off, metronome on|off,
   //   bitrate 64|96|128|160|256|510, codec opus|flac, follow on|off (Sync, with Link), vote bpm|bpi N,
-  //   status, users, chatlog, syncnote, nextinterval, synctip (the Sync button's tooltip)
+  //   status, users, chatlog, syncnote, nextinterval, synctip (the Sync button's tooltip),
+  //   live on|off (the room's, !live), live buffer N (ms), live status (key=value lines: the room,
+  //   then one line per other Live player)
   std::string command(const std::string &line);
 
   static std::string remoteKey(const std::string &user, int channel); // user without @address
@@ -260,6 +312,10 @@ public:
   // ("Leo Stern" is "Leo"), else its login name; "" if neither is known
   static std::string defaultUserName();
   static std::string firstName(const std::string &fullName); // "Leo Stern" is "Leo"
+  // Live's jitter buffer for the one asked for: a player's audio comes a host block at a time
+  // and plays a block at a time, so with long blocks it needs two of them and a little more
+  // (or it runs dry or overflows every few seconds)
+  static int liveBufferFor(int askedMs, int hostBlock, int sampleRate);
 
 private:
   void threadProc();
@@ -284,13 +340,20 @@ private:
   void followHostTempo();
   void updateLink();
   void releaseLink(); // stop leading Link, between two blocks
+  void updateLive();  // starts, updates and stops the Live client from what the server says
+  void applyLiveBuffer(); // the jitter buffer in use, for the setting and the host's blocks
+  void stopLive();
+  void liveChatCommand(const std::string &arg); // /live, /live buffer N
+  void updateLiveView(Snapshot &snap);
   void publish();
   int findUser(const std::string &name) const;
 
   static int licenseCallback(void *user, const char *text);
   static void chatCallback(void *user, NJClient *inst, const char **parms, int nparms);
+  static bool liveAudio(void *user, int slot, int offset, int len, const float **left, const float **right);
 
   std::unique_ptr<NJClient> m_client;
+  std::unique_ptr<jamsa_live::Client> m_live;
   // NJClient's Connect() and Disconnect() free what its AudioProc() uses, so they hold this,
   // and process() skips the block (plays silence) when it can't get it
   std::mutex m_audioMutex;
@@ -323,12 +386,22 @@ private:
   Click m_click;
   std::atomic<int> m_sampleRate { 48000 };
   std::atomic<unsigned int> m_processCalls { 0 };
+  std::atomic<int> m_hostFrames { 0 }; // the last block's length (for Live's jitter buffer)
   int m_maxBlock = 0;
   std::vector<float> m_bufL, m_bufR, m_spare;
   std::vector<float> m_monL, m_monR;      // the input, for your monitoring
   std::vector<std::vector<float>> m_mix;  // NJClient's outputs: the main pair, then a pair per player output
   std::atomic<bool> m_monitor { true }, m_anySolo { false };
   std::atomic<bool> m_hostStopped { false }; // the host said it is stopped
+  std::atomic<bool> m_offline { false };     // the host renders faster than real time
+  std::atomic<bool> m_transmit { true };
+  // Live: the client runs and the room's Live is on, so process() feeds it and NJClient plays the
+  // slots of the players it plays live (else their intervals, at once)
+  std::atomic<bool> m_liveOn { false };
+  std::vector<float> m_liveL, m_liveR;  // the input after the input volume, for Live
+  bool m_liveBlock = false;  // the Live client rendered the slots for the samples from m_liveStart
+  int m_liveStart = 0;       // where in the host's block that is
+  int m_pieceStart = 0;      // where in the host's block the AudioProc() running now starts
   BarSync m_barSync;
   std::atomic<bool> m_follow { true }, m_barReset { false };
   int64_t m_sampleTime = 0; // samples processed since setupProcessing()
@@ -363,6 +436,28 @@ private:
   size_t m_linkPeers = 0;
   double m_linkTempo = 0, m_lastLinkPoll = 0;
   bool m_toldLinkHint = false, m_toldContested = false, m_toldLinkLeads = false;
+  // Live
+  int m_liveGen = 0;               // NJClient's Live message generation the peers come from
+  double m_lastLivePoll = 0;
+  double m_liveStartedAt = 0;      // when the client started (for "no answer from the server")
+  double m_liveRetryAt = 0;        // when to try starting it again, after it failed
+  bool m_toldLiveOffered = false, m_toldLiveNoAnswer = false, m_toldLiveError = false;
+  struct LiveUser
+  {
+    int on = -1;               // the slot NJClient plays now, -1 for intervals
+    bool want = false;         // we asked NJClient to play it live from the next interval
+    int slot = -1;             // with this slot
+    double healthySince = -1;  // since when the slot plays well, -1 when it doesn't
+    double fellBackAt = -1;    // when they went back to intervals because the slot played badly
+  };
+  std::map<std::string, LiveUser> m_liveUsers; // by user name
+  // what /live counts dropouts from: since the buffer last changed
+  double m_liveCountSince = 0;
+  int m_liveBufferApplied = 0;      // the jitter buffer the Live client has (ms)
+  double m_liveBufferChangedAt = -1e9;
+  int m_liveHostBlock = 0;          // the host's longest block in the last half minute
+  double m_liveHostBlockAt = 0;     // when it was last that long
+  std::map<std::string, int> m_liveDropoutsBase; // by user name
 };
 
 } // namespace ninjam_vst3
