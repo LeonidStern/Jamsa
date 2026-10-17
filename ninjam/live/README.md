@@ -103,9 +103,10 @@ Tests (`tests/`):
   room of ten under the server's rate limit (each player hears all eight
   it has slots for, about 34 datagrams/s to single players), the
   filter in front of AOO verdict by verdict, fuzzed packets into a playing
-  Core, the room's Live flag off and on, a host that stops calling for a
-  second, a listener's host that stops for a minute while seven others
-  play, and bitrate and frame size changes. About 25 s.
+  Core, the room's Live flag off and on, `send` off (no stream at all)
+  and on, an exception out of AOO's `send()`, a host that stops calling
+  for a second, a listener's host that stops for a minute while seven
+  others play, and bitrate and frame size changes. About 25 s.
 - `live_client_test`: the `Client` on real sockets: four players with
   audio threads paced by the clock and a minimal server on the loopback
   interface (HELLO / HELLO_ACK with the address cookie, DATA copied to the
@@ -141,7 +142,9 @@ Tests (`tests/`):
   the normal one; the user-interactive QoS class on macOS;
   `THREAD_PRIORITY_TIME_CRITICAL` on Windows; `Counters` says which): wakes
   when the audio thread posts it, and every 10 ms, sends the HELLOs and
-  whatever AOO has.
+  whatever AOO has. An exception out of AOO's `send()` (`std::bad_alloc`)
+  is caught there and counted (`Totals::sendFailed`): out of the thread it
+  would end the host.
 
 ### Protocol (UDP)
 

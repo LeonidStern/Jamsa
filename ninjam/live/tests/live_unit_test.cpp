@@ -42,6 +42,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <new>
 #include <random>
 #include <string>
 #include <vector>
@@ -1551,6 +1552,40 @@ static void test_glue_send_off()
   CHECK(n.run_until([&] { return b.core->slotHealthy(slot); }, 2.5));
 }
 
+// An exception out of AOO's send() (std::bad_alloc while it grows a buffer;
+// here the send function throws) stays in Core::send(): out of the send
+// thread it would end the host. What it would have sent is lost; the
+// streams go on.
+static void test_glue_send_throws()
+{
+  if (!selected("glue_send_throws")) return;
+  net n(47);
+  player &a = n.add(1);
+  player &b = n.add(2);
+  n.start_all();
+  n.run(1.5);
+  CHECK(b.core->slotHealthy(b.core->slotOf(1)));
+  a.send_throws = true;
+  bool escaped = false;
+  try
+  {
+    n.run(0.2);
+  }
+  catch (...)
+  {
+    escaped = true;
+  }
+  a.send_throws = false;
+  const uint64_t failed = a.core->totals().sendFailed.load();
+  printf("  %llu calls of AOO's send() threw\n", (unsigned long long)failed);
+  CHECK(!escaped);
+  CHECK(failed > 30); // a call for each of a's 40 blocks
+  CHECK(n.run_until([&] { return b.core->slotHealthy(b.core->slotOf(1)); }, 2.5));
+  start_recording(n);
+  n.run(1.0);
+  CHECK(heard_snr(b, a, 0.9) > 20);
+}
+
 // The host stops calling for a second (processing suspended): both ends
 // get over it.
 static void test_glue_gap()
@@ -1712,6 +1747,7 @@ int main(int argc, char **argv)
   test_glue_fuzz();
   test_glue_room_off();
   test_glue_send_off();
+  test_glue_send_throws();
   test_glue_gap();
   test_glue_host_stopped();
   test_glue_bitrate_frame();

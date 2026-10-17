@@ -42,6 +42,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <new>
 #include <queue>
 #include <random>
 #include <vector>
@@ -77,6 +78,7 @@ struct player
   bool in_room = true;       // the server copies to it
   bool host_running = true;  // the host calls processBlock() (the send thread runs anyway)
   bool send = true;          // processBlock's 'send'
+  bool send_throws = false;  // the send function throws std::bad_alloc
   link up, down;
   double tone_hz = 440;
   // the input from sample 'index' on (its own clock); a tone by default
@@ -244,6 +246,11 @@ struct net
     c->n->transmit(p.up, 0, d);
   }
 
+  static void throw_send(void *, uint32_t, const uint8_t *, size_t)
+  {
+    throw std::bad_alloc();
+  }
+
   void server(const packet &pk)
   {
     server_rx++;
@@ -322,7 +329,7 @@ struct net
     }
     // the send thread, which runs whether or not the host calls
     send_context c = { this, &p };
-    p.core->send(on_send, &c);
+    p.core->send(p.send_throws ? throw_send : on_send, &c);
     p.nblocks++;
   }
 

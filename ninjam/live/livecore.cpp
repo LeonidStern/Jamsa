@@ -618,8 +618,28 @@ AooInt32 AOO_CALL Core::aooSend(void *user, const AooByte *data, AooInt32 size,
 void Core::send(SendFn fn, void *user)
 {
   SendContext ctx = { fn, user, &m_totals };
-  m_source->send(aooSend, &ctx);
-  for (Slot &s : m_slots) s.sink->send(aooSend, &ctx);
+  // AOO's send() can throw (std::bad_alloc while it grows a buffer): out of
+  // the send thread that would end the host. What wasn't sent is lost, as
+  // on the network; the next pass goes on.
+  try
+  {
+    m_source->send(aooSend, &ctx);
+  }
+  catch (...)
+  {
+    m_totals.sendFailed++;
+  }
+  for (Slot &s : m_slots)
+  {
+    try
+    {
+      s.sink->send(aooSend, &ctx);
+    }
+    catch (...)
+    {
+      m_totals.sendFailed++;
+    }
+  }
 }
 
 // a /start's format: what we play (Opus, mono or stereo, 48 kHz, up to 10 ms)
@@ -723,6 +743,12 @@ Core::Verdict Core::classify(uint32_t from, const uint8_t *data, size_t size, in
   return kFiltered;
 }
 
+bool Core::hostActive(uint64_t now) const
+{
+  const uint64_t due = m_audioDue.load(std::memory_order_relaxed);
+  return due && (int64_t)(now - due) <= (int64_t)ntpFromSeconds(kIdleSeconds);
+}
+
 Core::Verdict Core::handleData(uint32_t from, const uint8_t *data, size_t size, uint64_t now)
 {
   int target = 0;
@@ -732,14 +758,10 @@ Core::Verdict Core::handleData(uint32_t from, const uint8_t *data, size_t size, 
   // thread runs again and then work through all of it in one block. The
   // streams pick up again from what comes next. What goes to our source
   // still goes through: the send thread answers it.
-  if (v == kAccepted && target >= 0 && now)
+  if (v == kAccepted && target >= 0 && now && !hostActive(now))
   {
-    const uint64_t due = m_audioDue.load(std::memory_order_relaxed);
-    if (!due || (int64_t)(now - due) > (int64_t)ntpFromSeconds(kIdleSeconds))
-    {
-      m_totals.idle++;
-      return kFiltered;
-    }
+    m_totals.idle++;
+    return kFiltered;
   }
   switch (v)
   {

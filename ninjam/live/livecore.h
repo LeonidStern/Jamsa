@@ -163,6 +163,9 @@ public:
   void prepare(double sampleRate, int maxBlock);
   // returns true when the send thread should run now
   bool processBlock(const float *inL, const float *inR, int frames, bool send, uint64_t ntpTime);
+  // (any thread) whether the host calls processBlock(): its last block
+  // ended less than kIdleSeconds before 'now'
+  bool hostActive(uint64_t now) const;
   int slotOf(uint32_t peerId) const;
   bool slotHealthy(int slot) const;
   const float *stem(int slot, int channel) const;
@@ -183,6 +186,7 @@ public:
     std::atomic<uint64_t> accepted{0}, badSize{0}, noSlot{0}, filtered{0}, badFormat{0};
     std::atomic<uint64_t> idle{0}; // for a sink while the audio thread was idle
     std::atomic<uint64_t> sent{0}, sendTooLarge{0};
+    std::atomic<uint64_t> sendFailed{0}; // an exception out of AOO's send()
   };
   const Totals &totals() const { return m_totals; }
 
