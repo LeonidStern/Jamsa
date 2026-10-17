@@ -138,6 +138,12 @@ Tests (`tests/`):
   is the semaphore post that wakes the send thread, at most once per block
   and only when AOO has something to send and the send thread has run since
   the last post.
+- `prepare()` (from `setupProcessing`, which VST3 hosts call while not
+  processing) must not overlap a block. If it does, `processBlock()` skips
+  the block (it only try-locks) and `stem()` gives silence from the moment
+  `prepare()` starts (an atomic flag, also cleared by a skipped block), but
+  a stem the audio thread already holds can point into buffers that
+  `prepare()` replaces.
 - The receive thread: `recv()` on the socket with a 100 ms timeout.
 - The send thread, at a raised priority where the system allows it
   (`SCHED_FIFO` on Linux, which a plug-in usually can't get - then it keeps

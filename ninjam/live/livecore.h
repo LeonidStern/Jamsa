@@ -277,7 +277,12 @@ private:
   std::vector<float> m_zeros;       // maxBlock
   AooSample m_in[2][kChunk] = {};
   int m_fill = 0;                   // samples in the current block
-  bool m_blockValid = false;       // stem(): this block was rendered
+  // stem(): this block was rendered. Atomic: prepare() clears it before it
+  // touches the buffers, and processBlock() also when it can't get the
+  // lock (prepare() has it), so stem() gives silence then rather than
+  // buffers prepare() is replacing.
+  std::atomic<bool> m_blockValid{false};
+  std::atomic<int> m_zerosSize{0};  // m_zeros.size() (0 while prepare() changes it), for stem()
   uint64_t m_lastTime = 0;          // the last block's time stamp
   int m_lastFrames = 0;
   std::atomic<double> m_rate{48000}; // m_sampleRate, for stats()

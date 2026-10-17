@@ -477,7 +477,10 @@ void Core::prepare(double sampleRate, int maxBlock)
   if (sampleRate <= 0 || maxBlock <= 0) return;
   // (in this order; processBlock() only try-locks the audio mutex)
   std::lock_guard<std::mutex> control(m_ctlMutex);
+  m_blockValid.store(false);
   std::lock_guard<std::mutex> lock(m_audioMutex);
+  m_blockValid.store(false);
+  m_zerosSize.store(0); // stem(): g_zeros while m_zeros changes
   m_sampleRate = sampleRate;
   m_rate.store(sampleRate);
   m_maxBlock = maxBlock;
@@ -501,8 +504,8 @@ void Core::prepare(double sampleRate, int maxBlock)
   memset(m_in, 0, sizeof(m_in));
   m_fill = 0;
   m_lastFrames = 0;
-  m_blockValid = false;
   m_prepared = true;
+  m_zerosSize.store((int)m_zeros.size());
   applyBufferSize();
 }
 
@@ -511,10 +514,10 @@ bool Core::processBlock(const float *inL, const float *inR, int frames, bool sen
   std::unique_lock<std::mutex> lock(m_audioMutex, std::try_to_lock);
   if (!lock.owns_lock() || !m_prepared || frames <= 0 || frames > m_maxBlock)
   {
-    if (lock.owns_lock()) m_blockValid = false;
+    m_blockValid.store(false);
     return false;
   }
-  m_blockValid = true;
+  m_blockValid.store(true);
 
   // The host stopped calling us for a while (processing suspended, a long
   // xrun): tell AOO, which fills the gap with empty blocks on the sending
@@ -590,9 +593,14 @@ bool Core::processBlock(const float *inL, const float *inR, int frames, bool sen
 
 const float *Core::stem(int slot, int channel) const
 {
-  if (!m_blockValid || slot < 0 || slot >= kMaxPeers || channel < 0 || channel > 1
+  if (!m_blockValid.load() || slot < 0 || slot >= kMaxPeers || channel < 0 || channel > 1
       || !m_slots[slot].bound)
-    return m_zeros.empty() ? g_zeros : m_zeros.data();
+  {
+    // (m_zeros only for blocks longer than g_zeros, and not while prepare()
+    // changes it)
+    const int n = m_zerosSize.load();
+    return n > (int)(sizeof(g_zeros) / sizeof(g_zeros[0])) ? m_zeros.data() : g_zeros;
+  }
   return m_slots[slot].stems[channel];
 }
 
