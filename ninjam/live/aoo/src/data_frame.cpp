@@ -10,7 +10,13 @@ namespace aoo {
 data_frame* data_frame_allocator::allocate(int32_t size) {
     auto index = size_to_bin(size);
     // load head
-    auto frame = bins_[index].load(std::memory_order_relaxed);
+    // Jamsa: acquire (and below on failure), to see the 'next' that
+    // deallocate() wrote on another thread before it pushed the frame
+    // (the relaxed load made the read of frame->next a data race).
+    // NB: allocate() runs on the receive side under the source's reader
+    // lock (handle_data()) and release_memory() under its writer lock, so
+    // nothing else takes frames off the list in between (no ABA).
+    auto frame = bins_[index].load(std::memory_order_acquire);
     do {
         if (frame == nullptr) {
             // allocate new frame
@@ -34,7 +40,7 @@ data_frame* data_frame_allocator::allocate(int32_t size) {
         // NB: compare_exchange() will update frame on failure!
     } while (!bins_[index].compare_exchange_weak(frame, frame->next,
                                                  std::memory_order_acq_rel,
-                                                 std::memory_order_relaxed));
+                                                 std::memory_order_acquire));
     frame->size = size;
 #if AOO_DEBUG_DATA_FRAME_ALLOCATOR
     auto num_frames = num_frames_.fetch_add(1, std::memory_order_acquire) + 1;

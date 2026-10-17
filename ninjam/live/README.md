@@ -118,9 +118,10 @@ Tests (`tests/`):
   who takes the slot, stopping, and a restart (after `update()` with the
   UDP port closed, and `start()` while running) that keeps the players
   set before. About 25 s. With `-fsanitize=thread`, run
-  it with `TSAN_OPTIONS=suppressions=ninjam/live/tests/tsan.supp`: AOO's
-  lock-free free lists read a node another thread may be reusing, on
-  purpose (see the file); the timing checks only print there.
+  it with `TSAN_OPTIONS=suppressions=ninjam/live/tests/tsan.supp`: the
+  free list of AOO's RT memory pool reads a node another thread may be
+  reusing, on purpose (see the file); nothing else is suppressed. The
+  timing checks only print there.
 
 ## The glue
 
@@ -363,10 +364,17 @@ noted as such.
 - `events.hpp`, `ievent::cast()`: went through a `static_cast` to a type the
   event is not (undefined behavior, reported by UBSan for every event). Each
   event type now returns its own `AooEvent`.
+- `data_frame.cpp`, `data_frame_allocator::allocate()`: loaded a bin's head
+  relaxed and then read its `next`, which `deallocate()` (the audio thread)
+  wrote before it pushed the frame: a data race (ThreadSanitizer reports it
+  in `live_client_test`), harmless on x86 and in practice on ARM, undefined
+  all the same. The load and the compare-exchange's failure order are now
+  acquire, and `tests/tsan.supp` no longer hides the function.
 
 `live_aoo_test` has a test for each of these that fails without the fix,
 except the flag, the denormal flush and `AOO_CALL`, which have no visible
-effect on our builds.
+effect on our builds, and the frame allocator's ordering, which only
+ThreadSanitizer sees (`live_client_test`: two reports before, none after).
 
 ### Hardening
 

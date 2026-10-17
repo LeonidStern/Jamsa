@@ -1,12 +1,12 @@
 # ThreadSanitizer suppressions for the Live tests:
 #   TSAN_OPTIONS=suppressions=ninjam/live/tests/tsan.supp ./live_client_test
 #
-# AOO's lock-free free lists (Treiber stacks with tagged heads) read the
-# head node's 'next' field while another thread may pop that node and
-# reuse its memory; the compare-exchange that follows then fails because
-# the tag changed, and the value read is thrown away. rt_memory_pool.hpp
-# says so ("Technically, this is UB, but we don't care because the CAS loop
-# will fail anyway"). To TSan it is a data race, reported from wherever the
-# memory is used next (an event, a queue node, a data frame).
+# AOO's lock-free free list of the RT memory pool (a Treiber stack with a
+# tagged head, rt_memory_pool.hpp) reads the head node's 'next' field while
+# another thread may pop that node and reuse its memory; the
+# compare-exchange that follows then fails because the tag changed, and
+# the value read is thrown away. rt_memory_pool.hpp says so ("Technically,
+# this is UB, but we don't care because the CAS loop will fail anyway").
+# To TSan it is a data race, reported from wherever the memory is used next
+# (an event, a queue node). Nothing else is suppressed.
 race:aoo::detail::free_list::pop
-race:aoo::data_frame_allocator::allocate
