@@ -94,6 +94,7 @@ struct Counters
   uint64_t droppedBad = 0;    // not our protocol, wrong size
   uint64_t droppedPeer = 0;   // from a player without a slot
   uint64_t droppedFilter = 0; // an AOO message we don't take (IDs, kinds, formats)
+  uint64_t droppedIdle = 0;   // for a slot while processBlock() wasn't being called
   uint64_t helloAcks = 0;
   bool sendThreadRealtime = false; // the send thread got a raised priority
 };

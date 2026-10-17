@@ -209,11 +209,12 @@ the server (`serverRttMs()`).
   and the sinks skip it.
 - While the host isn't calling `processBlock()` (0.25 s after the end of
   the last block, or before the first one), the receive thread drops what
-  comes for the sinks (`Core::Totals::idle`): AOO would keep it until the
-  next block and then work through all of it on the audio thread (with 7
-  players, 1.2 GB an hour and a 13 ms first block after a minute; see also
-  `AOO_MAX_QUEUED_PACKETS`). What comes for our source still goes through,
-  as the send thread runs on. The streams pick up from the next packets.
+  comes for the sinks (`Counters::droppedIdle`): AOO would keep it until
+  the next block and then work through all of it on the audio thread
+  (with 7 players, 1.2 GB an hour and a 13 ms first block after a minute;
+  see also `AOO_MAX_QUEUED_PACKETS`). What comes for our source still goes
+  through, as the send thread runs on. The streams pick up from the next
+  packets.
 - `processBlock(..., send = false)` sends silence; the stream goes on.
 - The room's Live flag off (`update()`): the source stops, every slot goes
   unhealthy at once and drops its source, and nothing reaches AOO until it

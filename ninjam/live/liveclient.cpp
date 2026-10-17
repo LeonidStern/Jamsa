@@ -596,6 +596,7 @@ Counters Client::counters() const
   c.droppedBad = d.droppedBad.load() + t.badSize.load();
   c.droppedPeer = t.noSlot.load();
   c.droppedFilter = t.filtered.load() + t.badFormat.load();
+  c.droppedIdle = t.idle.load();
   c.helloAcks = d.helloAcks.load();
   c.sendThreadRealtime = d.realtime.load();
   return c;

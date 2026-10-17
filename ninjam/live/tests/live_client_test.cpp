@@ -681,8 +681,11 @@ static void test_room()
     CHECK_EQ(k.droppedBad, 0u);
     CHECK_EQ(k.droppedPeer, 0u);
     CHECK_EQ(k.droppedFilter, 0u);
-    if (p == &a) printf("  A: sent %llu, received %llu, send thread raised: %s\n", (unsigned long long)k.sent,
-                        (unsigned long long)k.received, k.sendThreadRealtime ? "yes" : "no (not allowed)");
+    // (what came before the player's audio thread started)
+    CHECK(k.droppedIdle < 50);
+    if (p == &a) printf("  A: sent %llu, received %llu, dropped before its audio thread ran %llu, send thread raised: %s\n",
+                        (unsigned long long)k.sent, (unsigned long long)k.received,
+                        (unsigned long long)k.droppedIdle, k.sendThreadRealtime ? "yes" : "no (not allowed)");
   }
 
   // the clocks drift (for minutes in live_unit_test): the delay stays
