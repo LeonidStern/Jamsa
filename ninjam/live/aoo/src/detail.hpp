@@ -17,7 +17,9 @@
 #include "osc/OscReceivedElements.h"
 #include "osc/OscOutboundPacketStream.h"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <cstdint>
 #include <string>
@@ -59,6 +61,46 @@ using rt_concurrent_queue = lockfree::concurrent_queue<T, multi_producer, aoo::r
 
 template<typename T>
 using concurrent_list = lockfree::concurrent_list<T, aoo::allocator<T>>;
+
+//------------- Jamsa: rate limits ----------------//
+
+// Lets one reply through per 'interval' seconds, on the source's or the
+// sink's elapsed time, from any thread. That clock restarts at 0 with a
+// new stream; a time before the last one lets the next reply through.
+class reply_gate {
+public:
+    bool allow(float now, float interval) {
+        auto last = last_.load(std::memory_order_relaxed);
+        for (;;) {
+            if (now >= last && now - last < interval) {
+                return false;
+            }
+            if (last_.compare_exchange_weak(last, now, std::memory_order_relaxed)) {
+                return true;
+            }
+        }
+    }
+private:
+    std::atomic<float> last_{-1e9f};
+};
+
+// A token bucket of packets, for one thread: 'rate' packets per second, at
+// most 'burst' at once. Starts full, and again when the time goes back.
+struct packet_budget {
+    double tokens = 0;
+    double last = 0;
+    bool started = false;
+
+    void refill(double now, double rate, double burst) {
+        if (!started || now < last) {
+            tokens = burst;
+            started = true;
+        } else {
+            tokens = std::min<double>(burst, tokens + (now - last) * rate);
+        }
+        last = now;
+    }
+};
 
 //-------------------- sendfn-------------------------//
 

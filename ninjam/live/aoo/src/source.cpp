@@ -2130,16 +2130,30 @@ void Source::resend_data(const sendfn &fn) {
     std::array<frame_data, 16> small_framevec;
     std::vector<frame_data> large_framevec;
 
+    // Jamsa: resent packets come out of a budget for all sinks and one for
+    // each sink, in packets per second of the stream (see AOO_RESEND_SHARE);
+    // a request beyond it is dropped (a sink asks again while it can still
+    // use the block). Without it, one request could make us send ~180
+    // packets, and a peer could empty our rate limit at the server.
+    const double blocks_per_second = (format_ && format_->blockSize > 0)
+        ? (double)format_->sampleRate / (double)format_->blockSize : 0;
+    const double now = elapsed_time_.load(std::memory_order_relaxed);
+    resend_budget_.refill(now, blocks_per_second * AOO_RESEND_SHARE, AOO_RESEND_BURST);
+
     // send block to sinks
     sink_lock lock(sinks_);
     for (auto& s : sinks_) {
         int count = 0;
+        s.resend_budget.refill(now, blocks_per_second * AOO_RESEND_SHARE_SINK, AOO_RESEND_BURST_SINK);
         data_request r;
         while (s.get_data_request(r)) {
         #if AOO_DEBUG_RESEND && 0
             LOG_DEBUG("AooSource: dispatch data request (" << r.sequence
                       << " " << r.offset << " " << r.bitset << ")");
         #endif
+            if (resend_budget_.tokens < 1 || s.resend_budget.tokens < 1) {
+                continue; // (keep emptying the queue)
+            }
             auto block = history_.find(r.sequence);
             if (block) {
                 bool binary = binary_.load();
@@ -2239,6 +2253,8 @@ void Source::resend_data(const sendfn &fn) {
                 }
 
                 count += numframes;
+                resend_budget_.tokens -= numframes;
+                s.resend_budget.tokens -= numframes;
 
                 // lock again
                 updatelock.lock();
@@ -2319,6 +2335,11 @@ void Source::handle_start_request(const osc::ReceivedMessage& msg,
     if (sink){
         if (sink->is_active()){
             // just resend /start message
+            // Jamsa: at most one per AOO_REPLY_INTERVAL for each sink
+            if (!sink->start_gate.allow(elapsed_time_.load(std::memory_order_relaxed),
+                                        AOO_REPLY_INTERVAL)) {
+                return;
+            }
             sink->notify_start();
 
             notify_start();
@@ -2393,7 +2414,8 @@ void Source::handle_data_request(const osc::ReceivedMessage& msg,
         }
         if (sink->is_active()){
             // get pairs of sequence + frame
-            int npairs = (msg.ArgumentCount() - 2) / 2;
+            // Jamsa: no more than AOO_MAX_DATA_REQUESTS (our sinks send no more)
+            int npairs = std::min<int>((msg.ArgumentCount() - 2) / 2, AOO_MAX_DATA_REQUESTS);
             while (npairs--){
                 data_request r;
                 r.sequence = (it++)->AsInt32();
@@ -2452,6 +2474,8 @@ void Source::handle_data_request(const AooByte *msg, int32_t n,
                 LOG_DEBUG("AooSource: bad 'count' argument for binary data message!");
                 return;
             }
+            // Jamsa: no more than AOO_MAX_DATA_REQUESTS (our sinks send no more)
+            count = std::min<int>(count, AOO_MAX_DATA_REQUESTS);
             while (count--){
                 data_request r;
                 r.sequence = aoo::read_bytes<int32_t>(it);
@@ -2591,6 +2615,11 @@ void Source::handle_ping(const osc::ReceivedMessage& msg,
     auto sink = find_sink(addr, id);
     if (sink) {
         if (sink->is_active()){
+            // Jamsa: at most one pong per AOO_REPLY_INTERVAL for each sink
+            if (!sink->pong_gate.allow(elapsed_time_.load(std::memory_order_relaxed),
+                                       AOO_REPLY_INTERVAL)) {
+                return;
+            }
             // push pong request
             sink_request r(request_type::pong, sink->ep);
             r.pong.tt1 = tt1;

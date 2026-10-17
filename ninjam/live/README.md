@@ -381,11 +381,28 @@ ones marked "(fuzzer)" were found by it.
   peer can't flood the log. That includes "jitter buffer not empty", which
   upstream calls a bug but which also happens when buffering gives up with
   blocks in the buffer (heavy loss, or a `/stop`).
+- What a peer can make us send (`aoo_controls.h`, from `AOO_MAX_DATA_REQUESTS`
+  on). Everything a player sends counts against its rate limit at our
+  server, which leaves room for about one more stream on top of its own;
+  a peer that used that room up would get the player's stream dropped for
+  the whole room. One binary resend request could ask for about 180
+  blocks, and the source resent all it still had; every ping got a pong,
+  every `/start` request a `/start`, and a sink asked for `/start` once for
+  each `/data` of a stream it didn't know (in broadcast mode, all of a
+  room's data). Now a source reads at most 32 requests from a message (our
+  sinks send no more in one); resends come out of a token bucket for all
+  sinks together (half the stream's packets per second, bursts of 32) and
+  one per sink (a quarter, bursts of 16), and what is over is dropped (the
+  sink asks again while it can still use the block); pongs, `/start`s in
+  answer to a request and a sink's `/start` requests go out at most once
+  per 100 ms per peer. The clocks are the source's and the sink's elapsed
+  time, so the virtual-time tests run them as the plug-in does.
 
 Not done here (the glue's receive thread filters by peer, ID and format
 first, see the spec): a cap on the sources a sink keeps (each new address
-and ID from the network creates one), on the resends one request can ask
-for, and on events queued while nobody polls. A forged `/stop` from a
+and ID from the network creates one) and on events queued while nobody
+polls. A `/stop` request still gets a `/stop` back each time (only while
+our stream is stopped or that sink inactive). A forged `/stop` from a
 player's address still ends that player's stream, as AOO's protocol says.
 
 ### Real-time safety

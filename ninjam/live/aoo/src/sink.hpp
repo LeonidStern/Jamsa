@@ -268,6 +268,9 @@ private:
     std::atomic<bool> expired_{false}; // Jamsa: see expire()
     std::atomic<float> last_ping_time_{0};
     float last_stop_time_{0};
+    // Jamsa: what this source can make us send (see AOO_REPLY_INTERVAL)
+    reply_gate start_request_gate_;
+    reply_gate pong_gate_;
     // statistics
     std::atomic<int32_t> dropped_blocks_{0};
     time_tag last_ping_reply_time_;

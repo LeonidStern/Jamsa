@@ -142,6 +142,41 @@ enum
  #define AOO_RESEND_LIMIT 16
 #endif
 
+/* Jamsa: what a peer can make a source or a sink send. Everything a player
+ * sends counts against its rate limit at our server, which leaves room for
+ * about one more stream on top of the player's own; a peer that asks for
+ * more must not use that room up, or the server drops the player's stream
+ * for the whole room. */
+
+/** \brief Jamsa: most resend requests in one message (a sink sends no
+ * more, a source reads no more; a datagram has room for about 180) */
+#ifndef AOO_MAX_DATA_REQUESTS
+ #define AOO_MAX_DATA_REQUESTS 32
+#endif
+
+/** \brief Jamsa: resent packets per second for all sinks together, as a
+ * share of the stream's packets per second, and the burst in packets */
+#ifndef AOO_RESEND_SHARE
+ #define AOO_RESEND_SHARE 0.5
+#endif
+#ifndef AOO_RESEND_BURST
+ #define AOO_RESEND_BURST 32
+#endif
+
+/** \brief Jamsa: the same for any one sink */
+#ifndef AOO_RESEND_SHARE_SINK
+ #define AOO_RESEND_SHARE_SINK 0.25
+#endif
+#ifndef AOO_RESEND_BURST_SINK
+ #define AOO_RESEND_BURST_SINK 16
+#endif
+
+/** \brief Jamsa: at most one pong, one /start in answer to a request and one
+ * /start request per peer in this many seconds (pings come every second) */
+#ifndef AOO_REPLY_INTERVAL
+ #define AOO_REPLY_INTERVAL 0.1
+#endif
+
 /** \brief default source timeout */
 #ifndef AOO_SOURCE_TIMEOUT
  #define AOO_SOURCE_TIMEOUT 10.0

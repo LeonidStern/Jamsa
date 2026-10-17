@@ -623,6 +623,127 @@ static void test_source_requests()
   for (double r : rms) CHECK(sounds_right(r));
 }
 
+// What a peer can make a source or a sink send: all of it counts against
+// the sender's rate limit at our server, so a peer that asks for a lot
+// could get the sender's own stream dropped for the whole room. One resend
+// request could ask for ~180 blocks, and every ping got a pong, every
+// /start request a /start, every /data of an unknown stream a /start
+// request. Now: resends within a budget (AOO_RESEND_*), at most one reply
+// of each kind per peer per AOO_REPLY_INTERVAL.
+static bool has_address(const datagram &d, const std::string &a)
+{
+  return d.bytes.size() > a.size() && !memcmp(d.bytes.data(), a.c_str(), a.size())
+    && d.bytes[a.size()] == 0;
+}
+
+static void test_reply_budget()
+{
+  source_options so;
+  so.broadcast = true; // as the glue runs it: the source's own data is broadcast, resends unicast
+  session s(so, three_sinks());
+  stream_watch watch;
+  long resent[4] = {}, pongs = 0, start_replies = 0, start_requests = 0;
+  const std::string pong = address(true, kAooMsgPong), start = address(true, kAooMsgStart);
+  const std::string start_request = address(false, kAooMsgStart);
+  s.filter = [&](datagram &d) {
+    watch.observe(d);
+    if (d.from == 0 && !d.broadcast && d.bytes.size() >= 4 && d.bytes[0] == (0x80 | kAooMsgTypeSink)
+        && (d.bytes[1] & 0x7f) == kAooBinMsgCmdData && d.to < 4)
+      resent[d.to]++;
+    if (d.from == 0 && d.to == 1 && has_address(d, pong)) pongs++;
+    if (d.from == 0 && d.to == 1 && has_address(d, start)) start_replies++;
+    if (d.from == 1 && d.to == 0 && has_address(d, start_request)) start_requests++;
+    return true;
+  };
+  s.start();
+  CHECK(run_until_all_active(s, 2.0));
+  s.run(1.2); // a full resend history
+  const double rate = 48000.0 / 240; // the stream's packets per second
+
+  // one maximal binary request: 180 recent blocks
+  auto request = [&](int count) {
+    bytes b(AOO_MAX_PACKET_SIZE);
+    const int n = aoo::binmsg_write_header(b.data(), b.size(), kAooMsgTypeSource, kAooBinMsgCmdData, 1, 1);
+    AooByte *it = b.data() + n;
+    aoo::write_bytes<int32_t>(watch.stream_id, it);
+    aoo::write_bytes<int32_t>(count, it);
+    for (int i = 0; i < count; i++)
+    {
+      aoo::write_bytes<int32_t>(watch.seq - 2 - i, it);
+      aoo::write_bytes<int16_t>(-1, it);
+      aoo::write_bytes<uint16_t>(0, it);
+    }
+    b.resize(it - b.data());
+    return b;
+  };
+  const bytes big = request(180);
+  CHECK(big.size() <= 1452);
+  CHECK_EQ(s.inject(1, 0, big.data(), big.size()), kAooOk);
+  s.run(0.005);
+  printf("  one request for 180 blocks: %ld resent\n", resent[1]);
+  CHECK(resent[1] > 0);
+  CHECK(resent[1] <= AOO_RESEND_BURST_SINK);
+
+  // one a block for a second, from two sinks: each within its share, both
+  // within the source's
+  for (auto &r : resent) r = 0;
+  for (int i = 0; i < 200; i++)
+  {
+    const bytes b = request(180);
+    CHECK_EQ(s.inject(1, 0, b.data(), b.size()), kAooOk);
+    CHECK_EQ(s.inject(2, 0, b.data(), b.size()), kAooOk);
+    s.run(0.005);
+  }
+  printf("  a second of them from sinks 1 and 2: %ld and %ld resent (%ld to sink 3)\n", resent[1],
+         resent[2], resent[3]);
+  const double sink_most = AOO_RESEND_BURST_SINK + rate * AOO_RESEND_SHARE_SINK * 1.05;
+  CHECK(resent[1] <= sink_most && resent[2] <= sink_most);
+  CHECK(resent[1] + resent[2] <= AOO_RESEND_BURST + rate * AOO_RESEND_SHARE * 1.05);
+  CHECK(resent[1] > rate * AOO_RESEND_SHARE_SINK * 0.8); // the share is there
+  CHECK_EQ(resent[3], 0L);
+
+  // a ping and a /start request every 5 ms for a second
+  pongs = start_replies = 0;
+  for (int i = 0; i < 200; i++)
+  {
+    char buf[256];
+    osc::OutboundPacketStream m(buf, sizeof(buf));
+    m << osc::BeginMessage(address(false, kAooMsgPing).c_str()) << (int32_t)1
+      << osc::TimeTag(ntp_from_seconds(s.now)) << osc::EndMessage;
+    const bytes p = osc_bytes(m);
+    CHECK_EQ(s.inject(1, 0, p.data(), p.size()), kAooOk);
+    osc::OutboundPacketStream q(buf, sizeof(buf));
+    q << osc::BeginMessage(start_request.c_str()) << (int32_t)1 << aoo_getVersionString() << osc::EndMessage;
+    const bytes r = osc_bytes(q);
+    CHECK_EQ(s.inject(1, 0, r.data(), r.size()), kAooOk);
+    s.run(0.005);
+  }
+  printf("  200 pings and /start requests in a second: %ld pongs, %ld /start\n", pongs, start_replies);
+  const long most = (long)(1.0 / AOO_REPLY_INTERVAL) + 2; // and the source's own pings' timing
+  CHECK(pongs <= most);
+  CHECK(pongs >= 1);
+  CHECK(start_replies <= most);
+  CHECK(start_replies >= 1);
+
+  // a sink: data of a stream it doesn't know, 200 a second
+  start_requests = 0;
+  for (int i = 0; i < 200; i++)
+  {
+    const bytes d = binary_data(simple_block(watch.stream_id + 12345, i, bytes(30, 0x66)));
+    CHECK_EQ(s.inject(0, 1, d.data(), d.size()), kAooOk);
+    s.run(0.005);
+  }
+  printf("  200 /data of an unknown stream in a second: %ld /start requests\n", start_requests);
+  CHECK(start_requests <= most);
+  CHECK(start_requests >= 1);
+
+  // everybody still plays
+  s.run(0.5);
+  const std::vector<double> rms = output_rms(s, 1.0);
+  CHECK(s.outputs_finite);
+  for (double r : rms) CHECK(sounds_right(r));
+}
+
 // ---------------------------------------------------------------------------
 // The fuzzer
 // ---------------------------------------------------------------------------
@@ -1036,6 +1157,7 @@ int main(int argc, char **argv)
     { "stream_messages", test_stream_messages },
     { "start_formats", test_start_formats },
     { "source_requests", test_source_requests },
+    { "reply_budget", test_reply_budget },
   };
   for (auto &t : tests)
     if (only.empty() || only == t.name) t.fn();

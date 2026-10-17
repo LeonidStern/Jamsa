@@ -1635,7 +1635,11 @@ AooError source_desc::handle_data(const Sink& s, net_packet& d, bool binary)
     // NOTE: stream_id_ can only change in this thread!
     if (d.stream_id != stream_id_) {
         LOG_DEBUG("AooSink: received /data message before /start message");
-        push_request(request(request_type::start));
+        // Jamsa: one request per AOO_REPLY_INTERVAL, not one per packet (in
+        // broadcast mode a sink the source doesn't know gets all of them)
+        if (start_request_gate_.allow(s.elapsed_time(), AOO_REPLY_INTERVAL)) {
+            push_request(request(request_type::start));
+        }
         return kAooOk;
     }
 
@@ -1694,6 +1698,11 @@ AooError source_desc::handle_ping(const Sink& s, time_tag tt){
         return kAooOk;
     }
 #endif
+
+    // Jamsa: at most one pong per AOO_REPLY_INTERVAL
+    if (!pong_gate_.allow(s.elapsed_time(), AOO_REPLY_INTERVAL)) {
+        return kAooOk;
+    }
 
     // push pong request
     request r(request_type::pong);
@@ -2887,7 +2896,8 @@ void source_desc::send_data_requests(const Sink& s, const sendfn& fn){
     if (ep.binary) {
         // --- binary version ---
         const int32_t maxdatasize = s.packet_size() - kBinDataHeaderSize;
-        const int32_t maxrequests = maxdatasize / 8; // 2 * int32
+        // Jamsa: no more than a source reads
+        const int32_t maxrequests = std::min<int32_t>(maxdatasize / 8, AOO_MAX_DATA_REQUESTS); // 2 * int32
 
         // write header
         auto onset = aoo::binmsg_write_header(buf, sizeof(buf), kAooMsgTypeSource,
@@ -2938,7 +2948,8 @@ void source_desc::send_data_requests(const Sink& s, const sendfn& fn){
                  kAooMsgDomain kAooMsgSource, (int)ep.id, kAooMsgData);
 
         const int32_t maxdatasize = s.packet_size() - kDataHeaderSize;
-        const int32_t maxrequests = maxdatasize / 10; // 2 * (int32_t + typetag + padding)
+        // Jamsa: no more than a source reads
+        const int32_t maxrequests = std::min<int32_t>(maxdatasize / 10, AOO_MAX_DATA_REQUESTS); // 2 * (int32_t + typetag + padding)
         int32_t numrequests = 0;
 
         msg << osc::BeginMessage(pattern) << s.id() << stream_id;
