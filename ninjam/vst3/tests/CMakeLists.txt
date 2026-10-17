@@ -28,6 +28,9 @@
 #                      virtual network: loss, clock drift, slot reuse, the filter, fuzzing
 #   live_client_test   (ninjam/live) jamsa_live::Client on real sockets (loopback), four
 #                      players and a minimal server
+#
+# Benchmarks, built with the tests but not run by ctest (they take minutes): live_bench
+# (ninjam/live/tests/live_bench.cpp) and njclient_bench (interval mode's cost, to compare).
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp
@@ -60,7 +63,14 @@ target_link_libraries(njclient_live_test PRIVATE ninjam_client ninjamsrv_embedde
 add_test(NAME njclient_live_test COMMAND njclient_live_test)
 set_tests_properties(njclient_live_test PROPERTIES TIMEOUT 120)
 
-# Live mode's tests, defined in ninjam/live/CMakeLists.txt
+# what interval mode costs, measured as live_bench measures Live (Linux: /proc, TCP_INFO)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(njclient_bench njclient_bench.cpp)
+    target_compile_features(njclient_bench PRIVATE cxx_std_17)
+    target_link_libraries(njclient_bench PRIVATE ninjam_client ninjamsrv_embedded)
+endif()
+
+# Live mode's tests (and live_bench), defined in ninjam/live/CMakeLists.txt
 ninjam_live_add_tests()
 
 if(NOT WIN32)
