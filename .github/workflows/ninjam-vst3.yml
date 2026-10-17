@@ -3,6 +3,10 @@ name: ninjam-vst3
 # Builds Jamsa, the NINJAM VST3 plug-in (ninjam/vst3), on Linux, Windows and macOS, checks it with
 # Steinberg's validator and Tracktion's pluginval (which also opens the editor), runs the
 # plug-in's tests and uploads what users install.
+#
+# Pull requests build and test on macOS only. Linux, Windows and the Live sanitizers run on
+# main (whose builds the release job publishes) and for a release candidate: run this
+# workflow by hand on its branch with "all platforms" ticked.
 
 on:
   push:
@@ -11,6 +15,11 @@ on:
   pull_request:
     paths: ['ninjam/**', 'WDL/**', '.github/workflows/ninjam-vst3.yml']
   workflow_dispatch:
+    inputs:
+      all_platforms:
+        description: 'Also build and test on Linux and Windows, and run the Live sanitizers'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +36,7 @@ env:
 
 jobs:
   linux:
+    if: github.ref == 'refs/heads/main' || inputs.all_platforms
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +112,7 @@ jobs:
   # and UndefinedBehaviorSanitizer, where its fuzz tests find the most (any report fails the
   # test), and the Client test with ThreadSanitizer (its timing checks only print there).
   live-sanitizers:
+    if: github.ref == 'refs/heads/main' || inputs.all_platforms
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -140,6 +151,7 @@ jobs:
         run: build-tsan/live_client_test
 
   windows:
+    if: github.ref == 'refs/heads/main' || inputs.all_platforms
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
