@@ -97,7 +97,7 @@ if(NOT WIN32)
         )
         # its server takes the same ports as plugin_e2e's (2049 on), and Jamsa joins Link
         set_tests_properties(plugin_live_e2e PROPERTIES
-            TIMEOUT 300
+            TIMEOUT 420
             RESOURCE_LOCK ableton_link
             ENVIRONMENT "NINJAM_VST3_PLUGIN=$<TARGET_PROPERTY:Jamsa,SMTG_PLUGIN_PACKAGE_PATH>;NINJAM_VST3_E2E_HOST=$<TARGET_FILE:plugin_e2e_host>"
         )

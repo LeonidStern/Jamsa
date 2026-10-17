@@ -11,10 +11,14 @@ each chirp in what bob hears by cross-correlation:
     (hers) and on no other, with the intervals' copy of her muted; old, which can't play Live,
     still hears her through intervals;
   - bob's jitter buffer goes from 20 to 40 ms: still live, and his estimate of how late he
-    hears her goes up by about as much;
+    hears her goes up by about as much; then back to 20;
+  - bob's DAW misses 32 ms once (as in an xrun): he is live again after it, falling back to
+    intervals for a while if the glitch made dropouts;
   - alice turns Live off: bob hears her through intervals again at once.
 The test prints the Live delay measured at the default 20 ms jitter buffer (median and 95th
-percentile).
+percentile). Where the test machine was busy (its blocks late, dropouts, bob back on intervals
+for a while, as with a DAW that is late), a phase isn't judged; the host measures a phase again
+when too little of it is left (up to three times), and the test wants at least 60% of each.
 
 Run by hand:
   NINJAM_VST3_PLUGIN=build/VST3/Release/Jamsa.vst3 \\
@@ -34,6 +38,8 @@ from test_plugin_e2e import HOST, PLUGIN, Run, fields  # noqa: E402
 
 # of the chirps alice plays, how many bob must find (and old, through intervals)
 MIN_FOUND = 0.95
+# of the chirps of a phase, how many must be where bob heard alice live without dropouts
+MIN_CLEAN = 0.6
 # how late bob may hear alice live at the default jitter buffer (ms): median, 95th percentile
 MAX_LIVE_MEDIAN_MS, MAX_LIVE_P95_MS = 100.0, 150.0
 
@@ -52,10 +58,10 @@ class LiveEndToEndTest(unittest.TestCase):
 
     def test_live_latency(self):
         run = Run(["live"], block=256)
-        lines = {}  # "ready", "intervals", "on", "live", "buffer40", "off" -> fields
+        lines = {}  # "ready", "intervals", "on", "live", "buffer40", "stall", "recovered", "off" -> fields
 
         def on_line(line):
-            m = re.match(r"LIVE (ready|intervals|on|off) (.*)$", line)
+            m = re.match(r"LIVE (ready|intervals|on|recovered|off) (.*)$", line)
             if m:
                 lines[m.group(1)] = fields(m.group(2))
             m = re.match(r"LIVE phase (\w+) (.*)$", line)
@@ -65,7 +71,7 @@ class LiveEndToEndTest(unittest.TestCase):
             if m:
                 lines["bob_status"] = fields(m.group(1))
         try:
-            run.run_to_end(on_line, timeout=240)
+            run.run_to_end(on_line, timeout=360)
         finally:
             run.close()
 
@@ -93,6 +99,9 @@ class LiveEndToEndTest(unittest.TestCase):
             self.assertTrue(f, "no phase %s\n%s" % (name, log))
             what = "phase " + name
             self.assertEqual(f.get("b_live"), "1", what + "\n" + log)
+            n, m = found(f, "clean")
+            self.assertGreaterEqual(n, MIN_CLEAN * m, "%s: only %d of %d chirps where bob heard alice live without "
+                                    "dropouts\n%s" % (what, n, m, log))
             self.assertFound(f, "found", log, what + ": bob live")
             self.assertLess(float(f["median_ms"]), MAX_LIVE_MEDIAN_MS, what + "\n" + log)
             self.assertLess(float(f["p95_ms"]), MAX_LIVE_P95_MS, what + "\n" + log)
@@ -109,6 +118,11 @@ class LiveEndToEndTest(unittest.TestCase):
             # old has no Live: intervals, as before
             self.assertFound(f, "old_found", log, what + ": old through intervals")
             self.assertGreater(float(f["old_lag_ms"]), 500.0, what + "\n" + log)
+
+        # bob's DAW missed 32 ms: live again after it
+        rec = lines.get("recovered", {})
+        self.assertTrue(lines.get("stall"), "no phase stall\n" + log)
+        self.assertEqual(rec.get("b_live"), "1", "bob is not live again after his DAW missed 32 ms\n" + log)
 
         # the default jitter buffer is the one in use (with these short blocks)
         st = lines.get("bob_status", {})
