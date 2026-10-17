@@ -313,6 +313,7 @@ static void test_data_fields()
   d.nframes = 0; d.frame = 0; bad.push_back(d);                          // no frames, but data
   d.nframes = 257; bad.push_back(d);                                     // too many frames
   d.nframes = 2; d.total = AOO_MAX_BLOCK_DATA_SIZE + 1; bad.push_back(d); // block too large
+  d.total = 60000; bad.push_back(d); // (64 KB were allowed: that much of the audio thread's stack)
   d.total = 40; bad.push_back(d);                                        // frame larger than block
   d = simple_block(sid, ls.watch.seq + 5, payload);
   d.flags = kAooBinMsgDataStreamMessage;

@@ -405,8 +405,10 @@ ones marked "(fuzzer)" were found by it.
 - Sink `/data` (`check_data_packet()`): stream ID and sequence not negative;
   channel onset 0..255 (a negative one added the stream into memory before
   the output buffers, on the audio thread); block size up to
-  `AOO_MAX_BLOCK_DATA_SIZE` (64 KB; the block is put together with
-  `alloca`); 1 to 256 frames, the frame index below the count (it indexed
+  `AOO_MAX_BLOCK_DATA_SIZE` (8 KB: the block is put together with
+  `alloca` on the audio thread, and one Opus packet is at most 1275 bytes;
+  at first 64 KB, which a peer could make the host's audio thread stack
+  hold, where some hosts give a plug-in 64..128 KB); 1 to 256 frames, the frame index below the count (it indexed
   the frame array) and frame sizes within the block; stream message size a
   multiple of 4 within the block; a sample rate that is finite and
   positive. Binary `/data` read the time stamp before checking that the

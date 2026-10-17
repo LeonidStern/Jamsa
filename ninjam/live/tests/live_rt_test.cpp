@@ -277,7 +277,8 @@ static void test_stream_messages()
 {
   session s(source_options(), three_sinks());
   s.start();
-  std::vector<AooByte> payload(15000, 0x5a);
+  // (a block, messages and all, is at most AOO_MAX_BLOCK_DATA_SIZE)
+  std::vector<AooByte> payload(7000, 0x5a);
   int tick = 0;
   const long n = count_heap_calls(s, 1.0, 5.0, [&]() {
     AooStreamMessage m;

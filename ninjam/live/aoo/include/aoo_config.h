@@ -55,9 +55,12 @@
 #endif
 
 /** \brief max. size of a block's data (encoded audio and stream messages)
- * that a sink accepts; the block is assembled on the audio thread's stack */
+ * that a sink accepts; the block is assembled on the audio thread's stack.
+ * Jamsa: 8 KB (was 64 KB). One Opus packet is at most 1275 bytes, and the
+ * glue takes no block longer than 10 ms: a peer's 64 KB block only took 64 KB
+ * of a host's audio thread stack (some give a plug-in 64..128 KB). */
 #ifndef AOO_MAX_BLOCK_DATA_SIZE
-# define AOO_MAX_BLOCK_DATA_SIZE 65536
+# define AOO_MAX_BLOCK_DATA_SIZE 8192
 #endif
 
 /** \brief max. number of channels of a stream that a sink accepts */
