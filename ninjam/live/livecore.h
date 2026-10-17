@@ -204,6 +204,7 @@ private:
     double sourceLatency = 0, sinkLatency = 0, bufferLatency = 0;
     int formatBlock = 240, formatRate = 48000;
     int underruns = 0, overruns = 0, dropped = 0, resent = 0, xruns = 0;
+    double lastXRun = -1e9;      // the last xrun event's poll
     int streamDropped = 0, streamResent = 0; // since the stream started
     // recent dropouts (underruns, overruns, blocks lost for good)
     double dropouts[16] = {};

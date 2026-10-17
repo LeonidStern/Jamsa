@@ -1614,6 +1614,52 @@ static void test_glue_gap()
   }
 }
 
+// The sender's host stops for 150 ms (an xrun): its source fills the gap
+// with empty blocks marked as such. With a 200 ms jitter buffer they come
+// in time and the listener plays them, without an underrun: a gap it hears
+// all the same. Once is one dropout; three within 2 s and the slot isn't
+// healthy, as with three underruns. (With a short buffer the listener runs
+// dry first: an underrun.)
+static void test_glue_sender_xruns()
+{
+  if (!selected("glue_sender_xruns")) return;
+  net n(53);
+  player &a = n.add(1);
+  player &b = n.add(2);
+  b.send = false;
+  n.start_all();
+  b.core->setJitterMs(200);
+  n.run(2.0);
+  const int slot = b.core->slotOf(1);
+  CHECK(b.core->slotHealthy(slot));
+  auto gap = [&] {
+    a.host_running = false;
+    n.run(0.15);
+    a.host_running = true;
+    n.run(0.35);
+  };
+  auto show = [&](const char *what) {
+    const std::vector<PeerStats> st = b.core->stats(n.now);
+    const PeerStats *ps = stats_of(st, 1);
+    printf("  %s: healthy %d, underruns %d, dropped %d\n", what, (int)b.core->slotHealthy(slot),
+           ps ? ps->underruns : -1, ps ? ps->dropped : -1);
+  };
+  gap();
+  show("one gap");
+  CHECK(b.core->slotHealthy(slot));
+  n.run(2.5);
+  CHECK(b.core->slotHealthy(slot));
+  gap();
+  gap();
+  gap();
+  show("three gaps");
+  CHECK(!b.core->slotHealthy(slot));
+  const std::vector<PeerStats> st = b.core->stats(n.now);
+  const PeerStats *ps = stats_of(st, 1);
+  CHECK(ps && ps->underruns == 0 && ps->streaming);
+  CHECK(n.run_until([&] { return b.core->slotHealthy(slot); }, 2.5));
+}
+
 // A listener's host stops calling processBlock() for a minute while the
 // player stays connected (its send thread goes on) and seven others keep
 // playing. What comes for its sinks is dropped: AOO would keep it until the
@@ -1749,6 +1795,7 @@ int main(int argc, char **argv)
   test_glue_send_off();
   test_glue_send_throws();
   test_glue_gap();
+  test_glue_sender_xruns();
   test_glue_host_stopped();
   test_glue_bitrate_frame();
 

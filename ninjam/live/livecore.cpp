@@ -870,7 +870,12 @@ void Core::sinkEvent(Slot &slot, const AooEvent *e)
       st.streamResent += e->blockResend.count;
       break;
     case kAooEventBlockXRun:
+      // empty blocks for the sender's xrun (its host stopped): a gap we
+      // hear, also when the buffer was long enough not to run dry. One
+      // dropout a gap: its blocks come over several polls.
       st.xruns += e->blockXRun.count;
+      if (now - st.lastXRun > 0.1) st.dropout(now, 1);
+      st.lastXRun = now;
       break;
     case kAooEventSourcePing:
     {

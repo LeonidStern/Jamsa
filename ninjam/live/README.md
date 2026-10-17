@@ -105,8 +105,9 @@ Tests (`tests/`):
   filter in front of AOO verdict by verdict, fuzzed packets into a playing
   Core, the room's Live flag off and on, `send` off (no stream at all)
   and on, an exception out of AOO's `send()`, a host that stops calling
-  for a second, a listener's host that stops for a minute while seven
-  others play, and bitrate and frame size changes. About 25 s.
+  for a second, a sender's host that stops for 150 ms three times (with a
+  200 ms jitter buffer), a listener's host that stops for a minute while
+  seven others play, and bitrate and frame size changes. About 25 s.
 - `live_client_test`: the `Client` on real sockets: four players with
   audio threads paced by the clock and a minimal server on the loopback
   interface (HELLO / HELLO_ACK with the address cookie, DATA copied to the
@@ -268,8 +269,9 @@ the server (`serverRttMs()`).
 ### Statistics and health
 
 - `healthy`: the stream has been active for 1 s or more, with at most two
-  dropouts (underruns, overruns, blocks lost for good) in the last 2 s, and
-  the room's flag is on. The engine mixes a slot's stem instead of the
+  dropouts (underruns, overruns, blocks lost for good, and each gap of
+  empty blocks a sender's xrun leaves, which a long jitter buffer plays
+  without running dry) in the last 2 s, and the room's flag is on. The engine mixes a slot's stem instead of the
   player's intervals only while it is healthy.
 - `oneWayMs`, how late we hear a player, without either audio interface:
   half the round trip AOO's pings measure, the encoder's and decoder's
