@@ -375,6 +375,21 @@ jobs:
         if: always() && steps.devid.outputs.notarize == 'true'
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
+      - name: Signing summary
+        if: always()
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          # repeated at the end, where the log is easy to find
+          echo "Developer ID signing: ${{ steps.devid.outputs.notarize }}"
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            if [ -n "${!name}" ]; then echo "$name: set"; else echo "$name: missing"; fi
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: Jamsa-vst3-macos-universal
