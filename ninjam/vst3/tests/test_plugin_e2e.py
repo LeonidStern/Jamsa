@@ -130,8 +130,8 @@ def whatsmyip_env():
 class Run:
     """A plugin_e2e_host process, its output lines and a watcher of what the server relays."""
 
-    def __init__(self, args, block=512):
-        self.proc = subprocess.Popen([HOST, PLUGIN, "48000", str(block)] + args, stdin=subprocess.PIPE,
+    def __init__(self, args, block=512, rate=48000):
+        self.proc = subprocess.Popen([HOST, PLUGIN, str(rate), str(block)] + args, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                                      env=whatsmyip_env())
         self.lines = queue.Queue()

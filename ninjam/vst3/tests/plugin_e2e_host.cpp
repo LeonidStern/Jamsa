@@ -15,7 +15,8 @@
   It loads Jamsa.vst3, plays a 997 Hz tone into it in real time, and drives
   it through its text command interface.
 
-  Usage: plugin_e2e_host path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link | live]]]
+  Usage: plugin_e2e_host path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link | live |
+                                                                    livebench [buffers [seconds [reps]]]]]]
 
   Hosting (the default): the plug-in hosts a server and joins it, and a second
   NJClient ("peer", in this process) joins too and plays a 661 Hz tone. The
@@ -1757,6 +1758,192 @@ static int live_latency(Host &a, Host &b)
   return result;
 }
 
+// A benchmark (bench_live_e2e.py runs it), not a test: the delay through two instances with
+// Live, for several jitter buffers. As in live_latency(), alice hosts the server and plays
+// chirps, bob joins and plays nothing (no "old" here), and alice turns the room's Live on. Then
+// for each jitter buffer bob types `live buffer N`, waits until he has heard her live and
+// healthy for 3 s (40 s at most), and listens for `seconds`, `reps` times. Four times a second,
+// his `live status` for her: live, healthy, his estimate of the delay. For each chirp alice
+// played while bob heard her live (at both ends of that quarter of a second): where he heard
+// it, 0 to 240 ms after she played it (in the hosts' samples: the DAWs' audio buffers and
+// interfaces aren't in it), or not at all. The hosts never stop.
+//   PORT <port>
+//   BENCH ready rate=<Hz> block=<samples> interval_s=<s>
+//   BENCH buffer=<ms asked> rep=<n> inuse=<ms the plug-in uses> hostblock=<samples it sees> settled=<0|1>
+//         settle_s=<s> seconds=<s> chirps=<played> live_chirps=<played while live> found=<of those, heard>
+//         median_ms= p95_ms= min_ms= max_ms= estimate_ms=<median of the looks> estimate_min_ms= estimate_max_ms=
+//         dropouts=<in the run> underruns= overruns= dropped= resent= dropouts_per_min= healthy_pct=<of the looks>
+//         live_pct= late_blocks=<blocks the host called more than 20 ms late> late_ms=<in all>
+//         process_max_ms=<alice's longest process()>/<bob's>
+//   DONE
+static int live_benchmark(Host &a, Host &b, const std::vector<int> &buffers, double seconds, int reps)
+{
+  const int srate = a.m_srate;
+  Bursts bursts(srate);
+  a.m_signal = [&bursts](long pos) { return bursts.at(pos); };
+  b.m_signal = [](long) { return 0.0f; };
+  a.m_noCatchUp = b.m_noCatchUp = true;
+  for (const char *c : { "name alice", "metronome off", "monitor off", "host on" })
+  {
+    const std::string r = a.command(c);
+    if (r != "ok") return fail(a, ("alice: command failed: " + std::string(c) + ": " + r).c_str());
+  }
+  for (const char *c : { "name bob", "metronome off", "monitor off" })
+  {
+    const std::string r = b.command(c);
+    if (r != "ok") return fail(b, ("bob: command failed: " + std::string(c) + ": " + r).c_str());
+  }
+  auto both = [&](double s, bool record) {
+    const long blocks = (long)ceil(s * srate / a.m_block);
+    for (long i = 0; i < blocks; i ++)
+    {
+      a.block(nullptr, false);
+      b.block(nullptr, record);
+    }
+  };
+  auto until = [&](double timeout, std::function<bool()> pred) {
+    const double end = now_seconds() + timeout;
+    while (now_seconds() < end)
+    {
+      if (pred()) return true;
+      both(0.05, false);
+    }
+    return pred();
+  };
+  auto meanwhile = [&](std::function<void()> work) {
+    std::atomic<bool> done(false);
+    std::thread worker([&]() {
+      work();
+      done = true;
+    });
+    while (!done) both(0.02, false);
+    worker.join();
+  };
+  auto finish = [&]() {
+    b.command("disconnect");
+    a.command("host off");
+    until(10.0, [&]() { return a.status()["hosting"] == "0"; });
+  };
+
+  if (!until(15.0, [&]() { auto s = a.status(); return s["state"] == "connected" && s["hosting"] == "1"; }))
+    return fail(a, "alice did not start her server and join it");
+  const std::string port = a.status()["port"];
+  printf("PORT %s\n", port.c_str());
+  b.command("connect localhost:" + port);
+  if (!until(20.0, [&]() { return b.status()["state"] == "connected" && !live_peer(b, "alice@").empty(); }))
+  {
+    finish();
+    return fail(b, "bob did not join alice's server, or doesn't see her as a Live player");
+  }
+  a.command("live on");
+  if (!until(30.0, [&]() { return live_peer(b, "alice@")["live"] == "1"; }))
+  {
+    printf("live status (bob): %s", b.command("live status").c_str());
+    finish();
+    return fail(b, "bob does not hear alice live");
+  }
+  printf("BENCH ready rate=%d block=%d interval_s=%.2f\n", srate, a.m_block, atoi(a.status()["len"].c_str()) / (double)srate);
+
+  for (int buffer : buffers)
+  {
+    const std::string r = b.command("live buffer " + std::to_string(buffer));
+    if (r != "ok")
+    {
+      printf("BENCH buffer=%d error=%s\n", buffer, r.c_str());
+      continue;
+    }
+    // the streams start again with the new buffer: live and healthy for 3 s
+    const double t0 = now_seconds();
+    double good = 0;
+    both(0.5, false);
+    while (good < 3.0 && now_seconds() - t0 < 40.0)
+    {
+      both(0.25, false);
+      auto lq = live_peer(b, "alice@");
+      good = lq["live"] == "1" && lq["healthy"] == "1" ? good + 0.25 : 0;
+    }
+    const bool settled = good >= 3.0;
+    const double settleS = now_seconds() - t0;
+    for (int rep = 1; rep <= reps; rep ++)
+    {
+      auto p0 = live_peer(b, "alice@");
+      const int skips0 = a.m_skips + b.m_skips;
+      const double skipped0 = a.m_skippedMs + b.m_skippedMs;
+      a.m_maxProcessMs = b.m_maxProcessMs = 0;
+      a.clearHeard();
+      b.clearHeard();
+      const long from = b.m_pos;
+      int looks = 0, healthy = 0, live = 0;
+      bool liveWas = p0["live"] == "1";
+      std::vector<long> qEnd;    // each quarter's end (bob's position)
+      std::vector<char> qLive;   // live at both its ends
+      std::vector<double> estimates;
+      for (double done = 0; done < seconds - 1e-9; done += 0.25)
+      {
+        both(std::min(0.25, seconds - done), true);
+        auto lq = live_peer(b, "alice@");
+        const bool liveNow = lq["live"] == "1";
+        looks++;
+        if (lq["healthy"] == "1") healthy++;
+        if (liveNow) live++;
+        qEnd.push_back(b.m_pos);
+        qLive.push_back(liveWas && liveNow);
+        liveWas = liveNow;
+        const double e = atof(lq["delay"].c_str());
+        if (e > 0) estimates.push_back(e);
+      }
+      auto p1 = live_peer(b, "alice@");
+      auto delta = [&](const char *k) { return atoi(p1[k].c_str()) - atoi(p0[k].c_str()); };
+      const int skips = a.m_skips + b.m_skips - skips0;
+      const double skippedMs = a.m_skippedMs + b.m_skippedMs - skipped0;
+      const auto room = live_room(b);
+      std::vector<float> x;
+      {
+        std::lock_guard<std::mutex> lock(b.m_heardMutex);
+        x.swap(b.m_pluginHeard); // taken rather than copied, as in live_latency()
+      }
+      const long heardFrom = b.m_heardFrom;
+      // the chirps played while bob was live (where their live copy would be, about)
+      const long liveAt = srate * 40 / 1000;
+      auto wasLive = [&](long pos) {
+        size_t q = 0;
+        while (q < qEnd.size() && qEnd[q] <= pos) q ++;
+        return q < qEnd.size() && qLive[q];
+      };
+      Bursts judged = bursts;
+      judged.starts.clear();
+      int chirps = 0;
+      for (long st : bursts.starts)
+        if (st >= from && st + (long)(LIVE_WINDOW_MS * srate / 1000) + (long)bursts.chirp.size() <= b.m_pos)
+        {
+          chirps++;
+          if (wasLive(st + liveAt)) judged.starts.push_back(st);
+        }
+      std::vector<Found> f;
+      meanwhile([&]() { f = find_chirps(x, heardFrom, judged, srate, 0, LIVE_WINDOW_MS); });
+      std::sort(estimates.begin(), estimates.end());
+      const double est = estimates.empty() ? -1 : estimates[estimates.size() / 2];
+      const int dropouts = delta("dropouts");
+      printf("BENCH buffer=%d rep=%d inuse=%s hostblock=%s settled=%d settle_s=%.1f seconds=%.1f chirps=%d live_chirps=%d "
+             "found=%d median_ms=%.2f p95_ms=%.2f min_ms=%.2f max_ms=%.2f estimate_ms=%.2f estimate_min_ms=%.2f "
+             "estimate_max_ms=%.2f dropouts=%d underruns=%d overruns=%d dropped=%d resent=%d dropouts_per_min=%.2f "
+             "healthy_pct=%.1f live_pct=%.1f late_blocks=%d late_ms=%.0f process_max_ms=%.2f/%.2f\n",
+             buffer, rep, room.count("inuse") ? room.at("inuse").c_str() : "-", room.count("hostblock") ? room.at("hostblock").c_str() : "-",
+             settled ? 1 : 0, settleS, seconds, chirps, (int)judged.starts.size(), found_count(f), lag_percentile(f, 50),
+             lag_percentile(f, 95), lag_percentile(f, 0), lag_percentile(f, 100), est, estimates.empty() ? -1 : estimates.front(),
+             estimates.empty() ? -1 : estimates.back(), dropouts, delta("underruns"), delta("overruns"), delta("dropped"),
+             delta("resent"), dropouts * 60.0 / seconds, looks ? 100.0 * healthy / looks : 0.0, looks ? 100.0 * live / looks : 0.0,
+             skips, skippedMs, a.m_maxProcessMs, b.m_maxProcessMs);
+      fflush(stdout);
+    }
+  }
+  finish();
+  b.unload();
+  a.unload();
+  printf("DONE\n");
+  return 0;
+}
+
 // the host leads: the room follows its tempo, and the intervals its bars
 static int host_sync(Host &host)
 {
@@ -2082,7 +2269,8 @@ int main(int argc, char **argv)
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 2)
   {
-    fprintf(stderr, "usage: %s path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link | live]]]\n", argv[0]);
+    fprintf(stderr, "usage: %s path/to/Jamsa.vst3 [samplerate [blocksize [join host:port | two | sync | link | live | "
+            "livebench [buffers [seconds [reps]]]]]]\n", argv[0]);
     return 2;
   }
   const int srate = argc > 2 ? atoi(argv[2]) : 48000;
@@ -2105,6 +2293,20 @@ int main(int argc, char **argv)
     Host second(srate, blockSize, PEER_FREQ);
     if (!second.loadAnother(host)) return fail(host, "could not create a second instance");
     return live_latency(host, second);
+  }
+  if (argc > 4 && !strcmp(argv[4], "livebench"))
+  {
+    // livebench [buffers [seconds [reps]]]: 5,10,20,30,40 ms, 30 s, once
+    std::vector<int> buffers;
+    for (const char *p = argc > 5 ? argv[5] : "5,10,20,30,40"; *p;)
+    {
+      buffers.push_back(atoi(p));
+      while (*p && *p != ',') p ++;
+      if (*p == ',') p ++;
+    }
+    Host second(srate, blockSize, PEER_FREQ);
+    if (!second.loadAnother(host)) return fail(host, "could not create a second instance");
+    return live_benchmark(host, second, buffers, argc > 6 ? atof(argv[6]) : 30.0, argc > 7 ? atoi(argv[7]) : 1);
   }
   if (argc > 4 && !strcmp(argv[4], "two"))
   {

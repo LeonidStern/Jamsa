@@ -30,7 +30,8 @@
 #                      players and a minimal server
 #
 # Benchmarks, built with the tests but not run by ctest (they take minutes): live_bench
-# (ninjam/live/tests/live_bench.cpp) and njclient_bench (interval mode's cost, to compare).
+# (ninjam/live/tests/live_bench.cpp), njclient_bench (interval mode's cost, to compare),
+# and plugin_e2e_host's livebench mode (Live's delay through two instances; bench_live_e2e.py).
 
 add_executable(plugin_unit_test
     plugin_unit_test.cpp
