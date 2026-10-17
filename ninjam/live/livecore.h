@@ -230,6 +230,7 @@ private:
   void bind(int slot, uint32_t peer);
   void unbind(int slot);
   void updateHealth(double now);
+  void applyBufferSize();
 
   AooSource::Ptr m_source;
   Slot m_slots[kMaxPeers];
@@ -249,7 +250,7 @@ private:
   // audio
   std::mutex m_audioMutex;          // prepare() vs processBlock() (try-lock)
   bool m_prepared = false;
-  double m_sampleRate = 48000;
+  double m_sampleRate = 48000;      // (and m_maxBlock: also m_ctlMutex to write)
   int m_maxBlock = 0;
   std::vector<float> m_stemMemory;  // kMaxPeers * 2 * maxBlock
   std::vector<float> m_zeros;       // maxBlock

@@ -1034,6 +1034,53 @@ static void test_glue_long_blocks()
   CHECK(b.core->slotHealthy(b.core->slotOf(1)));
 }
 
+// A whole host block of packets goes into a sink's jitter buffer at once,
+// at the block's first 64 samples. AOO's own size for that buffer (twice
+// the latency) was less than that with 1024..4096-sample host blocks at
+// 10..20 ms, and at the 5 ms minimum with any block: it overflowed again
+// and again, and the slot never got healthy.
+static void test_glue_big_blocks()
+{
+  if (!selected("glue_big_blocks")) return;
+  const struct { double rate; int block, jitter; } cases[] = {
+    { 48000, 2048, 20 }, { 44100, 2048, 20 }, { 96000, 4096, 20 }, { 48000, 1024, 10 }, { 48000, 128, 5 } };
+  for (auto &c : cases)
+  {
+    net n(5);
+    player &a = n.add(1);
+    player &b = n.add(2, c.rate, c.block);
+    b.send = false;
+    a.up.jitter = b.down.jitter = 0.001;
+    n.start_all();
+    b.core->setJitterMs(c.jitter);
+    n.run(3.0);
+    const std::vector<PeerStats> s0_all = b.core->stats(n.now);
+    const PeerStats *s0 = stats_of(s0_all, 1);
+    CHECK(s0 != nullptr);
+    if (!s0) continue;
+    start_recording(n);
+    int healthy = 0;
+    for (int i = 0; i < 50; i++)
+    {
+      n.run(0.1);
+      healthy += b.core->slotHealthy(b.core->slotOf(1));
+    }
+    const std::vector<PeerStats> s1_all = b.core->stats(n.now);
+    const PeerStats *s1 = stats_of(s1_all, 1);
+    CHECK(s1 != nullptr);
+    if (!s1) continue;
+    const int overruns = s1->overruns - s0->overruns, underruns = s1->underruns - s0->underruns;
+    const double snr = heard_snr(b, a, 4.0);
+    printf("  %g Hz, %d-sample blocks, jitter buffer %d ms: %d overruns, %d underruns in 5 s, healthy %d%%,"
+           " buffer %.1f ms, SNR %.1f dB\n", c.rate, c.block, c.jitter, overruns, underruns, 2 * healthy,
+           s1->bufferMs, snr);
+    CHECK_EQ(overruns, 0);
+    CHECK_EQ(underruns, 0);
+    CHECK_EQ(healthy, 50);
+    CHECK(snr > 20);
+  }
+}
+
 // Two audio interfaces 200 ppm apart, for five minutes: dynamic resampling
 // keeps the buffer where it was, without dropouts. Without it, the delay
 // creeps until the buffer runs dry or over.
@@ -1537,6 +1584,7 @@ int main(int argc, char **argv)
   test_glue_loss_concealed();
   test_glue_sample_rates();
   test_glue_long_blocks();
+  test_glue_big_blocks();
   test_glue_drift();
   test_glue_slot_reuse();
   test_glue_prefilter();

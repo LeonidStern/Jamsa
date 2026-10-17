@@ -322,6 +322,21 @@ void Core::setJitterMs(int ms)
   m_jitterMs = ms;
   // NB: resets the streams' buffers (one short gap)
   for (Slot &s : m_slots) s.sink->setLatency(ms * 0.001);
+  applyBufferSize();
+}
+
+// AOO sizes a sink's jitter buffer for its own blocks (twice the latency
+// unless told otherwise), but a whole host block of packets goes into it at
+// once, at the block's first 64 samples: with 2048-sample blocks, or with
+// a jitter setting of 5 ms, it overflowed again and again and the slot never
+// got healthy. Room for that too, never less than AOO's own size.
+// With m_ctlMutex held.
+void Core::applyBufferSize()
+{
+  const double latency = m_jitterMs * 0.001;
+  const double host = m_sampleRate > 0 ? m_maxBlock / m_sampleRate : 0;
+  const double size = std::max(2 * latency, latency + 2 * host + 0.005);
+  for (Slot &s : m_slots) s.sink->setBufferSize(size);
 }
 
 void Core::bind(int k, uint32_t peer)
@@ -411,6 +426,8 @@ bool Core::slotHealthy(int slot) const
 void Core::prepare(double sampleRate, int maxBlock)
 {
   if (sampleRate <= 0 || maxBlock <= 0) return;
+  // (in this order; processBlock() only try-locks the audio mutex)
+  std::lock_guard<std::mutex> control(m_ctlMutex);
   std::lock_guard<std::mutex> lock(m_audioMutex);
   m_sampleRate = sampleRate;
   m_rate.store(sampleRate);
@@ -437,6 +454,7 @@ void Core::prepare(double sampleRate, int maxBlock)
   m_lastFrames = 0;
   m_blockValid = false;
   m_prepared = true;
+  applyBufferSize();
 }
 
 bool Core::processBlock(const float *inL, const float *inR, int frames, bool send, uint64_t t)
