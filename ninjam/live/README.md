@@ -260,8 +260,13 @@ the server (`serverRttMs()`).
   sent 200 datagrams of silence a second.
 - The room's Live flag off (`update()`): the source stops, every slot goes
   unhealthy at once and drops its source, and nothing reaches AOO until it
-  is on again. HELLOs go on. `maySend` false: the source stops, we still
-  listen.
+  is on again. HELLOs go on. `maySend` false: our source stops, the sinks
+  still play what comes. But the server copies Live audio only among the
+  players it lets send (`LIVE_FLAG_MAY_SEND`: the room's first
+  `LiveMaxPeers` Live players with channels), so a player it doesn't let
+  send hears nobody either and stays on intervals; one that only stops
+  sending on its own side (the engine's `maySend` false while transmit is
+  off or the host is stopped) still hears the others.
 - AOO logs through `aoo_setLogFunction()` into a small ring (try-lock: a
   message that would have to wait is counted and dropped); `poll()` writes
   it to stderr.
