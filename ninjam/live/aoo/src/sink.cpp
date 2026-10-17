@@ -2200,7 +2200,11 @@ bool source_desc::add_packet(const Sink& s, const net_packet& d,
         }
     #endif
         if (newest != jitter_buffer::sentinel) {
-            auto numblocks = d.sequence - newest;
+            // Jamsa: in 64 bits. After a /start with seq_start 0, newest is -1,
+            // and a peer's sequence INT32_MAX overflowed to a negative count:
+            // the overrun check below let it through and the loop that fills
+            // the gap ran 2^31 times on the audio thread.
+            int64_t numblocks = (int64_t)d.sequence - newest;
 
             // notify for gap
             if (numblocks > 1) {

@@ -342,6 +342,12 @@ ones marked "(fuzzer)" were found by it.
   frames already received for its block is dropped, and the frames must add
   up to the block size before they are copied (`copy_frames()` overflowed
   the stack buffer on the audio thread otherwise).
+- Sink jitter buffer, `add_packet()`: the gap between a new block and the
+  newest one was taken in 32 bits. After a `/start` with sequence 0 (the
+  newest is then -1), a block with sequence `INT32_MAX` overflowed it to a
+  negative count, which passed the overrun check, and the gap was filled
+  with 2^31 placeholder blocks on the audio thread (6 s per datagram in a
+  release build, an assert in a debug one). It is now 64 bits.
 - `data_frame_storage::add_frame` (fuzzer): took `&nullptr->header`
   (undefined; blocks of more than 6 frames).
 - Sample rates: one far from the nominal rate (more than 10 %) is replaced

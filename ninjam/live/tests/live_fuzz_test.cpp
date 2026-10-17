@@ -38,7 +38,9 @@
 #include "live_harness.h"
 #include "testutil.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -419,6 +421,48 @@ static void test_frames()
 
   s.run(0.5);
   CHECK(s.nodes[1].dropped > dropped); // the bad block and the real one it displaced
+  const std::vector<double> rms = output_rms(s, 1.0);
+  CHECK(s.outputs_finite);
+  for (double r : rms) CHECK(sounds_right(r));
+}
+
+// A /start with seq_start 0, then /data with a sequence far ahead: the gap
+// to the newest block (-1 after the /start) was taken in 32 bits, so
+// INT32_MAX overflowed to a negative count, the overrun check let it
+// through, and the sink filled the gap with 2^31 placeholder blocks on the
+// audio thread (6 s per datagram in a release build; an assert in a debug
+// one). The fuzzer doesn't find this pair by itself.
+static void test_sequence_gap()
+{
+  live_session ls;
+  session &s = ls.s;
+  const int32_t seqs[] = { INT32_MAX, INT32_MAX - 1, 0x40000000, 1 << 20 };
+  int32_t stream = 7000;
+  double worst = 0;
+  for (int32_t seq : seqs)
+  {
+    for (int k = 1; k <= 3; k++)
+    {
+      start_fields st;
+      st.stream_id = stream;
+      st.seq_start = 0;
+      const bytes b = start_message(st);
+      CHECK_EQ(s.inject(0, k, b.data(), b.size()), kAooOk);
+      const bytes d = binary_data(simple_block(stream, seq, bytes(40, 0x44)));
+      CHECK_EQ(s.inject(0, k, d.data(), d.size()), kAooOk);
+    }
+    stream++;
+    // the sinks' next process() takes the block
+    const auto t0 = std::chrono::steady_clock::now();
+    s.run(0.01);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    printf("  /data %d after /start 0: 10 ms of the session took %.2f ms\n", (int)seq, ms);
+    worst = std::max(worst, ms);
+  }
+  CHECK(worst < 500);
+  // the real stream comes back: its /data asks the source for /start again
+  CHECK(run_until_all_active(s, 3.0));
+  s.run(0.5);
   const std::vector<double> rms = output_rms(s, 1.0);
   CHECK(s.outputs_finite);
   for (double r : rms) CHECK(sounds_right(r));
@@ -988,6 +1032,7 @@ int main(int argc, char **argv)
     { "packet_size", test_packet_size },
     { "data_fields", test_data_fields },
     { "frames", test_frames },
+    { "sequence_gap", test_sequence_gap },
     { "stream_messages", test_stream_messages },
     { "start_formats", test_start_formats },
     { "source_requests", test_source_requests },
