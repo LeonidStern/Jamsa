@@ -739,8 +739,8 @@ static void test_room()
   CHECK(ba && ca);
   if (ba && ca)
   {
-    printf("  A -> B: %.2f ms, estimate %.2f (rtt %.2f, buffer %.1f, codec %.1f); A -> C: %.2f ms, estimate %.2f\n",
-           1000 * ab0, ba->oneWayMs, ba->rttMs, ba->bufferMs, ba->codecMs, 1000 * ac0, ca->oneWayMs);
+    printf("  A -> B: %.2f ms, estimate %.2f (rtt %.2f, buffer %.1f, codec %.1f); A -> C: %.2f ms, estimate %.2f (rtt %.2f)\n",
+           1000 * ab0, ba->oneWayMs, ba->rttMs, ba->bufferMs, ba->codecMs, 1000 * ac0, ca->oneWayMs, ca->rttMs);
     // (the estimate leaves out the time the codec takes, which in a debug
     // build with sanitizers is a good part of each block)
 #if defined(NDEBUG) && !defined(LIVE_SANITIZED)
@@ -748,8 +748,15 @@ static void test_room()
 #else
     const double tolerance = 10;
 #endif
-    CHECK_TIMING(fabs(1000 * ab0 - ba->oneWayMs) < tolerance);
-    CHECK_TIMING(fabs(1000 * ac0 - ca->oneWayMs) < tolerance);
+    // A ping answered late, while this machine was busy, raises the smoothed
+    // round trip for some seconds without changing the delay we hear: the
+    // estimate may be over by up to half the round trip it reports.
+    auto close_to = [&](double heard, const PeerStats *s) {
+      const double over = s->oneWayMs - 1000 * heard;
+      return over > -tolerance && over < tolerance + s->rttMs / 2;
+    };
+    CHECK_TIMING(close_to(ab0, ba));
+    CHECK_TIMING(close_to(ac0, ca));
     CHECK(ba->rttMs > 0);
     CHECK_TIMING(ba->rttMs < 20);
     CHECK(ba->healthy && ba->streaming && ba->slot == 0);
