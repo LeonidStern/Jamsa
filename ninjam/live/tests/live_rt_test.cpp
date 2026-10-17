@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <new>
 #include <random>
@@ -58,12 +59,15 @@ using namespace live_harness;
 
 static std::atomic<bool> g_in_audio{false};
 static std::atomic<long> g_audio_heap_calls{0};
+static std::atomic<bool> g_in_network{false};
+static std::atomic<long> g_network_heap_calls{0};
 static bool g_trace = false;
 static int g_traced = 0;
 static thread_local bool g_in_trace = false;
 
 static void note_heap_call()
 {
+  if (g_in_network.load(std::memory_order_relaxed)) g_network_heap_calls++;
   if (!g_in_audio.load(std::memory_order_relaxed)) return;
   g_audio_heap_calls++;
 #if LIVE_RT_HAVE_BACKTRACE
@@ -293,6 +297,51 @@ static void test_stream_messages()
   CHECK(s.outputs_finite);
 }
 
+// A sink whose process() isn't called (the host stopped processing) while
+// its packets keep coming: it kept every one of them for the next
+// process(), in frames from the heap, without a bound, and that process()
+// then went through all of them. Now it keeps AOO_MAX_QUEUED_PACKETS and
+// drops what comes after: no more heap once they are there, a short first
+// process(), and the stream back soon after.
+static void paused_network_hook(int to, bool entering)
+{
+  if (to == 1) g_in_network.store(entering, std::memory_order_relaxed);
+}
+
+static void test_paused_sink()
+{
+  session s(source_options(), three_sinks());
+  s.start();
+  s.run(2.0);
+  CHECK(sounds_right(s));
+  s.network_hook = paused_network_hook;
+  s.nodes[1].paused = true;
+  s.run(8.0); // 200 packets a second: the bound is reached after about 5 s
+  const long before = g_network_heap_calls.load();
+  s.run(20.0);
+  const long n = g_network_heap_calls.load() - before;
+  s.network_hook = nullptr;
+  // the paused sink's next process()
+  s.nodes[1].paused = false;
+  double first = 0;
+  for (;;)
+  {
+    const auto t0 = std::chrono::steady_clock::now();
+    const int k = s.tick();
+    if (k != 1) continue;
+    first = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    break;
+  }
+  const bool back = s.run_until([&]() { return sounds_right(s); }, 3.0);
+  printf("  paused sink: %ld heap calls receiving 20 s of packets, then a first process() of %.2f ms, %s\n",
+         n, first, back ? "playing again" : "NOT playing again");
+  CHECK(n < 50);
+  CHECK(first < 5);
+  CHECK(back);
+  s.run(1.0);
+  CHECK(sounds_right(s));
+}
+
 // get_random_id() makes stream and format IDs, on the audio thread too:
 // no heap, not even on a thread's first call, never negative, no repeats
 static void test_random_ids()
@@ -345,6 +394,7 @@ int main()
   test_loss();
   test_restart_and_xruns();
   test_stream_messages();
+  test_paused_sink();
   test_random_ids();
   test_event_mode_and_log();
   return test_summary("live_rt_test");

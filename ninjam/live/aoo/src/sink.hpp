@@ -283,6 +283,8 @@ private:
     // NB: frame_allocator_ must come *before* jitter_buffer_!
     data_frame_allocator frame_allocator_;
     aoo::concurrent_queue<net_packet, false> packet_queue_;
+    // Jamsa: the packets in packet_queue_ (see AOO_MAX_QUEUED_PACKETS)
+    std::atomic<int32_t> packet_count_{0};
     jitter_buffer jitter_buffer_{frame_allocator_};
     int32_t latency_blocks_ = 0;
     int32_t latency_samples_ = 0;

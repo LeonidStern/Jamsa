@@ -1665,6 +1665,15 @@ AooError source_desc::handle_data(const Sink& s, net_packet& d, bool binary)
         d.samplerate = format_->sampleRate;
     }
 
+    // Jamsa: only process() empties the queue. While nobody calls it (the
+    // host stopped processing) a stream would pile up in memory, and the
+    // next process() would have to go through all of it: drop what comes
+    // beyond the bound (the newest, as the queue has one producer). The
+    // jitter buffer catches up with the stream when process() runs again.
+    if (packet_count_.load(std::memory_order_relaxed) >= AOO_MAX_QUEUED_PACKETS) {
+        return kAooOk;
+    }
+
     // copy blob data and push to queue
     if (d.size > 0) {
         auto frame = frame_allocator_.allocate(d.size);
@@ -1674,6 +1683,7 @@ AooError source_desc::handle_data(const Sink& s, net_packet& d, bool binary)
         d.frame = nullptr;
     }
 
+    packet_count_.fetch_add(1, std::memory_order_relaxed);
     packet_queue_.push(d);
 
 #if AOO_DEBUG_DATA
@@ -1874,9 +1884,10 @@ bool source_desc::process(const Sink& s, AooSample **buffer, int32_t nsamples,
             handle_underrun(s);
         }
 
-        packet_queue_.consume_all([&](const auto& packet) {
+        auto n = packet_queue_.consume_all([&](const auto& packet) {
             add_packet(s, packet, stats);
         });
+        packet_count_.fetch_sub((int32_t)n, std::memory_order_relaxed);
     }
 
     check_missing_blocks(s);
@@ -2748,11 +2759,12 @@ void source_desc::dispatch_stream_messages(const Sink &s, int nsamples,
 
 void source_desc::flush_packet_queue() {
     LOG_DEBUG("AooSink: flush packet queue");
-    packet_queue_.consume_all([&](const auto& packet) {
+    auto n = packet_queue_.consume_all([&](const auto& packet) {
         if (packet.frame) {
             frame_allocator_.deallocate(packet.frame);
         }
     });
+    packet_count_.fetch_sub((int32_t)n, std::memory_order_relaxed);
 }
 
 // /aoo/src/<id>/ping <id> <tt1>

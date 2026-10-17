@@ -171,6 +171,16 @@ enum
  #define AOO_RESEND_BURST_SINK 16
 #endif
 
+/** \brief Jamsa: most data packets a sink keeps for one source until its
+ * next process(): only process() empties that queue, so while the host
+ * doesn't call it the packets would pile up without bound and the next
+ * process() would work through all of them. 1024 is more than 2.5 s of
+ * the densest stream we take (120-sample frames) and more than 6 times the
+ * largest jitter buffer. */
+#ifndef AOO_MAX_QUEUED_PACKETS
+ #define AOO_MAX_QUEUED_PACKETS 1024
+#endif
+
 /** \brief Jamsa: at most one pong, one /start in answer to a request and one
  * /start request per peer in this many seconds (pings come every second) */
 #ifndef AOO_REPLY_INTERVAL

@@ -71,7 +71,9 @@ Tests (`tests/`):
   new` and `delete`) made inside the source's and the sinks' `process()`:
   none once a stream runs, on a clean network, with loss, jitter, reordering
   and duplicates, while the stream restarts and the source has xruns, and
-  with stream messages. Also the other real-time changes below. `LIVE_RT_TRACE=1` prints where a
+  with stream messages; and the heap calls a sink's `handleMessage()`
+  makes while its `process()` isn't called. Also the other real-time
+  changes below. `LIVE_RT_TRACE=1` prints where a
   counted call came from (glibc).
 - `live_unit_test [test]`: what Live adds to AOO: coupled stereo Opus and
   its bitrate (encoded sizes, the decoder's channel layout, through the
@@ -440,6 +442,15 @@ audio thread, which must not wait for a lock, the heap or the system.
   `AooSettings` only counts at the first `aoo_initialize()`), so that the
   glue can hand messages to another thread. AOO formats a message into a
   fixed buffer on the stack; the default function writes to stderr.
+- The sink's packet queue per source (filled by `handleMessage()`, emptied
+  only by `process()`) had no bound. While the host doesn't call
+  `process()` (processing stopped, the plug-in still connected) every data
+  packet took a frame from the heap and waited, and the next `process()`
+  went through all of them on the audio thread (7 players for 2 minutes:
+  +40 MB, never given back, and a 24..29 ms first block). It now keeps at
+  most `AOO_MAX_QUEUED_PACKETS` (1024, over 2.5 s of the densest stream and
+  6 times the largest jitter buffer) and drops newer ones; the jitter buffer
+  catches up with the stream once `process()` runs again.
 
 Not done here: the RT memory pool still falls back to the heap when it runs
 out (1 MB by default) or for a block larger than `large_alloc_limit`

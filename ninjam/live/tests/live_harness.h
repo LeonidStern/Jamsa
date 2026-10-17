@@ -70,6 +70,7 @@ struct node
   double samplerate = 48000;
   int blocksize = 64;
   int channels = 2;
+  bool paused = false;  // its audio thread isn't called (its network side runs)
   double next_time = 0;
   long blocks = 0;
   std::vector<std::vector<AooSample>> buffers;
@@ -152,6 +153,8 @@ public:
   // called with true right before a node's process() and with false right
   // after it: what runs in between is what an audio thread would run
   void (*audio_hook)(bool) = nullptr;
+  // the same around handleMessage() of node 'to' (its network thread)
+  void (*network_hook)(int to, bool) = nullptr;
   // broadcast mode: the source's datagrams to this address go to every sink
   sockaddr_in broadcast_addr = make_address(250);
   long broadcast_sent = 0; // datagrams the source sent there
@@ -255,10 +258,13 @@ public:
     else
     {
       AooSink *s = sinks[k - 1].get();
-      if (audio_hook) audio_hook(true);
-      s->process(n.pointers.data(), n.blocksize, t,
-        message_handler ? on_stream_message : nullptr, &n);
-      if (audio_hook) audio_hook(false);
+      if (!n.paused)
+      {
+        if (audio_hook) audio_hook(true);
+        s->process(n.pointers.data(), n.blocksize, t,
+          message_handler ? on_stream_message : nullptr, &n);
+        if (audio_hook) audio_hook(false);
+      }
       sender ctx = { this, (int)k };
       s->send(send_function, &ctx);
       s->pollEvents();
@@ -292,8 +298,11 @@ public:
     // an exact-size heap copy, so ASan sees reads past the end
     std::unique_ptr<AooByte[]> copy(new AooByte[size ? size : 1]);
     if (size) memcpy(copy.get(), data, size);
-    if (to == 0) return source->handleMessage(copy.get(), (AooInt32)size, &a, sizeof(a));
-    return sinks[to - 1]->handleMessage(copy.get(), (AooInt32)size, &a, sizeof(a));
+    if (network_hook) network_hook(to, true);
+    const AooError e = to == 0 ? source->handleMessage(copy.get(), (AooInt32)size, &a, sizeof(a))
+                               : sinks[to - 1]->handleMessage(copy.get(), (AooInt32)size, &a, sizeof(a));
+    if (network_hook) network_hook(to, false);
+    return e;
   }
 
 private:
