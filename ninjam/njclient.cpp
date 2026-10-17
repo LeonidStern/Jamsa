@@ -396,7 +396,7 @@ class RemoteUser_Channel
 class RemoteUser
 {
 public:
-  RemoteUser() : muted(0), volume(1.0f), pan(0.0f), submask(0), mutedmask(0), solomask(0), last_session_pos(-1.0), last_session_pos_updtime(0), chanpresentmask(0) { }
+  RemoteUser() : muted(0), volume(1.0f), pan(0.0f), submask(0), mutedmask(0), solomask(0), last_session_pos(-1.0), last_session_pos_updtime(0), chanpresentmask(0), live_want(-1), live_on(-1) { }
   ~RemoteUser() { }
 
   bool muted;
@@ -410,6 +410,10 @@ public:
   double last_session_pos;
   time_t last_session_pos_updtime;
   RemoteUser_Channel channels[MAX_USER_CHANNELS];
+  // Live: the slot whose audio plays channel 0 instead of the intervals, -1 for none:
+  // the one asked for (SetUserLive()), and the one playing, from the interval it was asked in
+  int live_want; // under m_users_cs
+  int live_on;   // audio thread
 };
 
 
@@ -661,8 +665,10 @@ NJClient::NJClient()
   config_autosubscribe=1;
   config_send_opus=true;
   config_send_flac=true;
+  config_live=false;
   m_codec_mask=0;
   m_room_opus_kbps=0;
+  live_reset();
   config_savelocalaudio=0;
   config_metronome=0.5f;
   config_metronome_pan=0.0f;
@@ -680,6 +686,8 @@ NJClient::NJClient()
   ChatMessage_User=0;
   ChannelMixer=0;
   ChannelMixer_User=0;
+  LiveAudio_Callback=0;
+  LiveAudio_User=0;
 
   waveWrite=0;
 #ifndef NJCLIENT_NO_XMIT_SUPPORT
@@ -801,6 +809,7 @@ NJClient::~NJClient()
   m_downloads.Empty();
   for (x = 0; x < m_locchannels.GetSize(); x ++) delete m_locchannels.Get(x);
   m_locchannels.Empty();
+  m_live_peers.Empty(true);
 
   delete m_wavebq;
 }
@@ -968,6 +977,7 @@ void NJClient::Disconnect()
   m_downloads.Empty();
 
   m_wavebq->Clear();
+  live_reset();
 
   _reinit();
 }
@@ -1000,6 +1010,41 @@ void NJClient::Connect(const char *host, const char *user, const char *pass)
   m_status=0;
   m_codec_mask=0; // Vorbis until the server says otherwise
   m_room_opus_kbps=0;
+  live_reset(); // no Live until the server says so
+}
+
+void NJClient::live_reset()
+{
+  m_live_gen=0;
+  m_live_flags=0;
+  m_live_udp_port=0;
+  m_live_kbps=0;
+  m_live_frame=0;
+  m_live_max_peers=0;
+  m_live_peer_id=0;
+  m_live_key=0;
+  m_live_peers.Empty(true);
+}
+
+const char *NJClient::GetLivePeer(int i, unsigned int *id, int *flags) const
+{
+  const LivePeer *p=m_live_peers.Get(i);
+  if (!p) return NULL;
+  if (id) *id=p->id;
+  if (flags) *flags=p->flags;
+  return p->name.Get();
+}
+
+unsigned int NJClient::GetServerAddress()
+{
+  JNL_IConnection *c=m_netcon ? m_netcon->GetConnection() : NULL;
+  return c ? c->get_remote() : 0;
+}
+
+int NJClient::GetServerPort()
+{
+  JNL_IConnection *c=m_netcon ? m_netcon->GetConnection() : NULL;
+  return c ? (int)(unsigned short)c->get_remote_port() : 0;
 }
 
 unsigned int NJClient::GetUploadCodec() const
@@ -1181,6 +1226,7 @@ int NJClient::Run() // nonzero if sleep ok
 #ifdef NINJAM_FLAC
               repl.client_caps|=CLIENT_CAP_CODEC_FLAC; // we can decode FLAC
 #endif
+              if (config_live) repl.client_caps|=CLIENT_CAP_LIVE; // and play Live
 
               WDL_SHA1 tmp;
               tmp.add(m_user.Get(),strlen(m_user.Get()));
@@ -1238,6 +1284,35 @@ int NJClient::Run() // nonzero if sleep ok
             {
               m_codec_mask=cm.codecs;
               m_room_opus_kbps=cm.opus_kbps;
+            }
+          }
+        break;
+        case MESSAGE_SERVER_LIVE:
+          {
+            mpb_server_live ml;
+            if (config_live && !ml.parse(msg))
+            {
+              m_live_flags=ml.flags;
+              m_live_udp_port=ml.udp_port;
+              m_live_kbps=ml.live_kbps;
+              m_live_frame=ml.frame_samples;
+              m_live_max_peers=ml.max_peers;
+              m_live_peer_id=ml.peer_id;
+              m_live_key=ml.key;
+              m_live_peers.Empty(true);
+              int offs=0, n=0;
+              unsigned int id=0;
+              int f=0;
+              const char *name=NULL;
+              while (n++ < 256 && (offs=ml.parse_get_peer(offs,&id,&f,&name))>0)
+              {
+                LivePeer *p=new LivePeer;
+                p->id=id;
+                p->flags=f;
+                p->name.Set(name);
+                m_live_peers.Add(p);
+              }
+              m_live_gen++;
             }
           }
         break;
@@ -2128,6 +2203,18 @@ void NJClient::process_samples(float **inbuf, int innch, float **outbuf, int out
           if (m_issoloactive) muteflag = !(user->solomask & (1<<ch));
           else muteflag=(user->mutedmask & (1<<ch)) || user->muted;
 
+          const float *live[2];
+          if (!ch && user->live_on >= 0 && LiveAudio_Callback &&
+              LiveAudio_Callback(LiveAudio_User,user->live_on,offset,len,live,live+1))
+          {
+            // Live: the user's real-time audio instead of the interval, which plays on
+            // muted, so that it is where it should be when the intervals take over again
+            const float vol=user->volume*user->channels[ch].volume;
+            const int outch=user->channels[ch].out_chan_index + m_remote_chanoffs;
+            mixInChannel(user,ch,true,vol,lpan,outbuf,outch,len,srate,outnch,offset,decay,isPlaying,isSeek,cursessionpos);
+            mixInLive(user,ch,muteflag,vol,lpan,live,outbuf,outch,len,outnch,offset);
+          }
+          else
           mixInChannel(user,ch,muteflag,
             user->volume*user->channels[ch].volume,lpan,
               outbuf,user->channels[ch].out_chan_index + m_remote_chanoffs,len,srate,outnch,offset,decay,isPlaying,isSeek,cursessionpos);
@@ -2622,6 +2709,78 @@ void NJClient::mixInChannel(RemoteUser *user, int chanidx,
   }
 }
 
+// Live audio (two channels at the output's rate) in place of an interval: the meter, the
+// output channels, the volume and pan law and the clipping are mixInChannel()'s and
+// mixFloatsNIOutput()'s
+void NJClient::mixInLive(RemoteUser *user, int chanidx, bool muted, float vol, float pan, const float * const *src,
+                         float **outbuf, int out_channel, int len, int outnch, int offs)
+{
+  if (muted || !(vol > 0.0000001) || len <= 0) return;
+  RemoteUser_Channel * const userchan = &user->channels[chanidx];
+
+  // the meter (mixInChannel() decayed it already)
+  float maxf=(float) (userchan->decode_peak_vol[0]/vol);
+  float maxf2=(float) (userchan->decode_peak_vol[1]/vol);
+  int x;
+  for (x = 0; x < len; x ++)
+  {
+    float f=src[0][x];
+    if (f<-1.0f) f=-1.0f;
+    else if (f>1.0f) f=1.0f;
+    if (f > maxf) maxf=f;
+    else if (f < -maxf) maxf=-f;
+
+    f=src[1][x];
+    if (f<-1.0f) f=-1.0f;
+    else if (f>1.0f) f=1.0f;
+    if (f > maxf2) maxf2=f;
+    else if (f < -maxf2) maxf2=-f;
+  }
+  userchan->decode_peak_vol[0]=maxf*vol;
+  userchan->decode_peak_vol[1]=maxf2*vol;
+
+  int use_nch=2;
+  if (outnch < 2 || (out_channel&1024)) use_nch=1;
+  int idx=(out_channel&1023);
+  if (idx+use_nch>outnch) idx=outnch-use_nch;
+  if (idx< 0)idx=0;
+
+  float lvol=vol;
+  float *dest[2]={outbuf[idx]+offs,use_nch > 1 ? (outbuf[idx+1]+offs) : 0};
+  if (use_nch==1)
+  {
+    dest[1]=dest[0];
+    lvol*=0.5f;
+  }
+
+  if (pan < -1.0f) pan=-1.0f;
+  else if (pan > 1.0f) pan=1.0f;
+  if (lvol > 4.0f) lvol=4.0f;
+  if (lvol < 0.0f) lvol=0.0f;
+  double vol1=lvol,vol2=lvol;
+  if (pan < 0.0f)  vol2 *= 1.0f+pan;
+  else if (pan > 0.0f) vol1 *= 1.0f-pan;
+
+  for (x = 0; x < len; x ++)
+  {
+    double ls=src[0][x], rs=src[1][x];
+    if (ls > 1.0) ls=1.0;
+    else if (ls<-1.0) ls=-1.0;
+    if (rs > 1.0) rs=1.0;
+    else if (rs<-1.0) rs=-1.0;
+
+    ls *= vol1;
+    if (ls > 1.0) ls=1.0;
+    else if (ls<-1.0) ls=-1.0;
+    dest[0][x] += (float) ls;
+
+    rs *= vol2;
+    if (rs > 1.0) rs=1.0;
+    else if (rs<-1.0) rs=-1.0;
+    dest[1][x] += (float) rs;
+  }
+}
+
 void NJClient::writeUserChanLog(const char *lbl, RemoteUser *user, RemoteUser_Channel *chan, int ch)
 {
   char guidstr[64];
@@ -2675,6 +2834,7 @@ void NJClient::on_new_interval()
   {
     RemoteUser *user=m_remoteusers.Get(u);
     int ch;
+    user->live_on=user->live_want; // Live or intervals, from this interval on
 //    printf("submask=%d,cpm=%d\n",user->submask , user->chanpresentmask);
     for (ch = 0; ch < MAX_USER_CHANNELS; ch ++)
     {
@@ -2728,6 +2888,25 @@ void NJClient::SetUserState(int idx, bool setvol, float vol, bool setpan, float 
   if (setvol) p->volume=vol;
   if (setpan) p->pan=pan;
   if (setmute) p->muted=mute;
+}
+
+void NJClient::SetUserLive(int idx, int slot)
+{
+  WDL_MutexLock lock(&m_remotechannel_rd_mutex);
+  if (idx<0 || idx>=m_remoteusers.GetSize()) return;
+  RemoteUser *p=m_remoteusers.Get(idx);
+  if (slot < 0) slot=-1;
+  if (p->live_want == slot) return;
+  m_users_cs.Enter(); // on_new_interval() reads it
+  p->live_want=slot;
+  m_users_cs.Leave();
+}
+
+int NJClient::GetUserLive(int idx)
+{
+  WDL_MutexLock lock(&m_remotechannel_rd_mutex);
+  if (idx<0 || idx>=m_remoteusers.GetSize()) return -1;
+  return m_remoteusers.Get(idx)->live_on;
 }
 
 int NJClient::EnumUserChannels(int useridx, int i)

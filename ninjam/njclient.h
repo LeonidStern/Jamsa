@@ -122,6 +122,7 @@ public:
   int   config_debug_level;
   bool  config_send_opus; // in builds with NINJAM_OPUS: send Opus when the server's codec mask has it
   bool  config_send_flac; // in builds with NINJAM_FLAC: send FLAC when the server's codec mask has it
+  bool  config_live; // tell the server this client can play Live (CLIENT_CAP_LIVE, see mpb.h); off by default
   int   config_play_prebuffer; // -1 means play instantly, 0 means play when full file is there, otherwise refers to how many
                                // bytes of compressed source to have before play. the default value is 4096.
   int config_remote_autochan; // 1=auto-assign by channel, 2=auto-assign by user
@@ -143,6 +144,39 @@ public:
   // the tempo the server set last; GetActualBPM() and GetBPI() follow at the next interval, in AudioProc()
   int GetServerBPM() const { return m_bpm; }
   int GetServerBPI() const { return m_bpi; }
+
+  // Live (with config_live; see MESSAGE_SERVER_LIVE in mpb.h): what the server said last,
+  // since Connect(). Nothing before it says anything (GetLiveGeneration() 0, all fields 0).
+  // GetLiveGeneration() counts the messages, so a caller can tell when the players changed.
+  int GetLiveGeneration() const { return m_live_gen; }
+  int GetLiveFlags() const { return m_live_flags; } // mpb_server_live::LIVE_FLAG_*
+  int GetLiveUdpPort() const { return m_live_udp_port; } // 0: the TCP port (GetServerPort())
+  int GetLiveKbps() const { return m_live_kbps; }
+  int GetLiveFrameSamples() const { return m_live_frame; }
+  int GetLiveMaxPeers() const { return m_live_max_peers; }
+  unsigned int GetLivePeerId() const { return m_live_peer_id; }
+  WDL_UINT64 GetLiveKey() const { return m_live_key; }
+  int GetNumLivePeers() const { return m_live_peers.GetSize(); }
+  // the other Live players: the server's id and user name (as GetUserState() names users),
+  // flags mpb_server_live::LIVE_PEER_*; NULL past the end
+  const char *GetLivePeer(int i, unsigned int *id, int *flags) const;
+  // the TCP connection's remote address (IPv4, network byte order) and port, 0 when there is none
+  unsigned int GetServerAddress();
+  int GetServerPort();
+
+  // Live per remote user: SetUserLive() picks what plays the user's first channel (0) from
+  // the next interval on: slot >= 0 the user's real-time audio, from LiveAudio_Callback,
+  // instead of their intervals; -1 their intervals. GetUserLive() is what plays now.
+  void SetUserLive(int useridx, int slot);
+  int GetUserLive(int useridx);
+  // Called from AudioProc() for a user whose Live slot plays: set *left and *right to `len`
+  // samples of the slot's audio for the output samples from `offset` on (in AudioProc()'s
+  // output buffers), at the output's sample rate. NJClient mixes it as it mixes that user's
+  // channel 0 (volume, pan, mute, solo, output channels, meter), and keeps decoding the
+  // channel's intervals without playing them. Return false to play the intervals instead
+  // for these samples (no Live audio for them).
+  bool (*LiveAudio_Callback)(void *userData, int slot, int offset, int len, const float **left, const float **right);
+  void *LiveAudio_User;
 
   void SetWorkDir(char *path);
   const char *GetWorkDir() { return m_workdir.Get(); }
@@ -294,6 +328,21 @@ protected:
   void mixInChannel(RemoteUser *user, int chanidx,
                     bool muted, float vol, float pan, float **outbuf, int out_channel,
                     int len, int srate, int outnch, int offs, double vudecay, bool isPlaying, bool isSeek, double playPos);
+  void mixInLive(RemoteUser *user, int chanidx, bool muted, float vol, float pan, const float * const *src,
+                 float **outbuf, int out_channel, int len, int outnch, int offs);
+
+  // Live: the last MESSAGE_SERVER_LIVE
+  void live_reset();
+  struct LivePeer
+  {
+    unsigned int id;
+    int flags;
+    WDL_String name;
+  };
+  int m_live_gen, m_live_flags, m_live_udp_port, m_live_kbps, m_live_frame, m_live_max_peers;
+  unsigned int m_live_peer_id;
+  WDL_UINT64 m_live_key;
+  WDL_PtrList<LivePeer> m_live_peers;
 
   WDL_Mutex m_users_cs, m_locchan_cs, m_log_cs, m_misc_cs;
   Net_Connection *m_netcon;
