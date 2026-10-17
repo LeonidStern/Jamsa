@@ -465,8 +465,8 @@ ones marked "(fuzzer)" were found by it.
   with 2^31 placeholder blocks on the audio thread (6 s per datagram in a
   release build, an assert in a debug one). It is now 64 bits.
 - Sink jitter buffer, `add_packet()` (`live_unit_test`'s `glue_fuzz`): a
-  block further from the newest one than the buffer holds, ahead or behind,
-  moves the stream there only when the next new block follows it. One such
+  block further ahead of the newest one than the buffer holds moves the
+  stream there only when the next new block follows it. One such
   block (a bit flipped in its sequence number, or a player's forged packet)
   was an overrun that threw the buffer away, and as the newest block it
   made every real block after it "outdated", so the buffer could not fill
@@ -474,7 +474,12 @@ ones marked "(fuzzer)" were found by it.
   For one packet: two dropouts, a gap of about 0.1 s in that player's
   stream (0.8 s with a 200 ms jitter buffer), and the slot unhealthy for a
   second more; a few such packets kept it unhealthy for the 2 s after the
-  last one. A stream that really jumps moves one block later.
+  last one. A stream that really jumps moves one block later. It never
+  moves back: blocks far behind the newest one after a jump are from
+  before it (answers to resend requests sent before it), and when this
+  rule also took two of them in a row as a jump back, the stream went
+  back to them and forward again with the next real blocks, an overrun
+  each (`live_fuzz_test`'s `sequence_jump_back`).
 - `data_frame_storage::add_frame` (fuzzer): took `&nullptr->header`
   (undefined; blocks of more than 6 frames).
 - Sample rates: one far from the nominal rate (more than 10 %) is replaced

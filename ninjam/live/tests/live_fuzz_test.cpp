@@ -432,7 +432,7 @@ static void test_frames()
 // took the block for the newest, so every real block after it was
 // "outdated" until buffering gave up after four times the latency, with an
 // underrun. Such a block is now dropped unless the next new block follows
-// it, as when a stream really jumps: then the stream moves, and back.
+// it, as when a stream really jumps: then the stream moves there.
 static void test_sequence_jump()
 {
   live_session ls;
@@ -468,8 +468,9 @@ static void test_sequence_jump()
     CHECK_EQ(s.nodes[k].events[kAooEventBufferOverrun], overruns[k]);
     CHECK_EQ(s.nodes[k].events[kAooEventBufferUnderrun], underruns[k]);
   }
-  // two blocks in a row: the stream moves there, then back with the next
-  // two real blocks, without waiting for buffering to give up
+  // two blocks in a row: the stream moves there (it never moves back, see
+  // sequence_jump_back), so the real blocks are outdated until buffering
+  // gives up, as before for one such block
   for (int i = 0; i < 2; i++)
   {
     for (int k = 1; k <= 3; k++)
@@ -482,7 +483,66 @@ static void test_sequence_jump()
   s.run(0.5);
   for (int k = 1; k <= 3; k++)
   {
-    CHECK_EQ(s.nodes[k].events[kAooEventBufferOverrun], overruns[k] + 2);
+    CHECK_EQ(s.nodes[k].events[kAooEventBufferOverrun], overruns[k] + 1);
+    CHECK_EQ(s.nodes[k].events[kAooEventBufferUnderrun], underruns[k] + 1);
+  }
+  const std::vector<double> rms = output_rms(s, 1.0);
+  CHECK(s.outputs_finite);
+  for (double r : rms) CHECK(sounds_right(r));
+}
+
+// A stream that really jumps ahead: the host stalled while the plug-in
+// dropped what came meanwhile (livecore drops packets while nobody plays).
+// Then blocks from before the jump come, as answers to resend requests
+// sent before it. Two of them in a row moved the stream back to them and
+// the next real blocks forward again, an overrun each (live_client_test's
+// restarts under ThreadSanitizer on CI never got healthy in 6 s). Now they
+// are outdated: one overrun, for the jump.
+static void test_sequence_jump_back()
+{
+  live_session ls;
+  session &s = ls.s;
+  stream_watch watch[4];
+  bool blackout = false;
+  s.filter = [&](datagram &d) {
+    if (d.to >= 1 && d.to <= 3)
+    {
+      watch[d.to].observe(d);
+      if (blackout && d.from == 0) return false;
+    }
+    return true;
+  };
+  s.run(0.1);
+  int overruns[4], underruns[4];
+  int32_t before[4];
+  for (int k = 1; k <= 3; k++)
+  {
+    overruns[k] = s.nodes[k].events[kAooEventBufferOverrun];
+    underruns[k] = s.nodes[k].events[kAooEventBufferUnderrun];
+    before[k] = watch[k].seq;
+    s.nodes[k].paused = true;
+  }
+  // 150 ms of the stream don't reach the stalled sinks (their buffers hold 100)
+  blackout = true;
+  s.run(0.15);
+  blackout = false;
+  for (int k = 1; k <= 3; k++) s.nodes[k].paused = false;
+  s.run(0.05);
+  for (int k = 1; k <= 3; k++)
+  {
+    CHECK_EQ(s.nodes[k].events[kAooEventBufferOverrun], overruns[k] + 1);
+    CHECK(watch[k].seq - before[k] > 30);
+    // two blocks from before the jump, in a row
+    for (int32_t seq : { before[k] - 2, before[k] - 1 })
+    {
+      const bytes d = binary_data(simple_block(watch[k].stream_id, seq, bytes(40, 0x44)));
+      CHECK_EQ(s.inject(0, k, d.data(), d.size()), kAooOk);
+    }
+  }
+  s.run(0.5);
+  for (int k = 1; k <= 3; k++)
+  {
+    CHECK_EQ(s.nodes[k].events[kAooEventBufferOverrun], overruns[k] + 1);
     CHECK_EQ(s.nodes[k].events[kAooEventBufferUnderrun], underruns[k]);
   }
   const std::vector<double> rms = output_rms(s, 1.0);
@@ -1363,6 +1423,7 @@ int main(int argc, char **argv)
     { "data_fields", test_data_fields },
     { "frames", test_frames },
     { "sequence_jump", test_sequence_jump },
+    { "sequence_jump_back", test_sequence_jump_back },
     { "sequence_gap", test_sequence_gap },
     { "stream_messages", test_stream_messages },
     { "start_formats", test_start_formats },

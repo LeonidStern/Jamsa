@@ -2225,17 +2225,21 @@ bool source_desc::add_packet(const Sink& s, const net_packet& d,
 
     auto block = jitter_buffer_.find(d.sequence);
     if (!block) {
-        // Jamsa: a block further from the newest one than the jitter buffer
-        // holds moves the stream there only when the next new block follows
-        // it. One such block (a bit flipped in its sequence, a peer's forged
-        // packet) was an overrun that threw the buffer away, and as the
-        // newest block it made every real block after it "outdated", until
-        // buffering gave up with an underrun after four times the latency.
-        // A stream that really jumps moves one block later.
+        // Jamsa: a block further ahead of the newest one than the jitter
+        // buffer holds moves the stream there only when the next new block
+        // follows it. One such block (a bit flipped in its sequence, a
+        // peer's forged packet) was an overrun that threw the buffer away,
+        // and as the newest block it made every real block after it
+        // "outdated", until buffering gave up with an underrun after four
+        // times the latency. A stream that really jumps moves one block
+        // later. Never back: the blocks far behind the newest one after
+        // such a jump are the ones from before it (answers to resend
+        // requests sent before it), and two of them in a row moved the
+        // stream back, the next real blocks forward again, an overrun each.
         if (newest != jitter_buffer::sentinel) {
             const int64_t jump = (int64_t)d.sequence - newest;
             const int32_t limit = jitter_buffer_.capacity();
-            if (jump > limit || jump < -limit) {
+            if (jump > limit) {
                 const int64_t step = (int64_t)d.sequence - far_sequence_;
                 if (far_sequence_ < 0 || step <= 0 || step > limit) {
                     LOG_DEBUG("AooSink: block " << d.sequence << " far from " << newest);
