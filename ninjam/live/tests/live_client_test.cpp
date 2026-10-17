@@ -619,6 +619,9 @@ static void test_restart()
   a.client.setPeers(room::peers({ 2, 3 }));
   b.client.setPeers(room::peers({ 1, 3 }));
   c.client.setPeers(room::peers({ 1, 2 }));
+  // (40 ms, as in test_room: this test is about restarts, and on a slow
+  // machine, or under TSan, 20 ms without real-time priority drops out)
+  for (auto &p : r.players) p->client.setJitterMs(40);
   std::string error;
   for (player *p : { &a, &b, &c })
   {
