@@ -1660,6 +1660,52 @@ static void test_glue_sender_xruns()
   CHECK(n.run_until([&] { return b.core->slotHealthy(slot); }, 2.5));
 }
 
+// The listener's host misses 32 ms once (a DAW busy for a moment): the
+// glue tells AOO of the gap, and the sink plays on as before once it is
+// over it, without dropouts and as late as before, give or take a little
+// for buffering again. (Not told of a gap under 100 ms, as before, AOO's
+// time filter took the jump for a clock 0.3% slow: the sink then played
+// its buffer down for half a minute, the delay drifting by 3 to 4 ms in
+// 10 s, into dropouts.)
+static void test_glue_listener_glitch()
+{
+  if (!selected("glue_listener_glitch")) return;
+  net n(59);
+  player &a = n.add(1);
+  player &b = n.add(2);
+  bursts bu;
+  bu.install(a);
+  b.send = false;
+  n.start_all();
+  n.run(2.0);
+  const int slot = b.core->slotOf(1);
+  CHECK(b.core->slotHealthy(slot));
+  start_recording(n);
+  n.run(4.0);
+  const double before = median(bu.delays(a, b));
+  b.host_running = false;
+  n.run(0.032);
+  b.host_running = true;
+  CHECK(n.run_until([&] { return b.core->slotHealthy(slot); }, 3.0));
+  n.run(2.0);
+  auto dropouts = [&] {
+    const std::vector<PeerStats> st = b.core->stats(n.now);
+    const PeerStats *ps = stats_of(st, 1);
+    return ps ? ps->underruns + ps->overruns + ps->dropped : -1;
+  };
+  const int drops = dropouts();
+  start_recording(n);
+  n.run(10.0);
+  const std::vector<double> d = bu.delays(a, b);
+  printf("  the listener missed 32 ms: delay %.2f ms before, %.2f ms after (spread %.2f ms in 10 s), %d dropouts after\n",
+         1000 * before, 1000 * median(d), 1000 * spread(d), dropouts() - drops);
+  CHECK(d.size() >= 45);
+  CHECK(spread(d) < 0.001);
+  CHECK(fabs(median(d) - before) < 0.006);
+  CHECK_EQ(dropouts() - drops, 0);
+  CHECK(b.core->slotHealthy(slot));
+}
+
 // A listener's host stops calling processBlock() for a minute while the
 // player stays connected (its send thread goes on) and seven others keep
 // playing. What comes for its sinks is dropped: AOO would keep it until the
@@ -1799,6 +1845,7 @@ int main(int argc, char **argv)
   test_glue_send_throws();
   test_glue_gap();
   test_glue_sender_xruns();
+  test_glue_listener_glitch();
   test_glue_host_stopped();
   test_glue_bitrate_frame();
 

@@ -106,7 +106,8 @@ Tests (`tests/`):
   Core, the room's Live flag off and on, `send` off (no stream at all)
   and on, an exception out of AOO's `send()`, a host that stops calling
   for a second, a sender's host that stops for 150 ms three times (with a
-  200 ms jitter buffer), a listener's host that stops for a minute while
+  200 ms jitter buffer), a listener's host that misses 32 ms (the delay
+  steady after it, without dropouts), a listener's host that stops for a minute while
   seven others play, and bitrate and frame size changes. About 25 s.
 - `live_client_test`: the `Client` on real sockets: four players with
   audio threads paced by the clock and a minimal server on the loopback
@@ -245,10 +246,16 @@ the server (`serverRttMs()`).
   them (its time DLLs, the sink's elapsed time), and a wall clock that
   steps (NTP, a user) would look like an xrun or warp the DLL. AOO's pings
   still use the wall clock, but only within one machine.
-- When the host stops calling for more than 100 ms (processing suspended,
-  a long xrun), the next block reports the gap (at most 0.5 s) to the
-  source and the sinks as an xrun, so the source fills it with empty blocks
-  and the sinks skip it.
+- When the host stops calling for more than 20 ms, or two of its longest
+  blocks when that is more (processing suspended, an xrun), the next block
+  reports the gap (at most 0.5 s) to the source and the sinks as an xrun,
+  so the source fills it with empty blocks and the sinks skip it. With
+  100 ms (before), a DAW that missed 32 ms made the sinks' time filter take
+  the jump for a clock running 0.3% slow: they then played their buffers
+  down for half a minute, into dropouts or 5 to 10 ms too early, and the
+  delay drifted 3 to 4 ms in 10 s (the plug-in's end-to-end test,
+  "afterstall"); with 20 ms it stays within 0.2 ms after the sinks have
+  buffered again.
 - While the host isn't calling `processBlock()` (0.25 s after the end of
   the last block, or before the first one), the receive thread drops what
   comes for the sinks (`Counters::droppedIdle`): AOO would keep it until

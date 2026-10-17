@@ -519,13 +519,17 @@ bool Core::processBlock(const float *inL, const float *inR, int frames, bool sen
   }
   m_blockValid.store(true);
 
-  // The host stopped calling us for a while (processing suspended, a long
+  // The host stopped calling us for a while (processing suspended, an
   // xrun): tell AOO, which fills the gap with empty blocks on the sending
-  // side and skips it on the receiving side, and restarts its clocks.
+  // side and skips it on the receiving side, and restarts its clocks. Not
+  // telling it of a short one (a DAW that missed 32 ms) is worse: the time
+  // filter takes the jump for a slow clock, and the sinks then play their
+  // buffers down over half a minute, into dropouts. Up to two blocks' worth
+  // is how hosts call (in bursts, within one device buffer), not a gap.
   if (m_lastFrames > 0)
   {
     const double gap = secondsFromNtp((int64_t)(t - m_lastTime)) - m_lastFrames / m_sampleRate;
-    if (gap > 0.1)
+    if (gap > std::max(0.02, 2.0 * m_maxBlock / m_sampleRate))
     {
       const AooInt32 n = (AooInt32)(std::min(gap, 0.5) * m_sampleRate);
       m_source->reportXRun(n);
