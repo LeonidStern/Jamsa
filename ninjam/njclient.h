@@ -167,8 +167,12 @@ public:
   // Live per remote user: SetUserLive() picks what plays the user's first channel (0) from
   // the next interval on: slot >= 0 the user's real-time audio, from LiveAudio_Callback,
   // instead of their intervals; -1 their intervals. GetUserLive() is what plays now.
+  // StopUserLive() plays the user's intervals at once, for a slot that isn't theirs any more
+  // (the room's Live off, the slots handed out again); what SetUserLive() asked for still
+  // starts with the next interval.
   void SetUserLive(int useridx, int slot);
   int GetUserLive(int useridx);
+  void StopUserLive(int useridx);
   // Called from AudioProc() for a user whose Live slot plays: set *left and *right to `len`
   // samples of the slot's audio for the output samples from `offset` on (in AudioProc()'s
   // output buffers), at the output's sample rate. NJClient mixes it as it mixes that user's

@@ -31,7 +31,9 @@
   NJClient's own mix has them, the meter showing it; when its callback says no
   in the middle of an interval it plays r0's audio again at once (the
   interval played on muted underneath), and from the interval after
-  SetUserLive(-1) on it plays r0's audio again.
+  SetUserLive(-1) on it plays r0's audio again. Live again from interval 7
+  on, StopUserLive() in it plays r0's audio again at once, and the slot asked
+  for plays again from the next interval.
 
   And what the server says: the Live fields and the other Live players
   (not the sender and r0, which can't play Live), the room's Live turned on
@@ -372,6 +374,7 @@ int main()
   const int INTERVALS_RUN = 8;
   const int perInterval = len / BLOCK;
   int liveSeen[3] = { -2, -2, -2 }; // r4's GetUserLive() in intervals 2, 4 and 7
+  long stoppedAt = -1;              // where r4's StopUserLive() took effect
   float liveMeter = -1, r0Meter = -1;
   while ((int)starts.size() <= INTERVALS_RUN)
   {
@@ -419,6 +422,23 @@ int main()
       r4.client.SetUserLive(u4, -1);
       CHECK_EQ(r4.client.GetUserLive(u4), 0); // until the interval ends
     }
+    // live again from interval 7 on, then stopped at once in it (in the plug-in: the room's
+    // Live off, the slots handed out again)
+    if (iv == 6 && at == perInterval / 2)
+    {
+      r4.client.SetUserLive(u4, 0);
+      r4.client.StopUserLive(u4); // nothing plays live: nothing to stop
+      r4.client.StopUserLive(99);
+      r4.client.StopUserLive(-1);
+      CHECK_EQ(r4.client.GetUserLive(u4), -1);
+    }
+    if (iv == 7 && at == perInterval / 4)
+    {
+      CHECK_EQ(r4.client.GetUserLive(u4), 0);
+      r4.client.StopUserLive(u4);
+      CHECK_EQ(r4.client.GetUserLive(u4), -1); // at once
+      stoppedAt = pos;
+    }
     if (at == perInterval / 2)
     {
       if (iv == 2) liveSeen[0] = r4.client.GetUserLive(u4);
@@ -452,6 +472,8 @@ int main()
   CHECK_EQ(liveSeen[0], -1);
   CHECK_EQ(liveSeen[1], 0);
   CHECK_EQ(liveSeen[2], -1);
+  CHECK_EQ(r4.client.GetUserLive(u4), 0); // what it asked for, from interval 8 on
+  CHECK(stoppedAt > 0);
   CHECK_EQ(r1.client.GetUserLive(r1.sender()), -1);
   CHECK_EQ(r2.client.GetUserLive(r2.sender()), -1);
   CHECK_EQ(r0.client.GetUserLive(r0.sender()), -1);
@@ -502,7 +524,7 @@ int main()
   for (long i = 0; i < total; i ++)
   {
     const int m = mode[(size_t)(i / BLOCK)];
-    const bool live = i >= starts[3] && i < starts[6] && m != REFUSED;
+    const bool live = (i >= starts[3] && i < starts[6] && m != REFUSED) || (i >= starts[7] && i < stoppedAt) || i >= starts[8];
     for (int c = 0; c < NCH; c ++)
     {
       float want = r0.rec[c][(size_t)i];

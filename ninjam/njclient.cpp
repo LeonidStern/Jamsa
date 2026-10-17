@@ -413,7 +413,7 @@ public:
   // Live: the slot whose audio plays channel 0 instead of the intervals, -1 for none:
   // the one asked for (SetUserLive()), and the one playing, from the interval it was asked in
   int live_want; // under m_users_cs
-  int live_on;   // audio thread
+  int live_on;   // under m_users_cs (the audio thread's)
 };
 
 
@@ -2906,7 +2906,20 @@ int NJClient::GetUserLive(int idx)
 {
   WDL_MutexLock lock(&m_remotechannel_rd_mutex);
   if (idx<0 || idx>=m_remoteusers.GetSize()) return -1;
-  return m_remoteusers.Get(idx)->live_on;
+  m_users_cs.Enter(); // on_new_interval() writes it
+  const int slot=m_remoteusers.Get(idx)->live_on;
+  m_users_cs.Leave();
+  return slot;
+}
+
+void NJClient::StopUserLive(int idx)
+{
+  WDL_MutexLock lock(&m_remotechannel_rd_mutex);
+  if (idx<0 || idx>=m_remoteusers.GetSize()) return;
+  RemoteUser *p=m_remoteusers.Get(idx);
+  m_users_cs.Enter(); // AudioProc() reads it
+  p->live_on=-1;
+  m_users_cs.Leave();
 }
 
 int NJClient::EnumUserChannels(int useridx, int i)

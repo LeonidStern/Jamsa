@@ -1388,7 +1388,7 @@ void Engine::updateLive()
 
   // Each player: live from the next interval while their slot plays well (after it played badly,
   // once it has played well for a few seconds); back to intervals from the next one when it
-  // doesn't (NJClient plays the intervals at once while the room's Live is off: liveAudio()).
+  // doesn't, and at once when the slot isn't theirs any more (the room's Live off).
   std::vector<jamsa_live::PeerStats> stats;
   bool haveStats = false;
   std::set<std::string> present;
@@ -1428,8 +1428,17 @@ void Engine::updateLive()
       lu.slot = want ? slot : -1;
     }
 
-    // what NJClient plays now (it changes at an interval's start)
-    const int on = m_client->GetUserLive(u);
+    // what NJClient plays now (it changes at an interval's start). A slot that isn't this
+    // player's any more stops at once: the room's Live went off (the intervals play already,
+    // see liveAudio()), the Live client stopped, or the slots were handed out again. A Live
+    // that comes back then waits for a stream that plays well and an interval's start, as
+    // always. (A slot that plays badly is still theirs: it plays until the interval ends.)
+    int on = m_client->GetUserLive(u);
+    if (on >= 0 && on != slot)
+    {
+      m_client->StopUserLive(u);
+      on = -1;
+    }
     if ((on >= 0) != (lu.on >= 0))
     {
       if (on >= 0)
