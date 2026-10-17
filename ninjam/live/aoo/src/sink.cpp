@@ -2043,7 +2043,14 @@ bool source_desc::process(const Sink& s, AooSample **buffer, int32_t nsamples,
 }
 
 void source_desc::check_latency(const Sink& s) {
-    auto buffer_latency = stream_samples_;
+    // Jamsa: the audio that waits in the jitter buffer when playback starts,
+    // at most the silence played while buffering. Buffering that began while
+    // the source sent nothing (its host stalled, so we ran dry) plays more
+    // silence than the buffer then holds, and the latency stayed reported
+    // that much too high until the next restart (40 ms for a 20 ms buffer).
+    double resample = (double)s.samplerate() / (double)format_->sampleRate;
+    int32_t held = jitter_buffer_.size() * format_->blockSize * resample + 0.5;
+    int32_t buffer_latency = std::min<int32_t>(stream_samples_ + 0.5, held);
     if (buffer_latency != buffer_latency_) {
         buffer_latency_ = buffer_latency;
 

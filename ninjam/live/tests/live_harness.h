@@ -83,6 +83,7 @@ struct node
   int dropped = 0, resent = 0, xrun = 0;
   std::vector<AooByte> start_metadata; // of the last kAooEventStreamStart
   bool start_had_metadata = false;
+  double buffer_latency = -1; // seconds, of the last kAooEventStreamLatency
   long stream_messages = 0;
 
   AooEndpoint endpoint() const
@@ -273,6 +274,24 @@ public:
     return (int)k;
   }
 
+  // a late host catching up, as the test hosts do: sink node 'k' plays
+  // 'blocks' blocks now, one after the other
+  void catch_up(int k, int blocks)
+  {
+    node &n = nodes[k];
+    AooSink *s = sinks[k - 1].get();
+    const AooNtpTime t = ntp_from_seconds(now);
+    for (int i = 0; i < blocks; i++)
+    {
+      if (audio_hook) audio_hook(true);
+      s->process(n.pointers.data(), n.blocksize, t,
+        message_handler ? on_stream_message : nullptr, &n);
+      if (audio_hook) audio_hook(false);
+      check_output(n);
+    }
+    s->pollEvents();
+  }
+
   // the RMS of a sink's last block, both channels
   double block_rms(int sink_node) const
   {
@@ -419,6 +438,7 @@ private:
           n.start_metadata.assign(e->streamStart.metadata->data,
             e->streamStart.metadata->data + e->streamStart.metadata->size);
       break;
+      case kAooEventStreamLatency: n.buffer_latency = e->streamLatency.bufferLatency; break;
       case kAooEventBlockDrop: n.dropped += e->blockDrop.count; break;
       case kAooEventBlockResend: n.resent += e->blockResend.count; break;
       case kAooEventBlockXRun: n.xrun += e->blockXRun.count; break;

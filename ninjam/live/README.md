@@ -409,6 +409,14 @@ noted as such.
   in `live_client_test`), harmless on x86 and in practice on ARM, undefined
   all the same. The load and the compare-exchange's failure order are now
   acquire, and `tests/tsan.supp` no longer hides the function.
+- `sink.cpp`, `source_desc::check_latency()`: reported the silence a sink
+  played while buffering as its buffer latency (the "buffer" in the delay
+  `/live` shows). A host that stalls and catches up (or a sink that buffers
+  while the source sends nothing) plays more silence than the buffer then
+  holds: 40 ms reported for a 20 ms buffer in the plug-in's end-to-end test
+  on macOS, until the stream restarted. It is now the audio in the jitter
+  buffer when playback starts, at most that silence (`live_fuzz_test`'s
+  `buffer_latency`: 105 ms for 50 ms before, 50 to 55 ms now).
 
 `live_aoo_test` has a test for each of these that fails without the fix,
 except the flag, the denormal flush and `AOO_CALL`, which have no visible

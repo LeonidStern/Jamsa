@@ -699,6 +699,52 @@ static void test_start_delays()
   for (double r : rms) CHECK(sounds_right(r));
 }
 
+// The buffer latency a sink reports (kAooEventStreamLatency, which goes
+// into the delay "/live" shows) was the silence it played while buffering.
+// A host that stalls and then catches up, as the test hosts do: what came
+// meanwhile overfills the jitter buffer, the sink starts again from the
+// newest block, and the blocks it catches up play silence while the buffer
+// fills in real time. It reported all that silence as buffer, about 100 ms
+// for its 50 ms here (40 ms for 20 ms in the plug-in's end-to-end test on
+// macOS), until the stream restarted. Now it is the audio that the buffer
+// holds when the sink starts to play.
+static void test_buffer_latency()
+{
+  live_session ls;
+  session &s = ls.s;
+  for (size_t k = 1; k < s.nodes.size(); k++)
+  {
+    printf("  sink %d at the start: buffer latency %.1f ms\n", (int)k, s.nodes[k].buffer_latency * 1000);
+    CHECK(s.nodes[k].buffer_latency > 0.045 && s.nodes[k].buffer_latency < 0.0565);
+  }
+  // each sink's host stalls for 80 ms, then plays those blocks at once
+  int active[4];
+  for (int k = 1; k <= 3; k++)
+  {
+    active[k] = s.nodes[k].stream_active;
+    s.nodes[k].paused = true;
+  }
+  s.run(0.08);
+  for (int k = 1; k <= 3; k++)
+  {
+    s.nodes[k].paused = false;
+    s.catch_up(k, (int)(0.08 * s.nodes[k].samplerate / s.nodes[k].blocksize));
+  }
+  CHECK(s.run_until([&]() {
+    for (int k = 1; k <= 3; k++)
+      if (s.nodes[k].stream_active == active[k]) return false;
+    return true;
+  }, 1.0));
+  for (size_t k = 1; k < s.nodes.size(); k++)
+  {
+    printf("  sink %d after its host caught up: buffer latency %.1f ms\n", (int)k, s.nodes[k].buffer_latency * 1000);
+    CHECK(s.nodes[k].buffer_latency > 0.045 && s.nodes[k].buffer_latency < 0.0565);
+  }
+  const std::vector<double> rms = output_rms(s, 1.0);
+  CHECK(s.outputs_finite);
+  for (double r : rms) CHECK(sounds_right(r));
+}
+
 static bytes hex_bytes(const char *hex)
 {
   bytes b;
@@ -1321,6 +1367,7 @@ int main(int argc, char **argv)
     { "stream_messages", test_stream_messages },
     { "start_formats", test_start_formats },
     { "start_delays", test_start_delays },
+    { "buffer_latency", test_buffer_latency },
     { "loud_packet", test_loud_packet },
     { "source_requests", test_source_requests },
     { "reply_budget", test_reply_budget },
