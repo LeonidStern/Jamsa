@@ -191,6 +191,26 @@ jobs:
       - name: Install Ninja
         run: brew list ninja >/dev/null 2>&1 || brew install ninja
 
+      - name: Are there Developer ID secrets?
+        id: devid
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -n "$MACOS_CERT_P12" ] && [ -n "$MACOS_CERT_PASSWORD" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            echo "No Developer ID secrets: the bundle stays ad hoc signed and isn't notarized."
+          fi
+          # which ones are there, by name only (never the values)
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            if [ -n "${!name}" ]; then echo "$name: set"; else echo "::warning title=Mac signing::secret $name is missing or empty"; fi
+          done
+
       - name: Configure (universal, macOS 12 and later)
         run: cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
 
@@ -215,22 +235,6 @@ jobs:
       - name: Tests
         run: ctest --test-dir build --output-on-failure -V
 
-      - name: Are there Developer ID secrets?
-        id: devid
-        env:
-          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: |
-          if [ -n "$MACOS_CERT_P12" ] && [ -n "$MACOS_CERT_PASSWORD" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
-            echo "notarize=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "notarize=false" >> "$GITHUB_OUTPUT"
-            echo "No Developer ID secrets: the bundle stays ad hoc signed and isn't notarized."
-          fi
-
       - name: Sign with Developer ID, notarize and staple
         if: steps.devid.outputs.notarize == 'true'
         env:
@@ -252,6 +256,7 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')
           if [ -z "$IDENTITY" ]; then echo "MACOS_CERT_P12 has no Developer ID Application certificate"; exit 1; fi
+          echo "IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
 
           codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$BUNDLE"
           codesign --verify --deep --strict --verbose=2 "$BUNDLE"
@@ -272,10 +277,6 @@ jobs:
           xcrun stapler staple "$BUNDLE"
           xcrun stapler validate "$BUNDLE"
           codesign --verify --deep --strict --verbose=2 "$BUNDLE"
-
-      - name: Remove the signing keychain
-        if: always() && steps.devid.outputs.notarize == 'true'
-        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
       - name: Steinberg validator
         run: |
@@ -341,6 +342,53 @@ jobs:
           build/bin/Release/validator "$RO/Jamsa.vst3" 2>&1 | tee validator-dmg.log
           grep -E "Result: [0-9]+ tests passed, 0 tests failed" validator-dmg.log
           hdiutil detach "$RO"
+
+      - name: Sign, notarize and staple the disk image
+        if: steps.devid.outputs.notarize == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          # the plug-in inside is already notarized and stapled; this lets Gatekeeper open the
+          # downloaded image itself without a warning
+          DMG=dist/Jamsa-vst3-macos.dmg
+          codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+          codesign --verify --verbose=2 "$DMG"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait --output-format json > "$RUNNER_TEMP/notarize-dmg.json" || true
+          cat "$RUNNER_TEMP/notarize-dmg.json"
+          STATUS=$(plutil -extract status raw "$RUNNER_TEMP/notarize-dmg.json" 2>/dev/null || echo unknown)
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "Notarization: $STATUS"
+            ID=$(plutil -extract id raw "$RUNNER_TEMP/notarize-dmg.json" 2>/dev/null || true)
+            if [ -n "$ID" ]; then
+              xcrun notarytool log "$ID" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" || true
+            fi
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+
+      - name: Remove the signing keychain
+        if: always() && steps.devid.outputs.notarize == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - name: Signing summary
+        if: always()
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          # repeated at the end, where the log is easy to find
+          echo "Developer ID signing: ${{ steps.devid.outputs.notarize }}"
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            if [ -n "${!name}" ]; then echo "$name: set"; else echo "$name: missing"; fi
+          done
 
       - uses: actions/upload-artifact@v4
         with:
