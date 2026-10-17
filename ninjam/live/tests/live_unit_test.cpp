@@ -1412,6 +1412,64 @@ static void test_glue_gap()
   }
 }
 
+// A listener's host stops calling processBlock() for a minute while the
+// player stays connected (its send thread goes on) and seven others keep
+// playing. What comes for its sinks is dropped: AOO would keep it until the
+// next block (memory without a bound) and then work through all of it in
+// that block (31.8 ms after two minutes, against a 2.7 ms block). The first
+// block after stays within the block's time, and every slot is healthy
+// again within a few seconds.
+static void test_glue_host_stopped()
+{
+  if (!selected("glue_host_stopped")) return;
+#ifdef NDEBUG
+  const double pause = 60;
+#else
+  const double pause = 15; // a debug build (sanitizers) runs about 15 times slower
+#endif
+  net n(43);
+  for (uint32_t id = 1; id <= 8; id++) n.add(id, 48000, 128);
+  player &l = *n.find(1);
+  n.start_all();
+  n.run(2.0);
+  std::vector<double> before;
+  while (before.size() < 400)
+  {
+    const int64_t blocks = l.nblocks;
+    n.step();
+    if (l.nblocks > blocks) before.push_back(l.block_ms);
+  }
+  for (int k = 0; k < 7; k++) CHECK(l.core->slotHealthy(k));
+  const Core::Totals &t = l.core->totals();
+  const uint64_t accepted = t.accepted.load(), idle = t.idle.load();
+  l.host_running = false;
+  n.run(pause);
+  const uint64_t accepted_paused = t.accepted.load() - accepted, idle_paused = t.idle.load() - idle;
+  l.host_running = true;
+  const int64_t blocks = l.nblocks;
+  while (l.nblocks == blocks) n.step();
+  const double first = l.block_ms;
+  const double budget = 1000.0 * l.block / l.rate;
+  // (the slots' health only changes with what their sinks say once they run)
+  n.run(3.0);
+  int healthy = 0;
+  for (int k = 0; k < 7; k++) healthy += l.core->slotHealthy(k);
+  printf("  %.0f s stopped: %llu packets dropped, %llu let through (for our source); first block after"
+         " %.2f ms (typical %.2f ms, budget %.2f ms); healthy 3 s later: %d of 7\n", pause,
+         (unsigned long long)idle_paused, (unsigned long long)accepted_paused, first, median(before),
+         budget, healthy);
+  // 7 players' 200 packets a second
+  CHECK(idle_paused > (uint64_t)(7 * 200 * (pause - 1)));
+  CHECK(accepted_paused < (uint64_t)(20 * pause));
+#ifdef NDEBUG
+  CHECK(first < 2 * budget); // (twice: a busy machine)
+#endif
+  CHECK_EQ(healthy, 7);
+  start_recording(n);
+  n.run(1.0);
+  for (uint32_t id = 2; id <= 8; id++) CHECK(heard_snr(l, *n.find(id), 0.9) > 20);
+}
+
 // The room's bitrate changes the packets' size at once; its frame size
 // restarts the stream with the new format.
 static void test_glue_bitrate_frame()
@@ -1485,6 +1543,7 @@ int main(int argc, char **argv)
   test_glue_fuzz();
   test_glue_room_off();
   test_glue_gap();
+  test_glue_host_stopped();
   test_glue_bitrate_frame();
 
   return test_summary("live_unit_test");

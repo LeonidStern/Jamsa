@@ -16,10 +16,11 @@
   Each player runs host blocks at its own sample rate, block size and clock
   drift; its time stamps are the true (virtual) time, as a computer's clock
   next to an audio interface that runs a little fast or slow. After each
-  block its send() runs, as the send thread would. Its datagrams carry our
-  UDP header (wire::) to the server, which checks them and copies them to
-  the room exactly as the real one does (its header written in place at
-  offset 12), and the copies go through each player's down link.
+  block its send() runs, as the send thread would (also while the host
+  doesn't call processBlock()). Its datagrams carry our UDP header
+  (wire::) to the server, which checks them and copies them to the room
+  exactly as the real one does (its header written in place at offset 12),
+  and the copies go through each player's down link.
 
   Each direction of each player's path has its own delay, jitter (which
   reorders), random loss, loss bursts and duplicates, all from one seeded
@@ -38,6 +39,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <queue>
@@ -73,7 +75,7 @@ struct player
   double t0 = 0;             // true time of its first block
   int64_t nblocks = 0;
   bool in_room = true;       // the server copies to it
-  bool host_running = true;  // the host calls processBlock()
+  bool host_running = true;  // the host calls processBlock() (the send thread runs anyway)
   bool send = true;          // processBlock's 'send'
   link up, down;
   double tone_hz = 440;
@@ -84,6 +86,7 @@ struct player
   bool recording = false;
   std::vector<float> rec[Core::kMaxPeers];
   std::vector<double> rec_time; // true time of each recorded block
+  double block_ms = 0;          // how long the last processBlock() took (wall clock)
   // what went through the server
   long uploads = 0, upload_bytes = 0, unicast_uploads = 0, downloads = 0;
 
@@ -279,7 +282,8 @@ struct net
     q->downloads++;
     // a heap block of exactly the payload's size
     std::vector<uint8_t> payload(m.payload, m.payload + m.size);
-    q->core->handleData(m.from, payload.data(), payload.size());
+    // (on the clock of run_block()'s time stamps)
+    q->core->handleData(m.from, payload.data(), payload.size(), jamsa_live::ntpFromSeconds(now + 1000.0));
   }
 
   static void tone(player &p, int64_t index, float *l, float *r, int n)
@@ -302,8 +306,10 @@ struct net
       if (p.input) p.input(index, p.inL.data(), p.inR.data(), p.block);
       else tone(p, index, p.inL.data(), p.inR.data(), p.block);
       // (an offset, so that no time stamp is near 0)
+      const auto w0 = std::chrono::steady_clock::now();
       p.core->processBlock(p.inL.data(), p.inR.data(), p.block, p.send,
                            jamsa_live::ntpFromSeconds(t + 1000.0));
+      p.block_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
       if (p.recording)
       {
         for (int k = 0; k < Core::kMaxPeers; k++)
@@ -313,9 +319,10 @@ struct net
         }
         p.rec_time.push_back(t);
       }
-      send_context c = { this, &p };
-      p.core->send(on_send, &c);
     }
+    // the send thread, which runs whether or not the host calls
+    send_context c = { this, &p };
+    p.core->send(on_send, &c);
     p.nblocks++;
   }
 

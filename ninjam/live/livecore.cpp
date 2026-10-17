@@ -464,6 +464,7 @@ bool Core::processBlock(const float *inL, const float *inR, int frames, bool sen
   }
   m_lastTime = t;
   m_lastFrames = frames;
+  m_audioDue.store(t + ntpFromSeconds(frames / m_sampleRate), std::memory_order_relaxed);
 
   for (Slot &s : m_slots) s.bound = s.peer.load(std::memory_order_acquire) != 0;
   const float *inRight = inR ? inR : inL;
@@ -634,10 +635,24 @@ Core::Verdict Core::classify(uint32_t from, const uint8_t *data, size_t size, in
   return kFiltered;
 }
 
-Core::Verdict Core::handleData(uint32_t from, const uint8_t *data, size_t size)
+Core::Verdict Core::handleData(uint32_t from, const uint8_t *data, size_t size, uint64_t now)
 {
   int target = 0;
   const Verdict v = classify(from, data, size, &target);
+  // The host isn't calling processBlock() (processing stopped, or not
+  // started yet): AOO would keep what goes to the sinks until the audio
+  // thread runs again and then work through all of it in one block. The
+  // streams pick up again from what comes next. What goes to our source
+  // still goes through: the send thread answers it.
+  if (v == kAccepted && target >= 0 && now)
+  {
+    const uint64_t due = m_audioDue.load(std::memory_order_relaxed);
+    if (!due || (int64_t)(now - due) > (int64_t)ntpFromSeconds(kIdleSeconds))
+    {
+      m_totals.idle++;
+      return kFiltered;
+    }
+  }
   switch (v)
   {
     case kAccepted: m_totals.accepted++; break;

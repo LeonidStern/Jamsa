@@ -123,6 +123,9 @@ class Core
 public:
   static const int kMaxPeers = Client::MAX_PEERS;
   static const int kChunk = 64; // AOO's block: the adapter's B
+  // the audio thread counts as idle this long after its last block's end
+  // (longer than any host block: 8192 samples at 44.1 kHz are 0.19 s)
+  static constexpr double kIdleSeconds = 0.25;
 
   // where the send thread's datagrams go: dest is a peer ID, 0 = everyone
   typedef void (*SendFn)(void *user, uint32_t dest, const uint8_t *data, size_t size);
@@ -166,8 +169,9 @@ public:
   // send thread
   void send(SendFn fn, void *user);
 
-  // receive thread: a DATA datagram's AOO packet from peer 'from'
-  Verdict handleData(uint32_t from, const uint8_t *data, size_t size);
+  // receive thread: a DATA datagram's AOO packet from peer 'from', at
+  // 'now' on the clock of processBlock()'s time stamps (0: no idle check)
+  Verdict handleData(uint32_t from, const uint8_t *data, size_t size, uint64_t now = 0);
 
   // the filter alone (also for the tests): where a packet from 'from'
   // would go: -1 = our source, 0..kMaxPeers-1 = that slot's sink
@@ -176,6 +180,7 @@ public:
   struct Totals
   {
     std::atomic<uint64_t> accepted{0}, badSize{0}, noSlot{0}, filtered{0}, badFormat{0};
+    std::atomic<uint64_t> idle{0}; // for a sink while the audio thread was idle
     std::atomic<uint64_t> sent{0}, sendTooLarge{0};
   };
   const Totals &totals() const { return m_totals; }
@@ -254,6 +259,7 @@ private:
   uint64_t m_lastTime = 0;          // the last block's time stamp
   int m_lastFrames = 0;
   std::atomic<double> m_rate{48000}; // m_sampleRate, for stats()
+  std::atomic<uint64_t> m_audioDue{0}; // when the next block is due (0: none ran yet)
 
   Totals m_totals;
 };

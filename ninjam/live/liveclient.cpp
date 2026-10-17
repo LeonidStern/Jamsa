@@ -366,7 +366,7 @@ struct Client::Impl
         continue;
       }
       if (m.type == wire::kHelloAck) handleAck(m);
-      else core.handleData(m.from, m.payload, m.size);
+      else core.handleData(m.from, m.payload, m.size, ntpFromSeconds(steadySeconds())); // processBlock()'s clock
     }
   }
 

@@ -94,7 +94,8 @@ Tests (`tests/`):
   the buffer overruns), slot reuse with nine others for eight slots, the
   filter in front of AOO verdict by verdict, fuzzed packets into a playing
   Core, the room's Live flag off and on, a host that stops calling for a
-  second, and bitrate and frame size changes. About 15 s.
+  second, a listener's host that stops for a minute while seven others
+  play, and bitrate and frame size changes. About 25 s.
 - `live_client_test`: the `Client` on real sockets: four players with
   audio threads paced by the clock and a minimal server on the loopback
   interface (HELLO / HELLO_ACK with the address cookie, DATA copied to the
@@ -206,6 +207,13 @@ the server (`serverRttMs()`).
   a long xrun), the next block reports the gap (at most 0.5 s) to the
   source and the sinks as an xrun, so the source fills it with empty blocks
   and the sinks skip it.
+- While the host isn't calling `processBlock()` (0.25 s after the end of
+  the last block, or before the first one), the receive thread drops what
+  comes for the sinks (`Core::Totals::idle`): AOO would keep it until the
+  next block and then work through all of it on the audio thread (with 7
+  players, 1.2 GB an hour and a 13 ms first block after a minute; see also
+  `AOO_MAX_QUEUED_PACKETS`). What comes for our source still goes through,
+  as the send thread runs on. The streams pick up from the next packets.
 - `processBlock(..., send = false)` sends silence; the stream goes on.
 - The room's Live flag off (`update()`): the source stops, every slot goes
   unhealthy at once and drops its source, and nothing reaches AOO until it
