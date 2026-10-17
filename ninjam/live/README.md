@@ -129,6 +129,19 @@ Tests (`tests/`):
   of AOO's RT memory pool reads a node another thread may be reusing, on
   purpose (see the file); nothing else is suppressed. The timing checks
   only print there.
+- `live_bench MODE`: benchmarks, not a test (ctest doesn't run it, nothing
+  fails; POSIX only). Each mode writes CSV: `net`, a bad connection on
+  `live_sim.h`'s network, for a listener with one to seven others playing
+  (loss at random and in bursts, jitter, the jitter buffer: dropouts,
+  resends, blocks Opus concealed, the delay heard, the share of the time
+  the slots were healthy, each and all at once); `bw`, each player's
+  datagrams and kbit/s up and down by bitrate, frame size and room size
+  (2 to 8); `cpu`,
+  `processBlock()`'s cost per host block with 1 to 7 others on real
+  sockets, and the receive and send threads' CPU; `rss`, the memory of a
+  `Client` with seven others over time; `relay`, the UDP side of
+  `ninjam/server/tests/bench_live.py`, load for the real server. The
+  comment at the top of `tests/live_bench.cpp` says what each measures.
 
 ## The glue
 

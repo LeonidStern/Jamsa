@@ -18,6 +18,9 @@
 #                    broadcast mode, removeSource(); the glue (Core) with players
 #                    on a virtual network: loss, drift, slot reuse, the filter
 #   live_client_test the Client on real sockets (loopback), with a minimal server
+#   live_bench       benchmarks, not a test (ctest doesn't run it): a bad network,
+#                    bandwidth, the audio thread's cost, memory, load for the server's
+#                    relay (see tests/live_bench.cpp; POSIX only)
 #
 # The plug-in's build (ninjam/vst3) adds this folder after it has downloaded
 # Opus and registers the tests from vst3/tests. A build of this folder alone
@@ -203,6 +206,12 @@ function(ninjam_live_add_tests)
     if(WIN32)
         # timeBeginPeriod(), for the audio threads' sleeps
         target_link_libraries(live_client_test PRIVATE winmm)
+    endif()
+    # benchmarks: built with the tests, but not a test (ctest would take minutes for it)
+    if(NOT WIN32)
+        add_executable(live_bench ${dir}/live_bench.cpp)
+        target_compile_features(live_bench PRIVATE cxx_std_17)
+        target_link_libraries(live_bench PRIVATE ninjam_live ninjam_live_aoo_internal)
     endif()
 endfunction()
 
