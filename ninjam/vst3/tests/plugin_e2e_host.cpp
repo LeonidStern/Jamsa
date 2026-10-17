@@ -1129,10 +1129,9 @@ static std::map<std::string, std::string> live_room(Host &h)
   return parse_status(st.substr(0, st.find('\n')));
 }
 
-// one line of `live status` (key=value) for the peer named `who`
-static std::map<std::string, std::string> live_peer(Host &h, const std::string &who)
+// one line of `live status` (key=value) for the peer named `who`, from its text, or from the host
+static std::map<std::string, std::string> live_peer_in(const std::string &st, const std::string &who)
 {
-  const std::string st = h.command("live status");
   size_t at = 0;
   while (at < st.size())
   {
@@ -1144,31 +1143,43 @@ static std::map<std::string, std::string> live_peer(Host &h, const std::string &
   }
   return std::map<std::string, std::string>();
 }
+static std::map<std::string, std::string> live_peer(Host &h, const std::string &who) { return live_peer_in(h.command("live status"), who); }
 
 // Two instances in step (one thread, as two tracks of a DAW): alice hosts the server and plays
 // chirps, bob joins and plays nothing, and an NJClient without Live ("old", sending nothing)
 // joins too. Before Live, bob hears alice through intervals (one interval and some late); then
 // alice turns the room's Live on (!live on) and bob hears her live, the intervals' copy muted;
 // on his output Player N (hers) and nowhere else; old still hears her through intervals. Then
-// bob's jitter buffer goes to 40 ms and back; bob's DAW misses 32 ms once, and bob is live again
-// after it; and last alice turns Live off: bob hears her intervals at once. The hosts never stop: the test
-// looks at what they played while they go on. Where the test machine was busy (dropouts, blocks
-// late, bob back on intervals for a while) the phase isn't judged; with too little left it is
-// measured again, up to three times.
+// bob's jitter buffer goes to 40 ms and back; bob's DAW misses 32 ms once: he goes back to
+// intervals for a while, is live again after it, and then plays well; alice turns Live off and
+// on again within one of bob's intervals: he hears her intervals at once and to that interval's
+// end; and last alice turns Live off: bob hears her intervals at once. The hosts never stop:
+// the test looks at what they played while they go on. Where the test machine was busy
+// (dropouts, blocks late, bob back on intervals for a while) the phase isn't judged; with too
+// little left, or with dropouts the hosts didn't cause, it is measured again, up to three times.
 //   PORT <port>
 //   LIVE ready b_offered=<0|1> b_room=<on|off> b_peers=<n> old_users=<n>
 //   LIVE intervals found=<n>/<m> lag_ms=<median> old_found=<n>/<m> old_lag_ms=<median>
 //   LIVE on b_live=<0|1> waited_s=<s> marker=<0|1: " · live" on alice's channel in bob's users>
-//   LIVE retry <phase> clean=<n>/<m> late_blocks=<n> dropouts=<n>   (the phase again, up to 3 times)
-//   LIVE phase <live|stall|buffer40> found=<n>/<of the clean> clean=<chirps judged>/<played> median_ms=<>
+//   LIVE retry <phase> clean=<n>/<m> late_blocks=<n> dropouts=<n> ontime=<n>   (the phase again, up to 3 times)
+//   LIVE phase <live|buffer40|stall|afterstall> found=<n>/<of the clean> clean=<chirps judged>/<played> median_ms=<>
 //        p95_ms=<> min_ms=<> max_ms=<> mean_corr=<> estimate_ms=<bob's estimate>
 //        outside=<energy outside the copies / inside, where clean> interval_copy=<heard>/<checked, where clean>
 //        player=<N> player_found=<n>/<m> other_players_peak=<> old_found=<n>/<m> old_lag_ms=<>
-//        dropouts=<bob's for alice, in the phase> b_live=<0|1> stayed_live=<0|1: at every look, 4 a second>
+//        dropouts=<bob's for alice, in the phase> ontime=<quarters with dropouts, the hosts on time in it
+//        and the one before> b_live=<0|1> stayed_live=<0|1: at every look, 4 a second>
 //        attempts=<n> late_blocks=<blocks the test host called more than 20 ms late> late_ms=<in all>
 //        late_before=<the same, before the phase> process_max_ms=<alice's longest process() call>/<bob's>
+//        fallback_found=<n>/<m: alice's interval copies where bob was back on intervals (stall)> fallback_lag_ms=<>
 //   LIVE recovered b_live=<0|1: live and healthy for 3 s> after_s=<from the stall phase's end> fell_back=<0|1>
-//        missed_ms=<bob's DAW missed>
+//        missed_ms=<bob's DAW missed, in all> trial=<n>
+//   LIVE retry stall fell_back=<0|1> late_blocks=<stall>/<afterstall> ontime=<afterstall>
+//        (the stall, recovered and afterstall again, once)
+//   LIVE toggle off_room_s=<when bob's room went off, after !live off> off_live_s=<when bob's status said
+//        not live> live_while_off=<looks: the room off, alice live> marker_off=<0|1: the marker, room off>
+//        early_live=<looks: live again before bob's interval ended> unhealthy_live=<looks: live, not healthy>
+//        interval_found=<n>/<m: her interval copies from the room off to the interval's end> lag_ms=<>
+//        window_ms=<that time> live_again=<0|1> late_blocks=<n>
 //   LIVE off found=<n>/<m> lag_ms=<median> b_live=<0|1> b_room=<on|off>
 //   chat (bob): ...
 //   DONE
@@ -1339,8 +1350,17 @@ static int live_latency(Host &a, Host &b)
   // `during`'s doing: it runs after each quarter, with the seconds so far, and returns true when
   // it disturbs the next one); the chirps and the intervals' copies are judged where it and the
   // quarters on either side are clean. Too little clean (the test machine busy: like a DAW that
-  // is late, it makes dropouts, and bob goes back to intervals for a while) and the phase is
-  // measured again, up to `attempts` times.
+  // is late, it makes dropouts, and bob goes back to intervals for a while), or dropouts that
+  // the hosts didn't cause (on time in that quarter and the one before: the test then wants an
+  // attempt without them), and the phase is measured again, up to `attempts` times.
+  // Where bob hears alice's intervals (offLagMs, ms after she played; -1: not looked at), a
+  // phase also looks for her chirps there, in the quarters he wasn't live (back on intervals).
+  double offLagMs = -1;
+  struct PhaseResult
+  {
+    int onTime = 0;     // quarters with dropouts the hosts didn't cause
+    int lateBlocks = 0; // the hosts' blocks more than 20 ms late
+  };
   auto phase = [&](const char *name, double seconds, int attempts, std::function<bool(double)> during) {
     for (int attempt = 1; ; attempt ++)
     {
@@ -1354,8 +1374,10 @@ static int live_latency(Host &a, Host &b)
       const long from = b.m_pos;
       std::vector<long> qEnd;  // each quarter's end (bob's position)
       std::vector<char> qBad;  // not clean
-      bool liveWas = live_peer(b, "alice@")["live"] == "1", stayed = liveWas, disturb = false;
+      std::vector<char> qOff;  // bob on intervals at both ends, without late blocks (where offLagMs >= 0)
+      bool liveWas = live_peer(b, "alice@")["live"] == "1", stayed = liveWas, disturb = false, lateWas = false;
       int dropsWas = dropoutsBefore, skipsWas = skipsBefore;
+      int onTime = 0; // quarters with new dropouts, the hosts on time in it and in the one before
       for (double done = 0; done < seconds - 1e-9; done += 0.25)
       {
         both(std::min(0.25, seconds - done), true);
@@ -1364,6 +1386,10 @@ static int live_latency(Host &a, Host &b)
         const int dropsNow = atoi(lq["dropouts"].c_str()), skipsNow = a.m_skips + b.m_skips;
         qEnd.push_back(b.m_pos);
         qBad.push_back(!liveWas || !liveNow || dropsNow != dropsWas || skipsNow != skipsWas || disturb);
+        qOff.push_back(offLagMs >= 0 && !liveWas && !liveNow && skipsNow == skipsWas && !disturb);
+        const bool late = skipsNow != skipsWas || disturb;
+        if (dropsNow != dropsWas && !late && !lateWas) onTime++;
+        lateWas = late;
         stayed = stayed && liveNow;
         liveWas = liveNow;
         dropsWas = dropsNow;
@@ -1383,6 +1409,15 @@ static int live_latency(Host &a, Host &b)
           if (qBad[k]) return false;
         return true;
       };
+      // on intervals where it and its neighbours are
+      auto offClean = [&](long pos) {
+        size_t q = 0;
+        while (q < qEnd.size() && qEnd[q] <= pos) q ++;
+        if (q >= qEnd.size()) return false;
+        for (size_t k = q > 0 ? q - 1 : 0; k <= std::min(q + 1, qEnd.size() - 1); k ++)
+          if (!qOff[k]) return false;
+        return true;
+      };
       const long liveAt = srate * 40 / 1000; // where a chirp's live copy is, about
       const Bursts played = bursts;
       int all = 0, cleanChirps = 0;
@@ -1392,10 +1427,11 @@ static int live_latency(Host &a, Host &b)
           all++;
           if (clean(st + liveAt)) cleanChirps++;
         }
-      if (cleanChirps < 0.9 * all && attempt < attempts)
+      if ((cleanChirps < 0.9 * all || onTime > 0) && attempt < attempts)
       {
-        printf("LIVE retry %s clean=%d/%d late_blocks=%d dropouts=%d (the test machine was busy, or bob went back to "
-               "intervals: once more)\n", name, cleanChirps, all, skips, atoi(lp["dropouts"].c_str()) - dropoutsBefore);
+        printf("LIVE retry %s clean=%d/%d late_blocks=%d dropouts=%d ontime=%d (the test machine was busy, bob went back to "
+               "intervals, or he had dropouts on time: once more)\n", name, cleanChirps, all, skips,
+               atoi(lp["dropouts"].c_str()) - dropoutsBefore, onTime);
         fflush(stdout);
         settle();
         continue;
@@ -1405,11 +1441,17 @@ static int live_latency(Host &a, Host &b)
       judged.starts.clear();
       for (long st : played.starts)
         if (clean(st + liveAt)) judged.starts.push_back(st);
-      const std::vector<float> x = b.pluginHeard(), px = b.m_peerHeard;
-      std::vector<float> players[8];
-      for (int p = 0; p < 8; p ++) players[p] = b.m_playersHeard[p];
+      // the recordings, taken rather than copied: a copy of all ten, on the hosts' thread, would
+      // make both late (40 ms after a 20 s phase), and move the delay for a while after it
+      std::vector<float> x, px, players[8];
+      {
+        std::lock_guard<std::mutex> lock(b.m_heardMutex);
+        x.swap(b.m_pluginHeard);
+        px.swap(b.m_peerHeard);
+        for (int p = 0; p < 8; p ++) players[p].swap(b.m_playersHeard[p]);
+      }
       const long heardFrom = b.m_heardFrom;
-      std::vector<Found> f, fo;
+      std::vector<Found> f, fo, fb;
       int checked = 0, heard = 0, playerFound = 0, playerChecked = 0;
       float othersPeak = 0;
       double ein = 0, eout = 0;
@@ -1458,6 +1500,15 @@ static int live_latency(Host &a, Host &b)
             for (float v : players[p]) othersPeak = std::max(othersPeak, fabsf(v));
         }
         fo = find_pattern(px, heardFrom, played, srate, ivMs - 100, 2 * ivMs + 100);
+        if (offLagMs >= 0)
+        {
+          // back on intervals: alice's interval copy, where bob wasn't live
+          Bursts off = played;
+          off.starts.clear();
+          for (long st : played.starts)
+            if (st >= from && offClean(st + (long)(offLagMs * srate / 1000))) off.starts.push_back(st);
+          fb = find_chirps(x, heardFrom, off, srate, offLagMs - 30, offLagMs + 30);
+        }
       });
       if (getenv("NINJAM_E2E_DEBUG"))
       {
@@ -1472,14 +1523,18 @@ static int live_latency(Host &a, Host &b)
       corr = f.empty() ? 0 : corr / f.size();
       printf("LIVE phase %s found=%d/%d clean=%d/%d median_ms=%.1f p95_ms=%.1f min_ms=%.1f max_ms=%.1f mean_corr=%.3f estimate_ms=%s "
              "outside=%.5f interval_copy=%d/%d player=%d player_found=%d/%d other_players_peak=%.5f old_found=%d/%d old_lag_ms=%.1f "
-             "dropouts=%d b_live=%s stayed_live=%d attempts=%d late_blocks=%d late_ms=%.0f late_before=%d/%.0f process_max_ms=%.2f/%.2f\n",
+             "dropouts=%d ontime=%d b_live=%s stayed_live=%d attempts=%d late_blocks=%d late_ms=%.0f late_before=%d/%.0f "
+             "process_max_ms=%.2f/%.2f fallback_found=%d/%d fallback_lag_ms=%.1f\n",
              name, found_count(f), (int)f.size(), cleanChirps, all, lag_percentile(f, 50), lag_percentile(f, 95), lag_percentile(f, 0),
              lag_percentile(f, 100), corr, lp["delay"].c_str(), ein > 0 ? eout / ein : -1.0, heard, checked, player, playerFound,
              playerChecked, othersPeak, found_count(fo), (int)fo.size(), lag_percentile(fo, 50),
-             atoi(lp["dropouts"].c_str()) - dropoutsBefore, lp["live"].c_str(), stayed ? 1 : 0, attempt, skips, skippedMs,
-             skipsBefore, skippedBefore, a.m_maxProcessMs, b.m_maxProcessMs);
+             atoi(lp["dropouts"].c_str()) - dropoutsBefore, onTime, lp["live"].c_str(), stayed ? 1 : 0, attempt, skips, skippedMs,
+             skipsBefore, skippedBefore, a.m_maxProcessMs, b.m_maxProcessMs, found_count(fb), (int)fb.size(), lag_percentile(fb, 50));
       fflush(stdout);
-      return;
+      PhaseResult r;
+      r.onTime = onTime;
+      r.lateBlocks = skips;
+      return r;
     }
   };
   phase("live", 20.0, 3, nullptr);
@@ -1498,39 +1553,130 @@ static int live_latency(Host &a, Host &b)
   until(20.0, [&]() { return live_peer(b, "alice@")["live"] == "1"; });
   both(3.0, false);
 
-  // bob's DAW misses 32 ms once (busy loading something, an xrun), alice's goes on: bob may
-  // go back to intervals for a while (with the dropouts, and as long as his clock filter takes to
-  // settle), and is live again after it. NJClient's intervals are that much later for him from
-  // then on (they go on with the blocks).
-  bool stalled = false;
+  // bob's DAW misses 32 ms once (busy loading something, an xrun), alice's goes on: the glitch
+  // makes a dropout, so bob goes back to intervals for a while (and hears them), and is live
+  // again after it. NJClient's intervals are that much later for him from then on (they go on
+  // with the blocks). Then 10 s more of Live: without dropouts, the delay steady (it isn't if
+  // his Live takes the glitch for a slow clock). It all happens once more where the test
+  // machine got in the way: late blocks, dropouts the hosts didn't cause after the glitch, or
+  // bob not back on intervals after it (he may have been on them already).
   double missedMs = 0;
   auto count = [](const std::string &text, const std::string &what) {
     int n = 0;
     for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) n ++;
     return n;
   };
-  const int fellBackBefore = count(b.command("chatlog"), "alice is back on intervals");
-  phase("stall", 10.0, 1, [&](double at) {
-    if (stalled || at < 2.0) return false;
-    stalled = true;
-    const int blocks = (int)ceil(0.032 * srate / a.m_block);
-    for (int i = 0; i < blocks; i ++) a.block(nullptr, false);
-    b.miss(blocks, true);
-    missedMs += 1000.0 * blocks * a.m_block / srate;
-    return true;
-  });
+  for (int trial = 1; ; trial ++)
   {
-    // live again: live and playing well for 3 s
-    const double t1 = now_seconds();
-    double good = 0;
-    while (good < 3.0 && now_seconds() - t1 < 40.0)
+    settle(); // live, and playing well for a while: the glitch is what sends him back to intervals
+    bool stalled = false;
+    const int fellBackBefore = count(b.command("chatlog"), "alice is back on intervals");
+    const PhaseResult during = phase("stall", 10.0, 1, [&](double at) {
+      if (stalled || at < 2.0) return false;
+      stalled = true;
+      const int blocks = (int)ceil(0.032 * srate / a.m_block);
+      for (int i = 0; i < blocks; i ++) a.block(nullptr, false);
+      b.miss(blocks, true);
+      missedMs += 1000.0 * blocks * a.m_block / srate;
+      offLagMs = ivLag + missedMs; // where alice's intervals are for bob from now on
+      return true;
+    });
+    offLagMs = -1;
+    bool fellBack = false;
     {
-      both(0.25, false);
-      auto lq = live_peer(b, "alice@");
-      good = lq["live"] == "1" && lq["healthy"] == "1" ? good + 0.25 : 0;
+      // live again: live and playing well for 3 s
+      const double t1 = now_seconds();
+      double good = 0;
+      while (good < 3.0 && now_seconds() - t1 < 40.0)
+      {
+        both(0.25, false);
+        auto lq = live_peer(b, "alice@");
+        good = lq["live"] == "1" && lq["healthy"] == "1" ? good + 0.25 : 0;
+      }
+      fellBack = count(b.command("chatlog"), "alice is back on intervals") > fellBackBefore;
+      printf("LIVE recovered b_live=%d after_s=%.1f fell_back=%d missed_ms=%.1f trial=%d\n", good >= 3.0 ? 1 : 0,
+             now_seconds() - t1 - good, fellBack ? 1 : 0, missedMs, trial);
     }
-    printf("LIVE recovered b_live=%d after_s=%.1f fell_back=%d missed_ms=%.1f\n", good >= 3.0 ? 1 : 0, now_seconds() - t1 - good,
-           count(b.command("chatlog"), "alice is back on intervals") > fellBackBefore ? 1 : 0, missedMs);
+    const PhaseResult after = phase("afterstall", 10.0, 1, nullptr);
+    if ((fellBack && !during.lateBlocks && !after.onTime && !after.lateBlocks) || trial == 2) break;
+    printf("LIVE retry stall fell_back=%d late_blocks=%d/%d ontime=%d (the test machine got in the way: the glitch "
+           "once more)\n", fellBack ? 1 : 0, during.lateBlocks, after.lateBlocks, after.onTime);
+    fflush(stdout);
+  }
+
+  // The room's Live off and on again within one of bob's intervals (alice types !live off, and
+  // !live on 0.4 s later): bob hears her intervals at once and on to that interval's end,
+  // without a gap; live again only from an interval's start, once her stream (started again)
+  // plays well
+  {
+    until(30.0, [&]() {
+      auto lq = live_peer(b, "alice@");
+      return lq["live"] == "1" && lq["healthy"] == "1";
+    });
+    // just after one of bob's intervals starts
+    until(2 * interval + 1.0, [&]() {
+      const int p = atoi(b.status()["pos"].c_str());
+      return p > 0 && p < ilen / 10;
+    });
+    const int skips0 = a.m_skips + b.m_skips;
+    a.clearHeard();
+    b.clearHeard();
+    const long offAt = b.m_pos;
+    const double tOff = now_seconds();
+    a.command("live off");
+    double offRoomS = -1, offLiveS = -1;
+    int liveWhileOff = 0;
+    while (now_seconds() - tOff < 0.4)
+    {
+      both(0.05, true);
+      const std::string st = b.command("live status");
+      const bool roomOff = parse_status(st.substr(0, st.find('\n')))["live"] == "off"; // (one look at both)
+      const bool live = live_peer_in(st, "alice@")["live"] == "1";
+      if (roomOff && offRoomS < 0) offRoomS = now_seconds() - tOff;
+      if (!live && offLiveS < 0) offLiveS = now_seconds() - tOff;
+      if (roomOff && live) liveWhileOff++;
+    }
+    const bool markerOff = contains(b.command("users"), "main \xc2\xb7 live");
+    a.command("live on");
+    const double tOn = now_seconds();
+    // until bob's interval ends (his position goes back), and he hears alice live again
+    int lastPos = atoi(b.status()["pos"].c_str()), earlyLive = 0, unhealthyLive = 0;
+    long boundaryAt = -1;
+    bool liveAgain = false;
+    while (now_seconds() - tOn < 2 * interval + 10.0 && !(liveAgain && boundaryAt >= 0))
+    {
+      both(0.05, true);
+      auto lq = live_peer(b, "alice@");
+      const int pos = atoi(b.status()["pos"].c_str()); // (a look after that one)
+      if (boundaryAt < 0 && pos < lastPos) boundaryAt = b.m_pos - pos;
+      lastPos = pos;
+      if (lq["live"] == "1")
+      {
+        if (boundaryAt < 0) earlyLive++;
+        if (lq["healthy"] != "1") unhealthyLive++;
+        liveAgain = true;
+      }
+    }
+    // alice's intervals' copies, from 0.1 s after bob's room went off to 0.1 s before the boundary
+    std::vector<float> x;
+    {
+      std::lock_guard<std::mutex> lock(b.m_heardMutex);
+      x.swap(b.m_pluginHeard);
+    }
+    const long heardFrom = b.m_heardFrom, lag = (long)((ivLag + missedMs) * srate / 1000);
+    const long winFrom = offAt + (long)((offRoomS >= 0 ? offRoomS : 0.4) * srate) + srate / 10;
+    const long winTo = (boundaryAt >= 0 ? boundaryAt : b.m_pos) - srate / 10;
+    Bursts copies = bursts;
+    copies.starts.clear();
+    for (long st : bursts.starts)
+      if (st + lag >= winFrom && st + lag + (long)bursts.chirp.size() <= winTo) copies.starts.push_back(st);
+    std::vector<Found> fc;
+    meanwhile([&]() { fc = find_chirps(x, heardFrom, copies, srate, ivLag + missedMs - 30, ivLag + missedMs + 30); });
+    printf("LIVE toggle off_room_s=%.2f off_live_s=%.2f live_while_off=%d marker_off=%d early_live=%d unhealthy_live=%d "
+           "interval_found=%d/%d lag_ms=%.1f window_ms=%.0f live_again=%d late_blocks=%d\n", offRoomS, offLiveS, liveWhileOff,
+           markerOff ? 1 : 0, earlyLive, unhealthyLive, found_count(fc), (int)fc.size(), lag_percentile(fc, 50),
+           (winTo - winFrom) * 1000.0 / srate, liveAgain ? 1 : 0, a.m_skips + b.m_skips - skips0);
+    fflush(stdout);
   }
 
   // Live off: bob hears alice's intervals at once
