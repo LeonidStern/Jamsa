@@ -427,12 +427,77 @@ static void test_frames()
   for (double r : rms) CHECK(sounds_right(r));
 }
 
+// One block with a sequence far ahead of the stream (a bit flipped in it, a
+// peer's forged packet) was an overrun: the sink threw its buffer away and
+// took the block for the newest, so every real block after it was
+// "outdated" until buffering gave up after four times the latency, with an
+// underrun. Such a block is now dropped unless the next new block follows
+// it, as when a stream really jumps: then the stream moves, and back.
+static void test_sequence_jump()
+{
+  live_session ls;
+  session &s = ls.s;
+  // each sink's stream (not in broadcast mode: each has its own stream ID)
+  stream_watch watch[4];
+  s.filter = [&](datagram &d) {
+    if (d.to >= 1 && d.to <= 3) watch[d.to].observe(d);
+    return true;
+  };
+  s.run(0.1);
+  int overruns[4], underruns[4];
+  for (int k = 1; k <= 3; k++)
+  {
+    overruns[k] = s.nodes[k].events[kAooEventBufferOverrun];
+    underruns[k] = s.nodes[k].events[kAooEventBufferUnderrun];
+  }
+  // one at a time (the buffers hold 20 blocks)
+  const int32_t jumps[] = { 1 << 24, 1 << 10, 40 };
+  for (int32_t jump : jumps)
+  {
+    for (int k = 1; k <= 3; k++)
+    {
+      const int32_t seq = watch[k].seq + jump;
+      const bytes d = binary_data(simple_block(watch[k].stream_id, seq, bytes(40, 0x44)));
+      CHECK_EQ(s.inject(0, k, d.data(), d.size()), kAooOk);
+    }
+    s.run(0.1);
+  }
+  s.run(0.5);
+  for (int k = 1; k <= 3; k++)
+  {
+    CHECK_EQ(s.nodes[k].events[kAooEventBufferOverrun], overruns[k]);
+    CHECK_EQ(s.nodes[k].events[kAooEventBufferUnderrun], underruns[k]);
+  }
+  // two blocks in a row: the stream moves there, then back with the next
+  // two real blocks, without waiting for buffering to give up
+  for (int i = 0; i < 2; i++)
+  {
+    for (int k = 1; k <= 3; k++)
+    {
+      const int32_t seq = watch[k].seq + (1 << 20) + i;
+      const bytes d = binary_data(simple_block(watch[k].stream_id, seq, bytes(40, 0x44)));
+      CHECK_EQ(s.inject(0, k, d.data(), d.size()), kAooOk);
+    }
+  }
+  s.run(0.5);
+  for (int k = 1; k <= 3; k++)
+  {
+    CHECK_EQ(s.nodes[k].events[kAooEventBufferOverrun], overruns[k] + 2);
+    CHECK_EQ(s.nodes[k].events[kAooEventBufferUnderrun], underruns[k]);
+  }
+  const std::vector<double> rms = output_rms(s, 1.0);
+  CHECK(s.outputs_finite);
+  for (double r : rms) CHECK(sounds_right(r));
+}
+
 // A /start with seq_start 0, then /data with a sequence far ahead: the gap
 // to the newest block (-1 after the /start) was taken in 32 bits, so
 // INT32_MAX overflowed to a negative count, the overrun check let it
 // through, and the sink filled the gap with 2^31 placeholder blocks on the
 // audio thread (6 s per datagram in a release build; an assert in a debug
-// one). The fuzzer doesn't find this pair by itself.
+// one). The fuzzer doesn't find this pair by itself. (A block that far
+// ahead now moves the stream only when the next one follows it, see
+// sequence_jump, so each comes after the block before it.)
 static void test_sequence_gap()
 {
   live_session ls;
@@ -449,15 +514,18 @@ static void test_sequence_gap()
       st.seq_start = 0;
       const bytes b = start_message(st);
       CHECK_EQ(s.inject(0, k, b.data(), b.size()), kAooOk);
-      const bytes d = binary_data(simple_block(stream, seq, bytes(40, 0x44)));
-      CHECK_EQ(s.inject(0, k, d.data(), d.size()), kAooOk);
+      for (int32_t q : { seq - 1, seq })
+      {
+        const bytes d = binary_data(simple_block(stream, q, bytes(40, 0x44)));
+        CHECK_EQ(s.inject(0, k, d.data(), d.size()), kAooOk);
+      }
     }
     stream++;
     // the sinks' next process() takes the block
     const auto t0 = std::chrono::steady_clock::now();
     s.run(0.01);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    printf("  /data %d after /start 0: 10 ms of the session took %.2f ms\n", (int)seq, ms);
+    printf("  /data %d and the one before, after /start 0: 10 ms of the session took %.2f ms\n", (int)seq, ms);
     worst = std::max(worst, ms);
   }
   CHECK(worst < 500);
@@ -583,6 +651,100 @@ static void test_start_formats()
 
   // the real stream comes back: its /data asks the source for /start again
   CHECK(s.run_until([&]() { return s.nodes[1].stream_active > active; }, 3.0));
+  const std::vector<double> rms = output_rms(s, 1.0);
+  CHECK(s.outputs_finite);
+  for (double r : rms) CHECK(sounds_right(r));
+}
+
+// A /start of the stream a sink plays, replayed with a bit flipped in its
+// codec delay or its sample offset (after a /start of another stream, so
+// that it isn't redundant; live_unit_test's glue_fuzz): both put off the
+// stream's "active" event, by up to 10 s each, so the sink played for that
+// long without saying so. Now by 100 ms at most.
+static void test_start_delays()
+{
+  live_session ls;
+  session &s = ls.s;
+  // each sink's stream (not in broadcast mode: each has its own stream ID)
+  stream_watch watch[4];
+  s.filter = [&](datagram &d) {
+    if (d.to >= 1 && d.to <= 3) watch[d.to].observe(d);
+    return true;
+  };
+  s.run(0.1);
+  int active[4];
+  for (int k = 1; k <= 3; k++)
+  {
+    active[k] = s.nodes[k].stream_active;
+    start_fields other;
+    other.stream_id = 8000 + k;
+    bytes b = start_message(other);
+    CHECK_EQ(s.inject(0, k, b.data(), b.size()), kAooOk);
+    start_fields st;
+    st.stream_id = watch[k].stream_id;
+    st.seq_start = watch[k].seq;
+    if (k != 2) st.offset = 1 << 27;
+    if (k != 1) st.codec_delay = 120 | (1 << 26);
+    b = start_message(st);
+    CHECK_EQ(s.inject(0, k, b.data(), b.size()), kAooOk);
+  }
+  // buffering (50 ms), then active
+  CHECK(s.run_until([&]() {
+    for (int k = 1; k <= 3; k++)
+      if (s.nodes[k].stream_active == active[k]) return false;
+    return true;
+  }, 0.5));
+  const std::vector<double> rms = output_rms(s, 1.0);
+  CHECK(s.outputs_finite);
+  for (double r : rms) CHECK(sounds_right(r));
+}
+
+static bytes hex_bytes(const char *hex)
+{
+  bytes b;
+  for (; hex[0] && hex[1]; hex += 2) b.push_back((AooByte)strtoul(std::string(hex, 2).c_str(), nullptr, 16));
+  return b;
+}
+
+// Opus' float decoder doesn't saturate: an Opus packet of the test tone's
+// stream with a few bits flipped (from live_unit_test's glue_fuzz) decodes
+// into samples of 65000, and the concealment and the next packets carry
+// that on. The sinks played it as it was; now what they decode is clamped
+// to +/-2.
+static void test_loud_packet()
+{
+  live_session ls;
+  session &s = ls.s;
+  const bytes loud = hex_bytes(
+    "ecb2f9ed07be6f683cc9173cfceb2eecf3d6e1b1d43dac93d619a7e13cc884c70b32a4ec0958666adecad7dcc9"
+    "2dae1df6ccc824074997819a60ab76d018bdc310adf7235c0a8555a3d609e7bafd0bdfb9");
+  CHECK_EQ(loud.size(), (size_t)81);
+  // the real stream's /data would ask for its /start again meanwhile
+  s.filter = [](datagram &d) { return d.from != 0; };
+  for (int k = 1; k <= 3; k++)
+  {
+    start_fields st;
+    st.stream_id = 9000;
+    const bytes b = start_message(st);
+    CHECK_EQ(s.inject(0, k, b.data(), b.size()), kAooOk);
+  }
+  s.peak = 0;
+  for (int32_t seq = 0; seq < 40; seq++)
+  {
+    const bytes d = binary_data(simple_block(9000, seq, loud));
+    for (int k = 1; k <= 3; k++) CHECK_EQ(s.inject(0, k, d.data(), d.size()), kAooOk);
+    s.run(0.005);
+  }
+  s.run(0.2);
+  printf("  a loud packet, 40 times: peak %.3f\n", s.peak);
+  CHECK(s.outputs_finite);
+  // clamped, and played (the resampling sinks interpolate a little beyond)
+  CHECK(s.peak > 1.9 && s.peak < 2.6);
+
+  // the real stream comes back: its /data asks the source for /start again
+  s.filter = [&ls](datagram &d) { ls.watch.observe(d); return true; };
+  CHECK(run_until_all_active(s, 3.0));
+  s.run(0.5);
   const std::vector<double> rms = output_rms(s, 1.0);
   CHECK(s.outputs_finite);
   for (double r : rms) CHECK(sounds_right(r));
@@ -1154,9 +1316,12 @@ int main(int argc, char **argv)
     { "packet_size", test_packet_size },
     { "data_fields", test_data_fields },
     { "frames", test_frames },
+    { "sequence_jump", test_sequence_jump },
     { "sequence_gap", test_sequence_gap },
     { "stream_messages", test_stream_messages },
     { "start_formats", test_start_formats },
+    { "start_delays", test_start_delays },
+    { "loud_packet", test_loud_packet },
     { "source_requests", test_source_requests },
     { "reply_budget", test_reply_budget },
   };

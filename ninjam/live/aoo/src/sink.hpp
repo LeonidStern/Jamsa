@@ -255,6 +255,9 @@ private:
     int32_t source_codec_delay_ = 0;
     int32_t sink_codec_delay_ = 0;
     int32_t buffer_latency_ = 0;
+    // Jamsa: a block far from the stream, until the next one confirms it
+    // (see add_packet()); -1 for none
+    int32_t far_sequence_ = -1;
 
     std::atomic<source_state> state_{source_state::idle};
     rt_metadata_ptr metadata_;

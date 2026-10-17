@@ -103,27 +103,32 @@ Tests (`tests/`):
   room of ten under the server's rate limit (each player hears all eight
   it has slots for, about 34 datagrams/s to single players), the
   filter in front of AOO verdict by verdict, fuzzed packets into a playing
-  Core, the room's Live flag off and on, `send` off (no stream at all)
-  and on, an exception out of AOO's `send()`, a host that stops calling
-  for a second, a sender's host that stops for 150 ms three times (with a
-  200 ms jitter buffer), a listener's host that misses 32 ms (the delay
-  steady after it, without dropouts), hosts that are 30 ms late and catch
-  up, or call in bursts (no gap told), a listener's host that stops for a minute while
-  seven others play, and bitrate and frame size changes. About 25 s.
+  Core (16 seeds; `LIVE_FUZZ_SEED=n` runs seed n alone) and, made on
+  purpose, the three kinds that broke its sinks, the room's Live flag off
+  and on, `send` off (no stream at all) and on, an exception out of AOO's
+  `send()`, a host that stops calling for a second, a sender's host that
+  stops for 150 ms three times (with a 200 ms jitter buffer), a listener's
+  host that misses 32 ms (the delay steady after it, without dropouts),
+  hosts that are 30 ms late and catch up, or call in bursts (no gap told),
+  a listener's host that stops for a minute while seven others play, and
+  bitrate and frame size changes. About 35 s.
 - `live_client_test`: the `Client` on real sockets: four players with
-  audio threads paced by the clock and a minimal server on the loopback
-  interface (HELLO / HELLO_ACK with the address cookie, DATA copied to the
-  room). Binding within a round trip, everybody hears everybody (tones
-  and bursts, at 44.1 and 48 kHz, with clocks 100 ppm off), the delay
-  against the estimate, 5% lost copies resent, a forged HELLO_ACK and
-  garbage ignored, the room's flag off and on, a player who leaves and one
-  who takes the slot, stopping, and a restart (after `update()` with the
-  UDP port closed, and `start()` while running) that keeps the players
-  set before. About 25 s. With `-fsanitize=thread`, run
-  it with `TSAN_OPTIONS=suppressions=ninjam/live/tests/tsan.supp`: the
-  free list of AOO's RT memory pool reads a node another thread may be
-  reusing, on purpose (see the file); nothing else is suppressed. The
-  timing checks only print there.
+  audio threads paced by the clock (scheduled as an audio interface's
+  thread where the system lets them: the time-constraint policy on macOS,
+  `SCHED_FIFO` on Linux, the time-critical priority on Windows) and a
+  minimal server on the loopback interface (HELLO / HELLO_ACK with the
+  address cookie, DATA copied to the room). Binding within a round trip,
+  everybody hears everybody (tones and bursts, at 44.1 and 48 kHz, with
+  clocks 100 ppm off), the delay against the estimate, 5% lost copies
+  resent, a forged HELLO_ACK and garbage ignored, the room's flag off and
+  on, a player who leaves and one who takes the slot, stopping, and a
+  restart (after `update()` with the UDP port closed, and `start()` while
+  running) that keeps the players set before. About 25 s. With
+  `-fsanitize=thread`, run it with
+  `TSAN_OPTIONS=suppressions=ninjam/live/tests/tsan.supp`: the free list
+  of AOO's RT memory pool reads a node another thread may be reusing, on
+  purpose (see the file); nothing else is suppressed. The timing checks
+  only print there.
 
 ## The glue
 
@@ -446,6 +451,17 @@ ones marked "(fuzzer)" were found by it.
   negative count, which passed the overrun check, and the gap was filled
   with 2^31 placeholder blocks on the audio thread (6 s per datagram in a
   release build, an assert in a debug one). It is now 64 bits.
+- Sink jitter buffer, `add_packet()` (`live_unit_test`'s `glue_fuzz`): a
+  block further from the newest one than the buffer holds, ahead or behind,
+  moves the stream there only when the next new block follows it. One such
+  block (a bit flipped in its sequence number, or a player's forged packet)
+  was an overrun that threw the buffer away, and as the newest block it
+  made every real block after it "outdated", so the buffer could not fill
+  until buffering gave up after four times the latency, with an underrun.
+  For one packet: two dropouts, a gap of about 0.1 s in that player's
+  stream (0.8 s with a 200 ms jitter buffer), and the slot unhealthy for a
+  second more; a few such packets kept it unhealthy for the 2 s after the
+  last one. A stream that really jumps moves one block later.
 - `data_frame_storage::add_frame` (fuzzer): took `&nullptr->header`
   (undefined; blocks of more than 6 frames).
 - Sample rates: one far from the nominal rate (more than 10 %) is replaced
@@ -459,10 +475,23 @@ ones marked "(fuzzer)" were found by it.
   forgets its format ID: a good format, a bad one, then the good one's ID
   again ran with no decoder (a null pointer dereference). Latency, codec
   delay and sample offset are clamped to 0..10 seconds (negative ones, and
-  sums that overflowed once resampled (fuzzer)).
+  sums that overflowed once resampled (fuzzer)), and the codec delay and
+  the offset to 100 ms (`live_unit_test`'s `glue_fuzz`): both put off the
+  stream's "active" event, so a bit flipped in either, in a replayed
+  `/start` of the stream playing, kept the slot unhealthy for up to 20 s
+  while it played. A codec delays by a few ms, and our source starts its
+  streams at offset 0.
 - Decoding: a packet of another frame size decodes into fewer samples; the
   rest of the buffer was stack garbage (an assert in debug builds only). It
   is now zero filled, like a block that fails to decode.
+- Decoding (`live_unit_test`'s `glue_fuzz`): Opus' float decoder doesn't
+  saturate (its fixed-point one does, and its 16-bit API clamps to +/-2
+  before its soft clip), so an Opus packet with a few bits flipped decodes
+  into bands of any energy: samples of 4 to 65000, which the concealment
+  and the next packets carry on for up to 100 ms, into the host's mix.
+  `codec/opus.cpp` now clamps what it decodes to +/-2 (+6 dBFS), as the
+  16-bit API does, so a real stream hotter than that (Opus' encoder takes
+  it) is clipped too; a NaN, which Opus shouldn't give, would become -2.
 - Stream messages: their headers were read without a bound; a message of
   type `0xFFFF` (the sink's own stream time type) was later read as a time
   stamp it didn't carry; a sink without a message handler called a null

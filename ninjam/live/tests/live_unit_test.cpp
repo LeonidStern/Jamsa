@@ -21,14 +21,16 @@
   - the glue (livecore.h), with players on a virtual network through a
     server (live_sim.h): the datagrams, a room of four, how late they hear
     each other, loss (resent or concealed), sample rates, clock drift over
-    five minutes, slot reuse, the filter in front of AOO, fuzzed packets,
-    the room's Live flag, a host that stops calling, bitrate and frame
-    changes. live_client_test runs the Client on real sockets.
+    five minutes, slot reuse, the filter in front of AOO, fuzzed packets
+    (and the kinds that broke the sinks, made on purpose), the room's Live
+    flag, a host that stops calling, bitrate and frame changes.
+    live_client_test runs the Client on real sockets.
 
   Run with a test name to run only the tests whose names start with it.
 
 */
 
+#include "binmsg.hpp"
 #include "detail.hpp" // aoo::find_codec()
 
 #include "live_harness.h"
@@ -39,6 +41,7 @@
 #include "osc/OscOutboundPacketStream.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
@@ -1394,10 +1397,9 @@ static void test_glue_prefilter()
 
 // Mangled and random packets into a player that hears two others: nothing
 // breaks, and it still hears them.
-static void test_glue_fuzz()
+static void glue_fuzz_run(unsigned seed)
 {
-  if (!selected("glue_fuzz")) return;
-  net n(23);
+  net n(23 + seed);
   n.add(1);
   n.add(2);
   n.add(3);
@@ -1410,7 +1412,7 @@ static void test_glue_fuzz()
   n.start_all();
   n.run(1.5);
   CHECK(seen.size() > 500);
-  std::mt19937 rng(29);
+  std::mt19937 rng(29 + seed);
   long fed = 0;
   start_recording(n);
   for (int round = 0; round < 300; round++)
@@ -1444,8 +1446,8 @@ static void test_glue_fuzz()
     }
   }
   const Core::Totals &t = l.core->totals();
-  printf("  fed %ld: accepted %llu (with the real ones), bad size %llu, no slot %llu, filtered %llu, bad format %llu\n",
-         fed, (unsigned long long)t.accepted.load(), (unsigned long long)t.badSize.load(),
+  printf("  seed %u, fed %ld: accepted %llu (with the real ones), bad size %llu, no slot %llu, filtered %llu,"
+         " bad format %llu\n", seed, fed, (unsigned long long)t.accepted.load(), (unsigned long long)t.badSize.load(),
          (unsigned long long)t.noSlot.load(), (unsigned long long)t.filtered.load(),
          (unsigned long long)t.badFormat.load());
   for (int k = 0; k < 2; k++) CHECK(all_finite(l.rec[k]));
@@ -1456,6 +1458,146 @@ static void test_glue_fuzz()
   start_recording(n);
   n.run(1.0);
   CHECK(heard_snr(l, *n.find(2), 0.9) > 20);
+  CHECK(heard_snr(l, *n.find(3), 0.9) > 20);
+}
+
+// The packets it mutates are captured ones, whose bytes depend on the
+// platform's floating point (Opus' encoder, the sample rate in each
+// header) and on the stream IDs (random in each run), so one seed is a
+// different input on each platform: it runs sixteen, or the one in
+// LIVE_FUZZ_SEED.
+static void test_glue_fuzz()
+{
+  if (!selected("glue_fuzz")) return;
+  const char *seed_env = getenv("LIVE_FUZZ_SEED"); // to try other inputs
+  if (seed_env) glue_fuzz_run((unsigned)strtoul(seed_env, nullptr, 10));
+  else for (unsigned seed = 0; seed < 16; seed++) glue_fuzz_run(seed);
+}
+
+// The kinds of packet behind glue_fuzz's failures, made on purpose from a
+// player's real datagrams. A copy of a /data with a bit flipped high in its
+// sequence number: the sink took it for the stream's newest block, so the
+// real ones were "outdated" until buffering gave up, with an underrun (two
+// dropouts, and the slot unhealthy for a second or more). Blocks whose Opus
+// bits are mangled in place of the real ones: Opus' float decoder made
+// samples of up to 65000 of them, into the host's mix. Neither costs the
+// slot its health now, and what it plays stays within +/-2 (a little more
+// after resampling). And the player's first /start, replayed after one of
+// another stream with a bit flipped in its sample offset: the stream
+// restarts, but its "active" event came 10 s late, and the slot stayed
+// unhealthy while it played; now it is healthy again a second later.
+static void test_glue_bad_blocks()
+{
+  if (!selected("glue_bad_blocks")) return;
+  // an Opus packet of the tone's stream (48 kHz stereo, 5 ms) with a few
+  // bits flipped, from glue_fuzz (a fresh decoder makes a peak of 64624)
+  static const uint8_t mangled[81] = {
+    0xec, 0xb2, 0xf9, 0xed, 0x07, 0xbe, 0x6f, 0x68, 0x3c, 0xc9, 0x17, 0x3c,
+    0xfc, 0xeb, 0x2e, 0xec, 0xf3, 0xd6, 0xe1, 0xb1, 0xd4, 0x3d, 0xac, 0x93,
+    0xd6, 0x19, 0xa7, 0xe1, 0x3c, 0xc8, 0x84, 0xc7, 0x0b, 0x32, 0xa4, 0xec,
+    0x09, 0x58, 0x66, 0x6a, 0xde, 0xca, 0xd7, 0xdc, 0xc9, 0x2d, 0xae, 0x1d,
+    0xf6, 0xcc, 0xc8, 0x24, 0x07, 0x49, 0x97, 0x81, 0x9a, 0x60, 0xab, 0x76,
+    0xd0, 0x18, 0xbd, 0xc3, 0x10, 0xad, 0xf7, 0x23, 0x5c, 0x0a, 0x85, 0x55,
+    0xa3, 0xd6, 0x09, 0xe7, 0xba, 0xfd, 0x0b, 0xdf, 0xb9 };
+  net n(37);
+  n.add(1);
+  n.add(2);
+  n.add(3);
+  player &l = *n.find(1);
+  // the copies to player 1 that the test changes: the next 'loud' blocks of
+  // player 2 come with the mangled packet instead of theirs, and the next
+  // one of player 3 has a twin 2^24 blocks ahead (from those players: the
+  // server stamps the sender)
+  int loud = 0;
+  bool ahead = false;
+  std::vector<uint8_t> starts[4]; // each player's first /start to player 1
+  n.copy_filter = [&](uint32_t from, uint32_t to, const uint8_t *p, size_t size) {
+    std::vector<uint8_t> b(p, p + size);
+    static const char start[] = "/aoo/sink/1/start";
+    if (to == 1 && from < 4 && starts[from].empty() && size > sizeof(start) && !memcmp(p, start, sizeof(start)))
+      starts[from] = b;
+    const int h = aoo::binmsg_headersize(b.data(), (AooSize)b.size());
+    if (to != 1 || !is_data(b) || h <= 0 || b.size() < (size_t)h + 12 || (b[h + 9] & kAooBinMsgDataFrames))
+      return true;
+    if (from == 2 && loud > 0)
+    {
+      loud--;
+      // the payload is last
+      const uint16_t payload = aoo::from_bytes<uint16_t>(b.data() + h + 10);
+      if (payload > b.size() - h - 12) return true;
+      b.resize(b.size() - payload);
+      b.insert(b.end(), mangled, mangled + sizeof(mangled));
+      aoo::to_bytes<uint16_t>((uint16_t)sizeof(mangled), b.data() + h + 10);
+      l.core->handleData(2, b.data(), b.size());
+      return false;
+    }
+    if (from == 3 && ahead)
+    {
+      ahead = false;
+      std::vector<uint8_t> twin = b;
+      aoo::to_bytes<int32_t>(aoo::from_bytes<int32_t>(b.data() + h + 4) + (1 << 24), twin.data() + h + 4);
+      l.core->handleData(3, twin.data(), twin.size());
+    }
+    return true;
+  };
+  n.start_all();
+  n.run(1.5);
+  const int s2 = l.core->slotOf(2), s3 = l.core->slotOf(3);
+  CHECK(l.core->slotHealthy(s2));
+  CHECK(l.core->slotHealthy(s3));
+  const std::vector<PeerStats> st0 = l.core->stats(n.now);
+  const PeerStats *p2 = stats_of(st0, 2), *p3 = stats_of(st0, 3);
+  CHECK(p2 && p3);
+  if (!p2 || !p3) return;
+  const int dropouts2 = p2->underruns + p2->overruns + p2->dropped;
+  const int dropouts3 = p3->underruns + p3->overruns + p3->dropped;
+
+  start_recording(n);
+  loud = 20; // 100 ms
+  ahead = true;
+  bool healthy = true;
+  const double end = n.now + 1.5;
+  while (n.now < end)
+  {
+    n.step();
+    healthy = healthy && l.core->slotHealthy(s2) && l.core->slotHealthy(s3);
+  }
+  CHECK_EQ(loud, 0);
+  CHECK(!ahead);
+  float peak = 0;
+  for (float v : l.rec[s2]) peak = std::max(peak, fabsf(v));
+  printf("  20 mangled blocks: peak %.3f; a block 2^24 ahead: healthy throughout %d\n", peak, (int)healthy);
+  CHECK(all_finite(l.rec[s2]));
+  CHECK(all_finite(l.rec[s3]));
+  // played (not dropped), and clamped
+  CHECK(peak > 1.9 && peak < 2.6);
+  CHECK(healthy);
+  const std::vector<PeerStats> st1 = l.core->stats(n.now);
+  p2 = stats_of(st1, 2);
+  p3 = stats_of(st1, 3);
+  CHECK(p2 && p3);
+  if (!p2 || !p3) return;
+  CHECK_EQ(p2->underruns + p2->overruns + p2->dropped, dropouts2);
+  CHECK_EQ(p3->underruns + p3->overruns + p3->dropped, dropouts3);
+  start_recording(n);
+  n.run(1.0);
+  CHECK(heard_snr(l, *n.find(2), 0.9) > 20);
+  CHECK(heard_snr(l, *n.find(3), 0.9) > 20);
+
+  // from player 3 (a /start of another stream first, else the replay is
+  // redundant): the offset is the last argument, big-endian; bit 27 makes
+  // it 2^27 samples
+  CHECK(!starts[2].empty() && !starts[3].empty());
+  if (starts[2].empty() || starts[3].empty()) return;
+  std::vector<uint8_t> replay = starts[3];
+  replay[replay.size() - 4] ^= 0x08;
+  CHECK_EQ(l.core->handleData(3, starts[2].data(), starts[2].size()), Core::kAccepted);
+  CHECK_EQ(l.core->handleData(3, replay.data(), replay.size()), Core::kAccepted);
+  n.run(0.1);
+  CHECK(!l.core->slotHealthy(s3));
+  CHECK(n.run_until([&] { return l.core->slotHealthy(s3); }, 1.5));
+  start_recording(n);
+  n.run(1.0);
   CHECK(heard_snr(l, *n.find(3), 0.9) > 20);
 }
 
@@ -1903,6 +2045,7 @@ int main(int argc, char **argv)
   test_glue_room_of_ten();
   test_glue_prefilter();
   test_glue_fuzz();
+  test_glue_bad_blocks();
   test_glue_room_off();
   test_glue_send_off();
   test_glue_send_throws();

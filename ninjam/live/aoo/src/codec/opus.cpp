@@ -9,6 +9,7 @@
 
 #include "common/utils.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <memory>
@@ -369,8 +370,8 @@ struct Decoder : AooCodec {
     size_t size_ = 0;
     int sampleRate_ = 0;
     int applicationType_ = 0;
-#if AOO_SAMPLE_SIZE == 64
     int numChannels_ = 0;
+#if AOO_SAMPLE_SIZE == 64
     std::vector<float, aoo::allocator<float>> buffer_;
 #endif
 };
@@ -420,8 +421,8 @@ AooError AOO_CALL Decoder_setup(AooCodec *c, AooFormat *f) {
     dec->size_ = size;
     dec->sampleRate_ = fmt->header.sampleRate;
     dec->applicationType_ = fmt->applicationType;
-#if AOO_SAMPLE_SIZE == 64
     dec->numChannels_ = nchannels;
+#if AOO_SAMPLE_SIZE == 64
     dec->buffer_.resize(nchannels * fmt->header.blockSize);
 #endif
 
@@ -469,6 +470,16 @@ AooError AOO_CALL Decoder_decode(
         d->state_, (const unsigned char *)inData, size, outSamples, *frameSize, 0);
 #endif
     if (result > 0){
+        // Jamsa: Opus' float decoder doesn't saturate (its fixed-point one
+        // does, and its 16-bit API clamps to +/-2 before its soft clip): a
+        // packet with flipped bits decodes into bands of any energy, samples
+        // of 4 to 65000, and the concealment and the next packets carry that
+        // on for up to 100 ms. Clamp to +/-2 (+6 dBFS) as the 16-bit API
+        // does. (In this order a NaN becomes -2.)
+        auto n = result * d->numChannels_;
+        for (int32_t i = 0; i < n; ++i) {
+            outSamples[i] = std::min<AooSample>(2, std::max<AooSample>(-2, outSamples[i]));
+        }
         *frameSize = result;
         return kAooOk;
     } else {

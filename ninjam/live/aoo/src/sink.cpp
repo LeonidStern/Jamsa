@@ -1282,6 +1282,7 @@ void source_desc::update(const Sink& s){
         underrun_ = false;
         stopped_ = false;
         did_update_ = true;
+        far_sequence_ = -1;
         buffer_latency_ = 0; // force latency event
         dropped_blocks_.store(0);
 
@@ -1483,8 +1484,15 @@ AooError source_desc::handle_start(const Sink& s, int32_t stream_id, int32_t seq
     // 10 seconds would overflow the sums below once resampled
     const int32_t max_delay = format_->sampleRate * 10;
     latency = std::clamp<int32_t>(latency, 0, max_delay);
-    codec_delay = std::clamp<int32_t>(codec_delay, 0, max_delay);
-    offset = std::clamp<int32_t>(offset, 0, max_delay);
+    // Jamsa: the codec delay and the offset also put off the stream's
+    // "active" event (stream_start_), so a bit flipped in either, in a
+    // replayed /start, kept a playing stream "not active" for up to 20 s.
+    // A codec delays by a few ms (Opus: 2.5 to 6.5) and the offset lies in
+    // the source's next block (ours start at 0, in blocks of 64): at most
+    // 100 ms.
+    const int32_t max_start = format_->sampleRate / 10;
+    codec_delay = std::clamp<int32_t>(codec_delay, 0, max_start);
+    offset = std::clamp<int32_t>(offset, 0, max_start);
     source_latency_ = latency * resample;
     source_codec_delay_ = codec_delay * resample;
     sink_latency_ = std::max<int32_t>(0, s.blocksize() - format_->blockSize * resample)
@@ -2210,6 +2218,29 @@ bool source_desc::add_packet(const Sink& s, const net_packet& d,
 
     auto block = jitter_buffer_.find(d.sequence);
     if (!block) {
+        // Jamsa: a block further from the newest one than the jitter buffer
+        // holds moves the stream there only when the next new block follows
+        // it. One such block (a bit flipped in its sequence, a peer's forged
+        // packet) was an overrun that threw the buffer away, and as the
+        // newest block it made every real block after it "outdated", until
+        // buffering gave up with an underrun after four times the latency.
+        // A stream that really jumps moves one block later.
+        if (newest != jitter_buffer::sentinel) {
+            const int64_t jump = (int64_t)d.sequence - newest;
+            const int32_t limit = jitter_buffer_.capacity();
+            if (jump > limit || jump < -limit) {
+                const int64_t step = (int64_t)d.sequence - far_sequence_;
+                if (far_sequence_ < 0 || step <= 0 || step > limit) {
+                    LOG_DEBUG("AooSink: block " << d.sequence << " far from " << newest);
+                    far_sequence_ = d.sequence;
+                    return false;
+                }
+                LOG_INFO("AooSink: stream jumped from " << newest << " to " << d.sequence);
+                handle_overrun(s);
+                // only keep this block, as for any overrun
+                newest = d.sequence - 1;
+            }
+        }
         // add new block
     #if 1
         // can this ever happen!?
@@ -2280,6 +2311,7 @@ bool source_desc::add_packet(const Sink& s, const net_packet& d,
         }
 
         // add new block
+        far_sequence_ = -1;
         block = jitter_buffer_.push(d.sequence);
 
         block->init(d);
