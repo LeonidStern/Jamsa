@@ -151,6 +151,12 @@ endif()
 add_subdirectory(${NINJAM_DIR}/server ${CMAKE_CURRENT_BINARY_DIR}/ninjamsrv EXCLUDE_FROM_ALL)
 
 # ---------------------------------------------------------------------------
+# Live mode: players hear each other in real time, through the server (ninjam/live,
+# a trimmed copy of AOO with the Opus above)
+# ---------------------------------------------------------------------------
+add_subdirectory(${NINJAM_DIR}/live ${CMAKE_CURRENT_BINARY_DIR}/ninjam_live EXCLUDE_FROM_ALL)
+
+# ---------------------------------------------------------------------------
 # The NINJAM client (njclient) with Opus and FLAC, without Vorbis
 # ---------------------------------------------------------------------------
 add_library(ninjam_client STATIC
@@ -168,7 +174,7 @@ add_library(ninjam_client STATIC
 target_compile_features(ninjam_client PUBLIC cxx_std_17)
 target_compile_definitions(ninjam_client PUBLIC NINJAM_OPUS NINJAM_FLAC NINJAM_NO_VORBIS NINJAM_VST3_VERSION="${PROJECT_VERSION}")
 target_include_directories(ninjam_client PUBLIC ${NINJAM_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/source ${CMAKE_BINARY_DIR}/opus-include)
-target_link_libraries(ninjam_client PUBLIC opus ogg FLAC)
+target_link_libraries(ninjam_client PUBLIC opus ogg FLAC ninjam_live)
 set_target_properties(ninjam_client PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(WIN32)
     # njclient only opens files for features the plug-in doesn't use; plain fopen is enough

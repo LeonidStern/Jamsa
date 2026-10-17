@@ -186,6 +186,12 @@ class mpb_server_download_interval_write
 #define CLIENT_CAP_CODEC_FLAC 0x200 // fourcc 'FLAC': FLAC, lossless
 #define CLIENT_CAP_CODECS 0xff00    // bits 8-15 are reserved for codecs
 
+// Bits 16 and up are for features (bit 0 is the license agreement; bits 1-7 are left
+// alone, because other clients have used some of them). There are no server_caps bits
+// for features: a client learns what the server can do from the messages it gets.
+#define CLIENT_CAP_LIVE 0x10000     // Live mode: plays with the room in real time over UDP
+                                    // (see MESSAGE_SERVER_LIVE)
+
 #define NJ_FOURCC(a,b,c,d) ((unsigned int)(a) | ((unsigned int)(b)<<8) | ((unsigned int)(c)<<16) | ((unsigned int)(d)<<24))
 
 // the client_caps bit needed to receive intervals of this type, or 0 if every client gets them (Vorbis, video)
@@ -214,6 +220,108 @@ class mpb_server_codec_mask
 
 
 
+// Live mode. Optional: servers and clients that don't know it ignore it.
+//
+// While a room's Live is on, players whose clients can do it hear each other in real
+// time: each one sends its audio in UDP datagrams to the server it is connected to, and
+// the server forwards them to the other Live players in the room. Intervals keep flowing
+// as before, for everyone else and for archiving.
+//
+// A client that can play Live sets CLIENT_CAP_LIVE in its client_caps. A server with
+// Live sends it MESSAGE_SERVER_LIVE once it has logged in (never in a lobby), and again
+// whenever what it says to that client changes. Other clients never get it.
+//
+// Little-endian. A newer version may make the fixed part longer: a parser reads the
+// fields it knows and finds the list of peers at fixed_len, which runs to the end.
+//
+//   off size
+//   0   u8   version          1
+//   1   u8   fixed_len        32
+//   2   u8   flags            LIVE_FLAG_*
+//   3   u8   reserved, 0
+//   4   u16  udp_port         the server's UDP port; 0 = the port number the client
+//                             connected to over TCP
+//   6   u16  live_kbps        the room's Live Opus bitrate (kbps)
+//   8   u32  peer_id          the client's own id on the server (never 0)
+//   12  u64  key              a secret for this connection, only ever sent to its owner
+//   20  u16  frame_samples    the room's Opus frame size at 48 kHz: 120, 240 or 480
+//   22  u16  max_peers        how many players can play Live in a room
+//   24  u32  reserved, 0
+//   28  u32  reserved, 0
+//   32  the other players in the room who may send, each: u32 peer_id,
+//       u8 peer_flags (LIVE_PEER_*), the user name, NUL-terminated
+//
+// UDP datagrams, little-endian, never longer than 1500 bytes. Client to server:
+//   0   'N' 'L'
+//   2   u8   version          1
+//   3   u8   type             1 = HELLO, 2 = DATA
+//   4   u32  sender_id        the peer_id the client was given
+//   8   u64  key              the key it was given
+//   16  u32  dest_id          DATA: 0 = every other Live player in the room, else one
+//                             player's peer_id. HELLO: 0
+//   20  HELLO: u64 timestamp (any value; the server echoes it), u64 cookie (the latest
+//       one the server sent, see below; 0 for none), then 4 zero bytes, so a HELLO is
+//       40 bytes. DATA: the audio packet, 1 to 1452 bytes, forwarded as is.
+// Server to client:
+//   0   'N' 'L', u8 version 1, u8 type (1 = HELLO_ACK, 2 = DATA)
+//   4   u32  from_id          DATA: the sender's peer_id. HELLO_ACK: 0
+//   8   HELLO_ACK: the 8 timestamp bytes of the HELLO, then the u64 cookie for the
+//       address and port the HELLO came from (24 bytes, less than the HELLO).
+//       DATA: the audio packet.
+// A client sends a HELLO once it gets LIVE_FLAG_UDP_OPEN, and then every 2 seconds,
+// which keeps its router's mapping open. The server sends a player audio only at an
+// address and port from which a HELLO echoed the cookie it sent there (so nobody can
+// have the room's audio sent to an address that isn't theirs): the client keeps the
+// cookie of each HELLO_ACK whose timestamp is that of a HELLO it sent lately, echoes
+// it in its HELLOs, and sends a HELLO at once when the cookie changes, so that a new
+// address (its router may give it another port) counts after one round trip. A cookie
+// works for 30 to 60 seconds. Audio from an address that hasn't echoed a cookie is
+// still forwarded. The server stops sending to a player whose last HELLO with a
+// cookie that worked is 20 seconds old. Datagrams that are malformed, carry the wrong
+// key or come from another address than the player's TCP connection (unless the
+// server's config says LiveStrictAddress no) are dropped without an answer.
+#define MESSAGE_SERVER_LIVE 0x07
+class mpb_server_live
+{
+  public:
+    mpb_server_live() : version(LIVE_VERSION), flags(0), udp_port(0), live_kbps(0), peer_id(0), key(0),
+                        frame_samples(0), max_peers(0), m_peers(0), m_peers_len(0) { }
+    ~mpb_server_live() { }
+
+    enum { LIVE_VERSION = 1, LIVE_FIXED_LEN = 32 };
+    enum
+    {
+      LIVE_FLAG_ROOM_ON = 1,  // the room's Live is on
+      LIVE_FLAG_UDP_OPEN = 2, // the server takes Live datagrams
+      LIVE_FLAG_MAY_SEND = 4, // this client is one of the room's Live players
+    };
+    enum { LIVE_PEER_BOUND = 1 }; // the server has heard from this peer over UDP lately
+
+    int parse(Net_Message *msg); // return 0 on success; msg must outlive parse_get_peer calls
+    Net_Message *build();
+
+    void build_add_peer(unsigned int id, int peer_flags, const char *name);
+    // offs starts at 0; returns the offset of the next peer, or <= 0 when there are no more
+    int parse_get_peer(int offs, unsigned int *id, int *peer_flags, const char **name);
+
+    // public data
+    int version;
+    int flags; // LIVE_FLAG_*
+    int udp_port;
+    int live_kbps;
+    unsigned int peer_id;
+    WDL_UINT64 key;
+    int frame_samples;
+    int max_peers;
+
+  private:
+    WDL_HeapBuf m_build_peers; // the peer list being built
+    const unsigned char *m_peers; // the parsed one
+    int m_peers_len;
+};
+
+
+
 #define MESSAGE_CLIENT_AUTH_USER 0x80
 class mpb_client_auth_user
 {
@@ -227,9 +335,9 @@ class mpb_client_auth_user
 
     // public data
     unsigned char passhash[20];
-    int client_caps; // low bit is agreeing to license
-    int client_version; // client version, only present if second bit of caps is there
-                     // second bit should be set, otherwise server will disconnect anyway.
+    int client_caps; // low bit is agreeing to license, then CLIENT_CAP_* bits
+    int client_version; // client version, always sent (the second bit of caps was once
+                        // meant to say so, but nothing checks it)
     const char *username;
 };
 

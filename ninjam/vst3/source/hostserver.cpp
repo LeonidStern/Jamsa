@@ -44,6 +44,9 @@ static const size_t MAX_MESSAGES = 200;
 // (!bitrate, at first the host's own), and the server asks the
 // router to forward its port. Two players with one name from one address (two
 // instances in a DAW that both keep the default name) both stay: the second is name.2.
+// With Live (LIVE_CONFIG), the server also takes Live mode's UDP on the same port number
+// (and asks the router to forward that too); the room starts with Live off, and any player
+// turns it on with !live on.
 static const char *CONFIG =
     "# Written by Jamsa each time it starts its server.\n"
     "Port %d\n"
@@ -61,6 +64,11 @@ static const char *CONFIG =
     "RequireCodec opus\n" // older clients (Vorbis only) are refused, so the room never falls back to Vorbis
     "OpusBitrate %d\n"
     "PortMapping yes\n";
+// "require": a UDP port that is taken counts as a port in use, so start() tries the next one
+static const char *LIVE_CONFIG =
+    "Live require\n"
+    "LiveKbps 128\n"
+    "LiveFrame 240\n";
 
 HostServer &HostServer::instance()
 {
@@ -68,7 +76,7 @@ HostServer &HostServer::instance()
   return s;
 }
 
-std::string HostServer::writeConfig(int port, int opusKbps)
+std::string HostServer::writeConfig(int port, int opusKbps, bool live)
 {
   std::string dir;
 #ifdef _WIN32
@@ -88,6 +96,7 @@ std::string HostServer::writeConfig(int port, int opusKbps)
   FILE *fp = fopen(path.c_str(), "w");
   if (!fp) return std::string();
   fprintf(fp, CONFIG, port, opusKbps);
+  if (live) fputs(LIVE_CONFIG, fp);
   const bool ok = !ferror(fp);
   fclose(fp);
   return ok ? path : std::string();
@@ -119,11 +128,13 @@ bool HostServer::start(const void *owner, int opusKbps, std::string *error)
   }
   stopLookup(); // (stop() has joined the last one already)
 
+  // with Live first (TCP and UDP on one port number); if no port has both free, without
   std::string err;
-  for (int i = 0; i < PORTS_TO_TRY; i ++)
+  for (int i = 0; i < 2 * PORTS_TO_TRY; i ++)
   {
-    const int port = FIRST_PORT + i;
-    const std::string cfg = writeConfig(port, opusKbps);
+    const bool live = i < PORTS_TO_TRY;
+    const int port = FIRST_PORT + i % PORTS_TO_TRY;
+    const std::string cfg = writeConfig(port, opusKbps, live);
     if (cfg.empty())
     {
       err = "Could not write the server's settings to the temporary folder.";
@@ -138,6 +149,16 @@ bool HostServer::start(const void *owner, int opusKbps, std::string *error)
       m_state.owner = owner;
       m_state.port = port;
       m_state.portmapPending = true;
+      m_state.live = live;
+      if (!live)
+      {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "Live mode is off on this server: no port from %d to %d had UDP free as well as TCP (other "
+                 "programs use them), so the players hear each other through intervals only.", FIRST_PORT,
+                 FIRST_PORT + PORTS_TO_TRY - 1);
+        m_messages.push_back(buf);
+        m_serial ++;
+      }
       const std::string local = localNetworkAddress();
       if (!local.empty()) m_state.localAddress = local + ":" + std::to_string(port);
       m_state.lookupPending = true;

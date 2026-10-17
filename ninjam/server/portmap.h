@@ -14,6 +14,10 @@
   forwarding by hand. Runs on its own thread, renews the mapping before it
   expires, and removes it on shutdown.
 
+  With Live, the UDP port of the same number is forwarded too. That is best
+  effort: if the router won't forward UDP, TCP stays forwarded and the log has
+  a warning (players outside then stay on intervals).
+
   Built only when the Makefile is run with PORTMAP=1 (needs miniupnpc and
   libnatpmp); otherwise Start() just logs that support isn't compiled in.
 
@@ -28,7 +32,8 @@ class PortMapper
     PortMapper();
     ~PortMapper(); // removes the mapping
 
-    void Start(int port); // non-blocking; replaces any mapping for a previous port
+    void Start(int port, bool udp=false); // non-blocking; replaces any mapping for a previous port.
+                                          // udp: forward that UDP port too, for Live
     void Stop(); // blocks until the mapping is removed (bounded by router timeouts)
 
   private:

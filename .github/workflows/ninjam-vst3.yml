@@ -3,6 +3,10 @@ name: ninjam-vst3
 # Builds Jamsa, the NINJAM VST3 plug-in (ninjam/vst3), on Linux, Windows and macOS, checks it with
 # Steinberg's validator and Tracktion's pluginval (which also opens the editor), runs the
 # plug-in's tests and uploads what users install.
+#
+# Pull requests build and test on macOS only. Linux, Windows and the Live sanitizers run on
+# main (whose builds the release job publishes) and for a release candidate: run this
+# workflow by hand on its branch with "all platforms" ticked.
 
 on:
   push:
@@ -11,6 +15,11 @@ on:
   pull_request:
     paths: ['ninjam/**', 'WDL/**', '.github/workflows/ninjam-vst3.yml']
   workflow_dispatch:
+    inputs:
+      all_platforms:
+        description: 'Also build and test on Linux and Windows, and run the Live sanitizers'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +36,7 @@ env:
 
 jobs:
   linux:
+    if: github.ref == 'refs/heads/main' || inputs.all_platforms
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +61,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build build --target Jamsa validator plugin_unit_test plugin_e2e_host -- -k 0
+          cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test live_client_test njclient_live_test plugin_e2e_host -- -k 0
           # what gets validated, tested and shipped
           strip --strip-unneeded build/VST3/Release/Jamsa.vst3/Contents/x86_64-linux/Jamsa.so
           ls -l build/VST3/Release/Jamsa.vst3/Contents/x86_64-linux/
@@ -98,7 +108,50 @@ jobs:
             pluginval-logs/
           if-no-files-found: ignore
 
+  # The Live library on its own (ninjam/live, which downloads Opus itself) with AddressSanitizer
+  # and UndefinedBehaviorSanitizer, where its fuzz tests find the most (any report fails the
+  # test), and the Client test with ThreadSanitizer (its timing checks only print there).
+  live-sanitizers:
+    if: github.ref == 'refs/heads/main' || inputs.all_platforms
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          # the sanitizers' shadow memory needs the address space the runner's high mmap
+          # randomization would take from it
+          sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Build with ASan and UBSan
+        run: |
+          FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+          cmake -S ninjam/live -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_C_FLAGS=$FLAGS" "-DCMAKE_CXX_FLAGS=$FLAGS" "-DCMAKE_EXE_LINKER_FLAGS=$FLAGS"
+          cmake --build build-asan
+
+      - name: Tests (ASan, UBSan)
+        env:
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build-asan --output-on-failure -V
+
+      - name: Build the Client test with TSan
+        run: |
+          FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          cmake -S ninjam/live -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_C_FLAGS=$FLAGS" "-DCMAKE_CXX_FLAGS=$FLAGS" "-DCMAKE_EXE_LINKER_FLAGS=$FLAGS"
+          cmake --build build-tsan --target live_client_test
+
+      - name: Client test (TSan)
+        env:
+          TSAN_OPTIONS: halt_on_error=1:suppressions=${{ github.workspace }}/ninjam/live/tests/tsan.supp
+        run: build-tsan/live_client_test
+
   windows:
+    if: github.ref == 'refs/heads/main' || inputs.all_platforms
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -110,7 +163,7 @@ jobs:
           call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           where ninja >nul 2>nul || choco install ninja --no-progress -y || exit /b 1
           cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DSMTG_USE_STATIC_CRT=ON || exit /b 1
-          cmake --build build --target Jamsa validator plugin_unit_test -- -k 0 || exit /b 1
+          cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test live_client_test njclient_live_test -- -k 0 || exit /b 1
 
       - name: Find the plug-in and the validator
         shell: bash
@@ -195,7 +248,7 @@ jobs:
         run: cmake -S ninjam/vst3 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNINJAM_VST3_TESTS=ON "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
 
       - name: Build
-        run: cmake --build build --target Jamsa validator plugin_unit_test plugin_e2e_host -- -k 0
+        run: cmake --build build --target Jamsa validator plugin_unit_test live_aoo_test live_fuzz_test live_rt_test live_unit_test live_client_test njclient_live_test plugin_e2e_host -- -k 0
 
       - name: Strip and sign (ad hoc)
         run: |

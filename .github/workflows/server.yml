@@ -19,11 +19,29 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0
           NINJAMSRV: ../ninjamsrv
-        run: python3 -m unittest -v test_server
+        run: python3 -m unittest -v test_server test_live
       - name: Release build, without port mapping
         run: |
           make -C ninjam/server clean
           make -C ninjam/server -j"$(nproc)"
+
+  # the same tests against the server built into the plug-in, through the embedded API
+  embedded:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the embedded server runner with AddressSanitizer and UBSan
+        run: |
+          cmake -S ninjam/server -B build-embedded -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNINJAM_SERVER_TESTS=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-embedded --target ninjamsrv_embedded_runner -j"$(nproc)"
+      - name: Protocol tests
+        working-directory: ninjam/server/tests
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          NINJAMSRV: ${{ github.workspace }}/build-embedded/ninjamsrv_embedded_runner
+        run: python3 -m unittest -v test_server test_live
 
   macos:
     runs-on: macos-latest

@@ -21,7 +21,10 @@ OBJS += ../mpb.o
 OBJS += ../netmsg.o
 OBJS += usercon.o
 OBJS += portmap.o
+OBJS += liverelay.o
 OBJS += ninjamsrv.o
+
+liverelay.o: CXXFLAGS += -std=c++11
 
 # PORTMAP=1 builds in automatic router port mapping (needs miniupnpc and libnatpmp,
 # e.g. apt install libminiupnpc-dev libnatpmp-dev, or brew install miniupnpc libnatpmp)

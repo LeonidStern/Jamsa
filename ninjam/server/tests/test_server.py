@@ -8,13 +8,14 @@ Each test starts its own server on a free port with a temporary config.
 import os
 import signal
 import socket
+import struct
 import subprocess
 import tempfile
 import time
 import unittest
 import uuid
 
-from njclient import (Client, chat_fields, codec_mask, mask_opus_kbps, CHAT, CODEC_MASK, DOWNLOAD_BEGIN,
+from njclient import (Client, chat_fields, codec_mask, mask_opus_kbps, CHAT, CODEC_MASK, CONFIG_CHANGE, DOWNLOAD_BEGIN,
                       DOWNLOAD_WRITE, CAP_OPUS, CAP_FLAC)
 from fake_router import FakeIGD, FakeNatPmp
 
@@ -165,6 +166,22 @@ class ChatTests(ServerTest):
         b.drain(0.2)
         a.chat("MSG", "hello", terminate_last=False)
         self.assertIsNone(b.wait_for(lambda m: m[0] == CHAT and chat_fields(m[1])[0] == "MSG", 0.5))
+
+
+class AdminCommandTests(ServerTest):
+    extra_config = "User admin secret *\n"
+
+    def test_commands_work_without_a_space(self):
+        # NINJAM clients send "/bpm 120" as ADMIN "bpm 120", and "/bpm120" as ADMIN "bpm120", which has always worked
+        a = Client(self.server.port)
+        self.clients.append(a)
+        self.assertTrue(a.login("admin", "secret")[0])
+        a.drain(0.3)
+        for cmd, bpm in (("bpm 100", 100), ("bpm90", 90)):
+            a.chat("ADMIN", cmd)
+            m = a.wait_for(lambda m: m[0] == CONFIG_CHANGE)
+            self.assertIsNotNone(m, cmd)
+            self.assertEqual(struct.unpack("<HH", m[1][:4]), (bpm, 8))
 
 
 class DuplicateLoginTests(ServerTest):
@@ -527,7 +544,7 @@ class BitrateTests(CodecTestCase):
         a = self.client("alice", CAP_OPUS)
         a.drain(0.3)
         a.chat("MSG", "!speed 2")
-        self.assertIn("Unknown !command. Commands available: !vote, !topic, !codec, !bitrate",
+        self.assertIn("Unknown !command. Commands available: !vote, !topic, !codec, !bitrate, !live",
                       [chat_fields(m[1])[2] for m in a.drain(0.5) if m[0] == CHAT])
 
 
@@ -601,8 +618,9 @@ def closed_url():
     return "http://127.0.0.1:%d/rootDesc.xml" % free_port()
 
 
-class PortMappingTests(unittest.TestCase):
-    """Router port mapping (PortMapping yes) against a fake router. Needs a PORTMAP=1 build."""
+class PortMappingTestCase(unittest.TestCase):
+    """Starts a server with PortMapping yes against a fake router (and test_live.py does, with Live).
+    Skips unless the server was built with PORTMAP=1."""
 
     def start(self, rootdesc, natpmp_gateway="127.0.0.1", extra_config=""):
         self.server = Server("LogFile $DIR/server.log\nPortMapping yes\n" + extra_config,
@@ -640,12 +658,17 @@ class PortMappingTests(unittest.TestCase):
         self.server.proc.send_signal(signal.SIGTERM)
         self.assertEqual(self.server.proc.wait(10), 0)
 
+
+class PortMappingTests(PortMappingTestCase):
+    """Router port mapping (PortMapping yes) against a fake router."""
+
     def test_upnp_forwards_the_port_and_removes_it_on_shutdown(self):
         igd = FakeIGD(external_ip="203.0.113.7")
         self.addCleanup(igd.close)
         self.start(igd.url)
         self.wait_for_log("UPnP: people can connect to 203.0.113.7:%d" % self.server.port)
-        m = igd.mappings[self.server.port]
+        self.assertEqual(list(igd.mappings), [(self.server.port, "TCP")])  # no UDP without Live
+        m = igd.mappings[(self.server.port, "TCP")]
         self.assertEqual((m["NewProtocol"], m["NewInternalPort"], m["NewInternalClient"], m["NewLeaseDuration"]),
                          ("TCP", str(self.server.port), "127.0.0.1", "3600"))
 
@@ -658,7 +681,7 @@ class PortMappingTests(unittest.TestCase):
         self.addCleanup(igd.close)
         self.start(igd.url)
         self.wait_for_log("people can connect to")
-        self.assertEqual(igd.mappings[self.server.port]["NewLeaseDuration"], "0")
+        self.assertEqual(igd.mappings[(self.server.port, "TCP")]["NewLeaseDuration"], "0")
 
     def test_warns_when_the_router_has_no_public_address(self):
         igd = FakeIGD(external_ip="100.64.12.34")  # carrier-grade NAT
@@ -687,7 +710,8 @@ class PortMappingTests(unittest.TestCase):
         self.addCleanup(natpmp.close)
         self.start(closed_url())
         self.wait_for_log("NAT-PMP: people can connect to 198.51.100.9:%d" % self.server.port)
-        m = natpmp.mappings[self.server.port]
+        self.assertEqual(list(natpmp.mappings), [(self.server.port, "TCP")])
+        m = natpmp.mappings[(self.server.port, "TCP")]
         self.assertEqual((m["protocol"], m["internal"], m["lifetime"]), ("TCP", self.server.port, 3600))
 
         self.shut_down()
