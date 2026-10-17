@@ -1683,11 +1683,13 @@ static void test_glue_listener_glitch()
   start_recording(n);
   n.run(4.0);
   const double before = median(bu.delays(a, b));
+  const uint64_t gaps = b.core->hostGaps();
   b.host_running = false;
   n.run(0.032);
   b.host_running = true;
   CHECK(n.run_until([&] { return b.core->slotHealthy(slot); }, 3.0));
   n.run(2.0);
+  CHECK_EQ(b.core->hostGaps() - gaps, (uint64_t)1); // (told once, at the second block after it)
   auto dropouts = [&] {
     const std::vector<PeerStats> st = b.core->stats(n.now);
     const PeerStats *ps = stats_of(st, 1);
@@ -1704,6 +1706,67 @@ static void test_glue_listener_glitch()
   CHECK(fabs(median(d) - before) < 0.006);
   CHECK_EQ(dropouts() - drops, 0);
   CHECK(b.core->slotHealthy(slot));
+}
+
+// A host that is late and then calls again at once until it has caught up
+// (as with a large device buffer), or that calls in bursts, missed nothing:
+// AOO isn't told of a gap, so nothing is skipped or filled in, and the
+// delay stays. (With a plain 20 ms threshold, AOO was told of each as an
+// xrun, and skipped and filled in what was never missed: the delay then
+// moved by 1.3 ms, and every burst was one, 63 in 2 s.) A 60 ms jitter
+// buffer holds what the 30 ms bring.
+static void test_glue_host_catches_up()
+{
+  if (!selected("glue_host_catches_up")) return;
+  net n(61);
+  player &a = n.add(1);
+  player &b = n.add(2);
+  bursts bu;
+  bu.install(a);
+  b.send = false;
+  n.start_all();
+  b.core->setJitterMs(60);
+  n.run(2.0);
+  const int slot = b.core->slotOf(1);
+  CHECK(b.core->slotHealthy(slot));
+  auto dropouts = [&] {
+    const std::vector<PeerStats> st = b.core->stats(n.now);
+    const PeerStats *ps = stats_of(st, 1);
+    return ps ? ps->underruns + ps->overruns + ps->dropped : -1;
+  };
+  start_recording(n);
+  n.run(3.0);
+  const double before = median(bu.delays(a, b));
+  const int drops = dropouts();
+  // the listener's host 30 ms late, then the sender's, each catching up
+  b.late_from = n.now;
+  b.late_to = n.now + 0.03;
+  n.run(2.0);
+  a.late_from = n.now;
+  a.late_to = n.now + 0.03;
+  n.run(1.0);
+  start_recording(n);
+  n.run(4.0);
+  std::vector<double> d = bu.delays(a, b);
+  printf("  hosts 30 ms late, caught up: delay %.2f ms before, %.2f ms after (spread %.2f ms in 4 s), %d dropouts, "
+         "%llu + %llu gaps told\n", 1000 * before, 1000 * median(d), 1000 * spread(d), dropouts() - drops,
+         (unsigned long long)a.core->hostGaps(), (unsigned long long)b.core->hostGaps());
+  CHECK_EQ(a.core->hostGaps(), 0u);
+  CHECK_EQ(b.core->hostGaps(), 0u);
+  CHECK(d.size() >= 15);
+  CHECK(fabs(median(d) - before) < 0.002);
+  CHECK(spread(d) < 0.002);
+  CHECK_EQ(dropouts() - drops, 0);
+  CHECK(b.core->slotHealthy(slot));
+  // both call in bursts of 12 blocks (32 ms, more than the 20 ms a gap
+  // takes): no gaps either (the jitter buffer isn't sized for such bursts,
+  // so the audio isn't judged here)
+  a.burst = b.burst = 12;
+  n.run(2.0);
+  printf("  bursts of 12 blocks: %llu + %llu gaps told\n", (unsigned long long)a.core->hostGaps(),
+         (unsigned long long)b.core->hostGaps());
+  CHECK_EQ(a.core->hostGaps(), 0u);
+  CHECK_EQ(b.core->hostGaps(), 0u);
 }
 
 // A listener's host stops calling processBlock() for a minute while the
@@ -1846,6 +1909,7 @@ int main(int argc, char **argv)
   test_glue_gap();
   test_glue_sender_xruns();
   test_glue_listener_glitch();
+  test_glue_host_catches_up();
   test_glue_host_stopped();
   test_glue_bitrate_frame();
 

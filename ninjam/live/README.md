@@ -107,7 +107,8 @@ Tests (`tests/`):
   and on, an exception out of AOO's `send()`, a host that stops calling
   for a second, a sender's host that stops for 150 ms three times (with a
   200 ms jitter buffer), a listener's host that misses 32 ms (the delay
-  steady after it, without dropouts), a listener's host that stops for a minute while
+  steady after it, without dropouts), hosts that are 30 ms late and catch
+  up, or call in bursts (no gap told), a listener's host that stops for a minute while
   seven others play, and bitrate and frame size changes. About 25 s.
 - `live_client_test`: the `Client` on real sockets: four players with
   audio threads paced by the clock and a minimal server on the loopback
@@ -255,7 +256,13 @@ the server (`serverRttMs()`).
   down for half a minute, into dropouts or 5 to 10 ms too early, and the
   delay drifted 3 to 4 ms in 10 s (the plug-in's end-to-end test,
   "afterstall"); with 20 ms it stays within 0.2 ms after the sinks have
-  buffered again.
+  buffered again. A host that is late and then calls again at once until
+  it has caught up (a large device buffer), or that calls in bursts,
+  missed nothing, though: the gap counts at the first block that doesn't
+  come early (90% of the last block's length after it, or later), for what
+  the host hasn't made up by then. Told at once, AOO skips and fills in
+  what was never missed: a host that calls in bursts of 32 ms made an
+  xrun of every burst.
 - While the host isn't calling `processBlock()` (0.25 s after the end of
   the last block, or before the first one), the receive thread drops what
   comes for the sinks (`Counters::droppedIdle`): AOO would keep it until

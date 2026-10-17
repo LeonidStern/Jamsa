@@ -504,6 +504,7 @@ void Core::prepare(double sampleRate, int maxBlock)
   memset(m_in, 0, sizeof(m_in));
   m_fill = 0;
   m_lastFrames = 0;
+  m_behind = 0;
   m_prepared = true;
   m_zerosSize.store((int)m_zeros.size());
   applyBufferSize();
@@ -525,16 +526,33 @@ bool Core::processBlock(const float *inL, const float *inR, int frames, bool sen
   // telling it of a short one (a DAW that missed 32 ms) is worse: the time
   // filter takes the jump for a slow clock, and the sinks then play their
   // buffers down over half a minute, into dropouts. Up to two blocks' worth
-  // is how hosts call (in bursts, within one device buffer), not a gap.
+  // is how hosts call (in bursts, within one device buffer), not a gap. And
+  // a host that is late, then calls again at once until it has caught up
+  // (a large device buffer, a burst), missed nothing: so a gap only counts
+  // at the first block that doesn't come early, for what is still missing.
   if (m_lastFrames > 0)
   {
-    const double gap = secondsFromNtp((int64_t)(t - m_lastTime)) - m_lastFrames / m_sampleRate;
-    if (gap > std::max(0.02, 2.0 * m_maxBlock / m_sampleRate))
+    const double last = m_lastFrames / m_sampleRate;
+    const double late = secondsFromNtp((int64_t)(t - m_lastTime)) - last; // (< 0: early)
+    const double limit = std::max(0.02, 2.0 * m_maxBlock / m_sampleRate);
+    if (m_behind > 0)
     {
-      const AooInt32 n = (AooInt32)(std::min(gap, 0.5) * m_sampleRate);
-      m_source->reportXRun(n);
-      for (Slot &s : m_slots) s.sink->reportXRun(n);
+      if (late < -0.1 * last)
+      {
+        // catching up
+        m_behind += late;
+        if (m_behind <= limit) m_behind = 0;
+      }
+      else
+      {
+        const AooInt32 n = (AooInt32)(std::min(m_behind, 0.5) * m_sampleRate);
+        m_source->reportXRun(n);
+        for (Slot &s : m_slots) s.sink->reportXRun(n);
+        m_hostGaps.fetch_add(1, std::memory_order_relaxed);
+        m_behind = 0;
+      }
     }
+    if (m_behind <= 0 && late > limit) m_behind = late;
   }
   m_lastTime = t;
   m_lastFrames = frames;

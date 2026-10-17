@@ -77,6 +77,12 @@ struct player
   int64_t nblocks = 0;
   bool in_room = true;       // the server copies to it
   bool host_running = true;  // the host calls processBlock() (the send thread runs anyway)
+  // a host that is late and then catches up: the blocks due in [late_from, late_to) run at
+  // late_to, one right after the other
+  double late_from = 0, late_to = 0;
+  // a host that calls in bursts: 'burst' blocks at once, when the last one is due (set it only
+  // once: back to 1, the rest of a burst would be due before now)
+  int burst = 1;
   bool send = true;          // processBlock's 'send'
   bool send_throws = false;  // the send function throws std::bad_alloc
   link up, down;
@@ -93,7 +99,14 @@ struct player
   long uploads = 0, upload_bytes = 0, unicast_uploads = 0, downloads = 0;
 
   double eff_rate() const { return rate * (1 + ppm * 1e-6); }
-  double next_block() const { return t0 + (double)nblocks * block / eff_rate(); }
+  // when this block's audio is due (its input in, its output out), and when the host calls for it
+  double due_block() const { return t0 + (double)nblocks * block / eff_rate(); }
+  double next_block() const
+  {
+    double t = burst > 1 ? t0 + (double)(nblocks / burst * burst + burst - 1) * block / eff_rate() : due_block();
+    if (t >= late_from && t < late_to) t = late_to;
+    return t;
+  }
   double sample_time(int64_t index) const { return t0 + (double)index / eff_rate(); }
 
   void clear_recording()
@@ -324,7 +337,7 @@ struct net
           const float *s = p.core->stem(k, 0);
           p.rec[k].insert(p.rec[k].end(), s, s + p.block);
         }
-        p.rec_time.push_back(t);
+        p.rec_time.push_back(p.due_block());
       }
     }
     // the send thread, which runs whether or not the host calls

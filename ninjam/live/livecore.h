@@ -166,6 +166,8 @@ public:
   // (any thread) whether the host calls processBlock(): its last block
   // ended less than kIdleSeconds before 'now'
   bool hostActive(uint64_t now) const;
+  // (any thread) how many gaps in the host's calls were told to AOO as xruns
+  uint64_t hostGaps() const { return m_hostGaps.load(std::memory_order_relaxed); }
   int slotOf(uint32_t peerId) const;
   bool slotHealthy(int slot) const;
   const float *stem(int slot, int channel) const;
@@ -285,6 +287,8 @@ private:
   std::atomic<int> m_zerosSize{0};  // m_zeros.size() (0 while prepare() changes it), for stem()
   uint64_t m_lastTime = 0;          // the last block's time stamp
   int m_lastFrames = 0;
+  double m_behind = 0;              // a gap in the host's calls it may still make up (s; 0: none)
+  std::atomic<uint64_t> m_hostGaps{0}; // gaps told to AOO (hostGaps())
   std::atomic<double> m_rate{48000}; // m_sampleRate, for stats()
   std::atomic<uint64_t> m_audioDue{0}; // when the next block is due (0: none ran yet)
 
