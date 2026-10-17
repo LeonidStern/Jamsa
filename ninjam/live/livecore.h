@@ -17,9 +17,10 @@
     "Protocol"): a 20-byte header from the player (who, the key, to whom), an
     8-byte one from the server (from whom), the AOO packet after it;
 
-  - Core: one AooSource (ID 1, broadcast mode) and a fixed pool of
-    MAX_PEERS two-channel AooSinks (ID 1), one per slot, each bound to a
-    peer through an atomic; the adapter between the host's blocks and
+  - Core: one AooSource (ID 1, broadcast mode) whose sinks are all the
+    listed peers, and a fixed pool of MAX_PEERS two-channel AooSinks
+    (ID 1), one per slot, each bound to a peer through an atomic; the
+    adapter between the host's blocks and
     AOO's fixed 64-sample blocks; the filter in front of AOO; the
     statistics. Client (liveclient.cpp) adds the socket and the threads.
 
@@ -229,6 +230,8 @@ private:
   void sinkEvent(Slot &slot, const AooEvent *e);
   void bind(int slot, uint32_t peer);
   void unbind(int slot);
+  void setSourceSink(uint32_t peer, bool add);
+  bool listed(uint32_t peer) const;
   void updateHealth(double now);
   void applyBufferSize();
 
@@ -244,6 +247,10 @@ private:
   std::atomic<bool> m_rxOn{false};  // m_roomOn, for the receive thread
   int m_jitterMs = 20;
   std::vector<Peer> m_peers;
+  // every peer in the list is a sink of our source, with a slot or not
+  // (the server sends our stream to all of them); for the receive thread
+  static const int kMaxListed = 64; // the server's LiveMaxPeers at most
+  std::atomic<uint32_t> m_listed[kMaxListed];
   mutable std::mutex m_statsMutex;  // the slots' st, m_now
   double m_now = 0;
 

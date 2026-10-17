@@ -1193,6 +1193,70 @@ static void test_glue_slot_reuse()
   // (player 3's own Core still has its slots: the engine would stop it)
 }
 
+// A room of ten, more players than a player has slots for. The server
+// copies each player's stream to all nine others, also to those who have no
+// slot for it, so each of the nine must be a sink of the player's source:
+// player 10, who has a slot for player 1 where player 1 has none for it,
+// gets player 1's /start only that way, and player 1 must take player 10's
+// requests for it. With the server's packet rate limit per player.
+static void test_glue_room_of_ten()
+{
+  if (!selected("glue_room_of_ten")) return;
+  net n(5);
+  for (uint32_t id = 1; id <= 10; id++) n.add(id);
+  // liverelay.cpp: 2 * 48000 / frame + 50 datagrams/s, a quarter second's burst
+  struct bucket { double tokens = -1, t = 0; long dropped = 0; };
+  std::vector<bucket> buckets(11);
+  const double pps = 2.0 * 48000 / 240 + 50, burst = pps * 0.25;
+  n.server_filter = [&](const wire::FromClient &m) {
+    bucket &b = buckets[m.sender];
+    if (b.tokens < 0) { b.tokens = burst; b.t = n.now; }
+    b.tokens = std::min(burst, b.tokens + (n.now - b.t) * pps);
+    b.t = n.now;
+    if (b.tokens < 1) { b.dropped++; return false; }
+    b.tokens -= 1;
+    return true;
+  };
+  n.start_all();
+  n.run(2.0);
+  for (auto &p : n.players) p->uploads = p->unicast_uploads = 0;
+  for (auto &b : buckets) b.dropped = 0;
+  std::vector<uint64_t> noSlot0;
+  for (auto &p : n.players) noSlot0.push_back(p->core->totals().noSlot.load());
+  start_recording(n);
+  const double secs = 3.0;
+  n.run(secs);
+  for (auto &q : n.players)
+  {
+    int slotted = 0, healthy = 0, unslotted = 0;
+    for (auto &p : n.players)
+    {
+      if (p == q) continue;
+      const int slot = q->core->slotOf(p->id);
+      if (slot < 0) { unslotted++; continue; }
+      slotted++;
+      if (q->core->slotHealthy(slot) && heard_snr(*q, *p, 2.5) > 20) healthy++;
+    }
+    const uint64_t noSlot = q->core->totals().noSlot.load() - noSlot0[q->id - 1];
+    printf("  player %2u: %d of %d slots heard, %.0f datagrams/s up (%.0f to one player), "
+           "%.0f/s dropped by the server, %.0f/s with no slot\n",
+           q->id, healthy, slotted, q->uploads / secs, q->unicast_uploads / secs,
+           buckets[q->id].dropped / secs, noSlot / secs);
+    CHECK_EQ(slotted, Core::kMaxPeers);
+    CHECK_EQ(unslotted, 1);
+    CHECK_EQ(healthy, Core::kMaxPeers);
+    CHECK_EQ(buckets[q->id].dropped, 0);
+    // once a second: the source's pings to its nine sinks and the sinks'
+    // to their eight sources, and the pongs to those who ping us (34/s at
+    // most), not /start requests that nobody answers
+    CHECK(q->unicast_uploads / secs < 40);
+    // what the unslotted player sends: its stream (200/s) and its pings,
+    // but no requests to our source
+    CHECK(noSlot / secs > 195 && noSlot / secs < 203);
+  }
+  CHECK_EQ(n.server_bad, 0);
+}
+
 // Packets the filter in front of AOO lets through, and what it doesn't.
 static std::vector<uint8_t> osc_message(const char *address, std::function<void(osc::OutboundPacketStream &)> args)
 {
@@ -1587,6 +1651,7 @@ int main(int argc, char **argv)
   test_glue_big_blocks();
   test_glue_drift();
   test_glue_slot_reuse();
+  test_glue_room_of_ten();
   test_glue_prefilter();
   test_glue_fuzz();
   test_glue_room_off();

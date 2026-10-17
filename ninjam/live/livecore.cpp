@@ -207,6 +207,7 @@ int Core::SlotStats::dropoutsSince(double t) const
 Core::Core()
 {
   aoo_initialize(nullptr); // once per process (call_once in our copy)
+  for (auto &id : m_listed) id.store(0);
 
   m_source = AooSource::create(1);
   m_source->setEventHandler(onSourceEvent, this, kAooEventModePoll);
@@ -348,12 +349,6 @@ void Core::bind(int k, uint32_t peer)
   }
   s.healthy.store(false);
   s.peer.store(peer, std::memory_order_release);
-  sockaddr_in a = addressOf(peer);
-  AooEndpoint ep;
-  ep.address = &a;
-  ep.addrlen = sizeof(a);
-  ep.id = 1;
-  m_source->addSink(ep, kAooTrue);
 }
 
 void Core::unbind(int k)
@@ -362,17 +357,30 @@ void Core::unbind(int k)
   const uint32_t peer = s.peer.exchange(0, std::memory_order_acq_rel);
   s.healthy.store(false);
   if (!peer) return;
-  sockaddr_in a = addressOf(peer);
-  AooEndpoint ep;
-  ep.address = &a;
-  ep.addrlen = sizeof(a);
-  ep.id = 1;
-  m_source->removeSink(ep);
   // the old peer's source goes with the next block, so the slot starts
   // clean for the next peer (see AooSink::removeSource())
   s.sink->removeSource(nullptr);
   std::lock_guard<std::mutex> stats(m_statsMutex);
   s.st = SlotStats();
+}
+
+void Core::setSourceSink(uint32_t peer, bool add)
+{
+  sockaddr_in a = addressOf(peer);
+  AooEndpoint ep;
+  ep.address = &a;
+  ep.addrlen = sizeof(a);
+  ep.id = 1;
+  if (add) m_source->addSink(ep, kAooTrue); // active: AOO ignores an inactive sink's requests
+  else m_source->removeSink(ep);
+}
+
+bool Core::listed(uint32_t peer) const
+{
+  if (!peer) return false;
+  for (const auto &id : m_listed)
+    if (id.load(std::memory_order_acquire) == peer) return true;
+  return false;
 }
 
 void Core::setPeers(const std::vector<Peer> &peers)
@@ -398,6 +406,35 @@ void Core::setPeers(const std::vector<Peer> &peers)
       if (m_slots[k].peer.load() == 0)
       {
         bind(k, p.id);
+        break;
+      }
+    }
+  }
+  // Every listed player is a sink of our source, with a slot for it or
+  // not: the server sends our stream to all of them, and one without our
+  // /start would ask for it with every packet of ours and never hear us.
+  std::vector<uint32_t> ids;
+  for (const Peer &p : peers)
+    if (wanted(p.id) && std::find(ids.begin(), ids.end(), p.id) == ids.end() && ids.size() < (size_t)kMaxListed)
+      ids.push_back(p.id);
+  for (auto &l : m_listed)
+  {
+    const uint32_t id = l.load();
+    if (id && std::find(ids.begin(), ids.end(), id) == ids.end())
+    {
+      l.store(0, std::memory_order_release);
+      setSourceSink(id, false);
+    }
+  }
+  for (uint32_t id : ids)
+  {
+    if (listed(id)) continue;
+    for (auto &l : m_listed)
+    {
+      if (l.load() == 0)
+      {
+        l.store(id, std::memory_order_release);
+        setSourceSink(id, true);
         break;
       }
     }
@@ -589,8 +626,10 @@ static bool startFormatOk(const osc::ReceivedMessage &msg)
 Core::Verdict Core::classify(uint32_t from, const uint8_t *data, size_t size, int *target) const
 {
   if (!data || size == 0 || size > wire::kMaxPayload) return kBadSize;
+  // for a sink: from its slot's player; for our source: from any listed
+  // player (each is a sink of it)
   const int slot = slotOf(from);
-  if (slot < 0) return kNoSlot;
+  if (slot < 0 && !listed(from)) return kNoSlot;
   // room off: no streams either way (what is still on its way is dropped)
   if (!m_rxOn.load(std::memory_order_relaxed)) return kFiltered;
 
@@ -602,7 +641,12 @@ Core::Verdict Core::classify(uint32_t from, const uint8_t *data, size_t size, in
     const int type = data[0] & ~kAooBinMsgDomainBit;
     if ((data[1] & kAooBinMsgSizeBit) || data[1] != kAooBinMsgCmdData || data[2] != 1 || data[3] != 1)
       return kFiltered;
-    if (type == kAooMsgTypeSink) { *target = slot; return kAccepted; }
+    if (type == kAooMsgTypeSink)
+    {
+      if (slot < 0) return kNoSlot;
+      *target = slot;
+      return kAccepted;
+    }
     if (type == kAooMsgTypeSource) { *target = -1; return kAccepted; }
     return kFiltered;
   }
@@ -627,6 +671,7 @@ Core::Verdict Core::classify(uint32_t from, const uint8_t *data, size_t size, in
       return kFiltered;
     if (type == kAooMsgTypeSink)
     {
+      if (slot < 0) return kNoSlot;
       if (!strcmp(cmd, kAooMsgStart))
       {
         if (!startFormatOk(msg)) return kBadFormat;

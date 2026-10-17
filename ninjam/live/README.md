@@ -92,7 +92,9 @@ Tests (`tests/`):
   listeners with 1024..4096-sample host blocks and one at the 5 ms
   minimum, two clocks 200 ppm apart for five minutes
   (the delay holds within 2 ms, no dropouts; without dynamic resampling
-  the buffer overruns), slot reuse with nine others for eight slots, the
+  the buffer overruns), slot reuse with nine others for eight slots, a
+  room of ten under the server's rate limit (each player hears all eight
+  it has slots for, about 34 datagrams/s to single players), the
   filter in front of AOO verdict by verdict, fuzzed packets into a playing
   Core, the room's Live flag off and on, a host that stops calling for a
   second, a listener's host that stops for a minute while seven others
@@ -173,15 +175,24 @@ the server (`serverRttMs()`).
 - A fixed pool of `MAX_PEERS` (8) two-channel `AooSink`s (ID 1), created
   once; a slot is bound to a peer through an atomic, so the audio thread
   reads the mapping without a lock. `setPeers()` keeps the slots of those
-  still there, frees the others (`removeSink()` on the source,
-  `removeSource()` on the slot's sink, statistics reset) and gives free
-  slots to new players in the order given; a ninth player gets none and its
-  packets are dropped (`droppedPeer`).
+  still there, frees the others (`removeSource()` on the slot's sink,
+  statistics reset) and gives free slots to new players in the order
+  given; a ninth player gets none and what it streams is dropped
+  (`droppedPeer`).
+- Every listed player (up to 64), with a slot or not, is an active sink of
+  our source (`addSink()` when it joins the list, `removeSink()` when it
+  leaves it): the server copies our stream to all of them, and a player
+  who has a slot for us where we have none for it needs our `/start` and
+  our answers. Before, only players with a slot were sinks: in a room of
+  ten (`LiveMaxPeers` 10 or more; the default is 8), player 10 heard none
+  of the eight it had slots for and asked each of them for a `/start`
+  again and again, unanswered.
 - AOO knows the players by made-up IPv4 addresses: peer N is `N.N.N.N`
   (`sin_addr = htonl(N)`), port 1, `addrlen` 16. The send callback turns
   them back into peer IDs.
 - In front of AOO, for every DATA datagram (`Core::classify()`): the size;
-  a sender with a slot; the room's Live flag on; binary messages only
+  a sender with a slot (for our sinks) or in the list (for our source); the
+  room's Live flag on; binary messages only
   `/data` between ID 1 and ID 1 in the short header; OSC only
   `/aoo/sink/1/{start,stop,data,ping,pong}` (to the slot's sink) and
   `/aoo/src/1/{start,stop,data,ping,pong}` (to our source; no invitations),
