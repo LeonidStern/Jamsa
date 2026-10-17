@@ -4,7 +4,9 @@
   Prints the listener's SNR for the tone over the last intervals, which shows
   whether audio made it through the encoder, the server and the decoder.
 
-  Usage: njclient_e2e host:port seconds samplerate
+  Usage: njclient_e2e host:port seconds samplerate [speed]
+  speed: how many times faster than real time the audio runs (default 4; 1 for
+  interoperability tests with a real-time client in the same room).
   Used by test_codecs_e2e.py.
 */
 
@@ -61,6 +63,7 @@ int main(int argc, char **argv)
   const double seconds = atof(argv[2]);
   const int srate = atoi(argv[3]);
   const int block = 512;
+  const double speed = argc > 4 ? atof(argv[4]) : 4.0;
 
   JNL::open_socketlib();
   NJClient sender, listener;
@@ -99,7 +102,7 @@ int main(int argc, char **argv)
       sender.Run();
       listener.Run();
     }
-    usleep((useconds_t)(1000000.0 * block / srate / 4)); // about 4x real time, so the network keeps up
+    usleep((useconds_t)(1000000.0 * block / srate / speed)); // faster than real time by default, so the network keeps up
   }
 
   int ilen = 0, bpi = sender.GetBPI();
