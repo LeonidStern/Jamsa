@@ -54,6 +54,13 @@ and its tests; it can also be built alone:
     cmake -S ninjam/live -B build-live -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build build-live && ctest --test-dir build-live
 
+CI (`.github/workflows/ninjam-vst3.yml`) runs the tests with the plug-in on
+Linux, Windows and macOS, and in the `live-sanitizers` job a build of this
+folder alone with `-fsanitize=address,undefined
+-fno-sanitize-recover=undefined` (all tests) and with `-fsanitize=thread`
+(`live_client_test`). A sanitizer build is slower, also with `NDEBUG`, and
+the tests allow for that (`LIVE_SANITIZED` in `tests/testutil.h`).
+
 Tests (`tests/`):
 
 - `live_aoo_test`: AOO's lock-free queue and RT memory pool under threads

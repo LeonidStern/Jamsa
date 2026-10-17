@@ -1579,7 +1579,7 @@ static void test_glue_host_stopped()
   // 7 players' 200 packets a second
   CHECK(idle_paused > (uint64_t)(7 * 200 * (pause - 1)));
   CHECK(accepted_paused < (uint64_t)(20 * pause));
-#ifdef NDEBUG
+#if defined(NDEBUG) && !defined(LIVE_SANITIZED)
   CHECK(first < 2 * budget); // (twice: a busy machine)
 #endif
   CHECK_EQ(healthy, 7);

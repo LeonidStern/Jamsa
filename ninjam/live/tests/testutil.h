@@ -21,6 +21,15 @@
 
 #include <stdio.h>
 
+// a build with AddressSanitizer or ThreadSanitizer: slower, also with NDEBUG
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define LIVE_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define LIVE_SANITIZED 1
+#endif
+#endif
+
 static int g_failures = 0, g_checks = 0;
 
 #define CHECK(cond) do { g_checks++; if (!(cond)) { g_failures++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); fflush(stdout); } } while (0)

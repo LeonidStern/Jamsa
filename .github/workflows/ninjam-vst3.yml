@@ -98,6 +98,47 @@ jobs:
             pluginval-logs/
           if-no-files-found: ignore
 
+  # The Live library on its own (ninjam/live, which downloads Opus itself) with AddressSanitizer
+  # and UndefinedBehaviorSanitizer, where its fuzz tests find the most (any report fails the
+  # test), and the Client test with ThreadSanitizer (its timing checks only print there).
+  live-sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          # the sanitizers' shadow memory needs the address space the runner's high mmap
+          # randomization would take from it
+          sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Build with ASan and UBSan
+        run: |
+          FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+          cmake -S ninjam/live -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_C_FLAGS=$FLAGS" "-DCMAKE_CXX_FLAGS=$FLAGS" "-DCMAKE_EXE_LINKER_FLAGS=$FLAGS"
+          cmake --build build-asan
+
+      - name: Tests (ASan, UBSan)
+        env:
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build-asan --output-on-failure -V
+
+      - name: Build the Client test with TSan
+        run: |
+          FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          cmake -S ninjam/live -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            "-DCMAKE_C_FLAGS=$FLAGS" "-DCMAKE_CXX_FLAGS=$FLAGS" "-DCMAKE_EXE_LINKER_FLAGS=$FLAGS"
+          cmake --build build-tsan --target live_client_test
+
+      - name: Client test (TSan)
+        env:
+          TSAN_OPTIONS: halt_on_error=1:suppressions=${{ github.workspace }}/ninjam/live/tests/tsan.supp
+        run: build-tsan/live_client_test
+
   windows:
     runs-on: windows-2022
     steps:

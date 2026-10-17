@@ -718,7 +718,7 @@ static void test_room()
            1000 * ab0, ba->oneWayMs, ba->rttMs, ba->bufferMs, ba->codecMs, 1000 * ac0, ca->oneWayMs);
     // (the estimate leaves out the time the codec takes, which in a debug
     // build with sanitizers is a good part of each block)
-#ifdef NDEBUG
+#if defined(NDEBUG) && !defined(LIVE_SANITIZED)
     const double tolerance = 5;
 #else
     const double tolerance = 10;
