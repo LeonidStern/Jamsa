@@ -106,7 +106,9 @@ Tests (`tests/`):
   and bursts, at 44.1 and 48 kHz, with clocks 100 ppm off), the delay
   against the estimate, 5% lost copies resent, a forged HELLO_ACK and
   garbage ignored, the room's flag off and on, a player who leaves and one
-  who takes the slot, stopping. About 20 s. With `-fsanitize=thread`, run
+  who takes the slot, stopping, and a restart (after `update()` with the
+  UDP port closed, and `start()` while running) that keeps the players
+  set before. About 25 s. With `-fsanitize=thread`, run
   it with `TSAN_OPTIONS=suppressions=ninjam/live/tests/tsan.supp`: AOO's
   lock-free free lists read a node another thread may be reusing, on
   purpose (see the file); the timing checks only print there.
@@ -118,6 +120,8 @@ Tests (`tests/`):
 - The engine's network thread (the "control thread") calls `start()`,
   `update()`, `setPeers()`, `setJitterMs()`, `stop()`, `poll()` (every
   ~30 ms: AOO's events become statistics and slot health) and `stats()`.
+  The players set with `setPeers()` hold until `stop()`: a `start()`
+  after a stop from `update()`, or while running, takes them up again.
 - The audio thread calls `processBlock()` once per host block, then
   `slotOf()`, `slotHealthy()` and `stem()`. None of them waits (one
   try-lock against `prepare()`), allocates or logs; the only system call

@@ -521,8 +521,13 @@ Client::~Client()
 
 bool Client::start(const Config &c, std::string *error)
 {
-  m_impl->stop();
-  return m_impl->start(c, error);
+  // the players set before (stop() forgets them, a stop from update()
+  // doesn't): a start after that, or while running, keeps them
+  Impl &d = *m_impl;
+  d.stop();
+  if (!d.start(c, error)) return false;
+  d.core.setPeers(d.peers);
+  return true;
 }
 
 void Client::update(const Config &c)

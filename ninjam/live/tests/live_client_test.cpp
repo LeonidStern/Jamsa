@@ -596,6 +596,62 @@ static void test_start_errors()
   c.stop();
 }
 
+// A Client that stops because the server's UDP closed (update() with
+// udpOpen false) and starts again, or starts while running, keeps the
+// players set before: the engine sends them again only when they change.
+static void test_restart()
+{
+  printf("restart\n");
+  room r;
+  CHECK(r.server.open());
+  player &a = r.add(1, 48000, 256, 500);
+  player &b = r.add(2, 48000, 256, 700);
+  player &c = r.add(3, 48000, 256, 900);
+  a.client.setPeers(room::peers({ 2, 3 }));
+  b.client.setPeers(room::peers({ 1, 3 }));
+  c.client.setPeers(room::peers({ 1, 2 }));
+  std::string error;
+  for (player *p : { &a, &b, &c })
+  {
+    CHECK(p->client.start(p->cfg, &error));
+    p->run_audio();
+  }
+  auto all = [&] {
+    return r.healthy(1, 2) && r.healthy(1, 3) && r.healthy(2, 1) && r.healthy(3, 1);
+  };
+  CHECK(r.run_until(all, 6.0));
+
+  for (int round = 0; round < 2; round++)
+  {
+    if (round == 0)
+    {
+      // the server's UDP closes, then opens again
+      a.cfg.udpOpen = false;
+      a.client.update(a.cfg);
+      CHECK(!a.client.running());
+      a.cfg.udpOpen = true;
+    }
+    const long in = r.server.data_in.load();
+    const double t0 = seconds_now();
+    CHECK(a.client.start(a.cfg, &error)); // (round 1: while running)
+    CHECK(a.client.running());
+    CHECK(a.client.slotOf(2) >= 0 && a.client.slotOf(3) >= 0);
+    CHECK_EQ(a.client.stats().size(), (size_t)2);
+    const bool back = r.run_until(all, 6.0);
+    printf("  %s: heard both ways again after %.2f s (%ld DATA at the server)\n",
+           round == 0 ? "after a stop from update()" : "start() while running", seconds_now() - t0,
+           r.server.data_in.load() - in);
+    CHECK(back);
+  }
+  for (player *p : { &a, &b, &c })
+  {
+    p->client.stop();
+    p->stop_audio();
+  }
+  CHECK_EQ(r.server.bad.load(), 0);
+  r.server.close();
+}
+
 static void test_room()
 {
   printf("room\n");
@@ -801,6 +857,7 @@ int main()
   timeBeginPeriod(1); // the audio threads' sleeps
 #endif
   test_start_errors();
+  test_restart();
   test_room();
 #ifdef _WIN32
   timeEndPeriod(1);
