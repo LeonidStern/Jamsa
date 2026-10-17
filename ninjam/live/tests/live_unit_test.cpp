@@ -1007,6 +1007,33 @@ static void test_glue_sample_rates()
     }
 }
 
+// A host with long blocks (2048 samples, 43 ms at 48 kHz, which some DAWs use): a block's audio
+// goes out whole, and comes in whole, with the jitter buffer the plug-in uses for such blocks
+// (Engine::liveBufferFor(): two blocks and 5 ms)
+static void test_glue_long_blocks()
+{
+  if (!selected("glue_long_blocks")) return;
+  net n(17);
+  player &a = n.add(1, 48000, 2048);
+  player &b = n.add(2, 48000, 2048);
+  b.send = false;
+  n.start_all();
+  b.core->setJitterMs(91);
+  n.run(2.0);
+  start_recording(n);
+  n.run(3.0);
+  const double snr = heard_snr(b, a, 2.5);
+  const std::vector<PeerStats> ps_all = b.core->stats(n.now);
+  const PeerStats *ps = stats_of(ps_all, 1);
+  CHECK(ps != nullptr);
+  if (!ps) return;
+  printf("  2048-sample blocks: SNR %.1f dB, underruns %d, overruns %d, dropped %d\n", snr, ps->underruns, ps->overruns,
+         ps->dropped);
+  CHECK(snr > 20);
+  CHECK(ps->underruns == 0 && ps->overruns == 0 && ps->dropped == 0);
+  CHECK(b.core->slotHealthy(b.core->slotOf(1)));
+}
+
 // Two audio interfaces 200 ppm apart, for five minutes: dynamic resampling
 // keeps the buffer where it was, without dropouts. Without it, the delay
 // creeps until the buffer runs dry or over.
@@ -1451,6 +1478,7 @@ int main(int argc, char **argv)
   test_glue_loss_resend();
   test_glue_loss_concealed();
   test_glue_sample_rates();
+  test_glue_long_blocks();
   test_glue_drift();
   test_glue_slot_reuse();
   test_glue_prefilter();

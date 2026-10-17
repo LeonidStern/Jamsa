@@ -86,7 +86,8 @@ Tests (`tests/`):
   at 50+ dB SNR), how late a player is heard against the statistics' estimate
   (within 3 ms, and the jitter buffer setting plus 2..15 ms), 7% loss
   resent in time, burst loss concealed by Opus without silent holes, 44.1,
-  48 and 96 kHz in one room, two clocks 200 ppm apart for five minutes
+  48 and 96 kHz in one room, 2048-sample host blocks (43 ms), two clocks
+  200 ppm apart for five minutes
   (the delay holds within 2 ms, no dropouts; without dynamic resampling
   the buffer overruns), slot reuse with nine others for eight slots, the
   filter in front of AOO verdict by verdict, fuzzed packets into a playing
@@ -187,6 +188,13 @@ the server (`serverRttMs()`).
   ends). The stems are copied out of each sink's last block, so a stem lags
   by up to 64 samples. Each 64-sample block's time stamp is the host
   block's plus the samples before it (t + done / sr).
+- The source's queue to the send thread holds two of the longest host
+  blocks (`prepare()`'s `maxBlock`) and 10 ms, at least AOO's 25 ms: a host
+  block goes in whole before the send thread sees any of it, and AOO drops
+  what doesn't fit (2048-sample blocks lost 18 of every 43 ms). The jitter
+  buffer is the caller's: with long blocks it needs about two of them and
+  a few ms more (the plug-in raises it so, `Engine::liveBufferFor()`), as
+  a player's audio comes a block at a time and plays a block at a time.
 - Time stamps come from the steady clock (`std::chrono::steady_clock`), not
   `aoo_getCurrentNtpTime()` (the wall clock): AOO only takes differences of
   them (its time DLLs, the sink's elapsed time), and a wall clock that

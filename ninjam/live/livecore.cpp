@@ -416,6 +416,10 @@ void Core::prepare(double sampleRate, int maxBlock)
   m_rate.store(sampleRate);
   m_maxBlock = maxBlock;
   m_source->setup(2, sampleRate, kChunk, kAooFixedBlockSize);
+  // The source's queue to the network thread takes a whole host block at once, and what the
+  // network thread hasn't sent of the last one: AOO's 25 ms is less than a long host block
+  // (2048 samples are 43 ms at 48 kHz), and what doesn't fit is lost.
+  m_source->setBufferSize(std::max(0.025, 2.0 * maxBlock / sampleRate + 0.01));
   for (Slot &s : m_slots) s.sink->setup(2, sampleRate, kChunk, kAooFixedBlockSize);
   m_stemMemory.assign((size_t)kMaxPeers * 2 * maxBlock, 0.0f);
   m_zeros.assign(maxBlock, 0.0f);
