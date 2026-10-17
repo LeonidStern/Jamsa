@@ -35,7 +35,7 @@ void sink_desc::start(AooId stream_id){
     data_requests_.clear();
     if (is_active()){
         stream_id_.store(stream_id);
-        LOG_DEBUG("AooSource: " << ep << ": start new stream (" << stream_id() << ")");
+        LOG_DEBUG("AooSource: " << ep << ": start new stream (" << this->stream_id() << ")");
         notify_start();
     }
 }
@@ -117,7 +117,7 @@ void sink_desc::handle_uninvite(Source &s, AooId token, bool accept){
 void sink_desc::activate(Source& s, bool b, AooId stream_id) {
     if (b){
         stream_id_.store(stream_id);
-        LOG_DEBUG("AooSource: " << ep << ": activate (" << stream_id() << ")");
+        LOG_DEBUG("AooSource: " << ep << ": activate (" << this->stream_id() << ")");
         if (s.is_running()){
             notify_start();
             s.notify_start();

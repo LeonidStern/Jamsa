@@ -37,6 +37,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 #include <random>
 #include <thread>
@@ -386,6 +387,44 @@ static void test_event_mode_and_log()
   CHECK_EQ(g_logged, 1L);
 }
 
+// AOO's LOG_ERROR, which process() can reach on the audio thread, formats
+// without the heap (with any standard library: no std::ostream), and as
+// std::ostream would
+static char g_message[512];
+static void AOO_CALL keep_log(AooLogLevel, const AooChar *m)
+{
+  strncpy(g_message, m, sizeof(g_message) - 1);
+}
+
+static void test_log_format()
+{
+  aoo_setLogFunction(keep_log);
+  const int offset = -42;
+  const size_t big = 4000000000u;
+  const double ms = 2.5;
+  const char *name = "opus";
+  long calls = 0;
+  std::thread t([&]() {
+    g_in_audio = true;
+    const long before = g_audio_heap_calls.load();
+    aoo::Log(kAooLogLevelError) << "AooSink: negative stream offset: " << offset << ", " << big << " "
+                                << ms << " ms '" << name << "' " << 'x' << true;
+    calls = g_audio_heap_calls.load() - before;
+    g_in_audio = false;
+  });
+  t.join();
+  printf("  log: \"%s\", %ld heap calls\n", g_message, calls);
+  CHECK_EQ(calls, 0L);
+  CHECK(!strcmp(g_message, "AooSink: negative stream offset: -42, 4000000000 2.5 ms 'opus' x1"));
+  // longer than the buffer: cut at 255 characters
+  {
+    aoo::Log log(kAooLogLevelError);
+    for (int i = 0; i < 100; i++) log << "abc" << i;
+  }
+  CHECK_EQ(strlen(g_message), (size_t)aoo::Log::buffer_size - 1);
+  aoo_setLogFunction(nullptr);
+}
+
 int main()
 {
   g_trace = getenv("LIVE_RT_TRACE") != nullptr;
@@ -397,5 +436,6 @@ int main()
   test_paused_sink();
   test_random_ids();
   test_event_mode_and_log();
+  test_log_format();
   return test_summary("live_rt_test");
 }

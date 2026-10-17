@@ -499,6 +499,15 @@ audio thread, which must not wait for a lock, the heap or the system.
   `AooSettings` only counts at the first `aoo_initialize()`), so that the
   glue can hand messages to another thread. AOO formats a message into a
   fixed buffer on the stack; the default function writes to stderr.
+  `aoo::Log` (`common/log.hpp`) was an `std::ostream` over that buffer, and
+  constructing one allocates a locale on the heap with MSVC's standard
+  library (not with libstdc++ or libc++), on the audio thread for an error
+  in `process()`. It now writes strings, characters, numbers and pointers
+  itself (`snprintf`); other types (endpoints, in the messages above
+  Error) still go through their `operator<<`, into an `std::ostringstream`.
+  `live_rt_test` checks the format and that an Error message makes no heap
+  call. Two debug messages in `sink_desc::start()` and `activate()` didn't
+  compile (a parameter hid `stream_id()`).
 - The sink's packet queue per source (filled by `handleMessage()`, emptied
   only by `process()`) had no bound. While the host doesn't call
   `process()` (processing stopped, the plug-in still connected) every data
