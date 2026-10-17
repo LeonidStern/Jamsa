@@ -314,10 +314,16 @@ the server (`serverRttMs()`).
 ### Statistics and health
 
 - `healthy`: the stream has been active for 1 s or more, with at most two
-  dropouts (underruns, overruns, blocks lost for good, and each gap of
-  empty blocks a sender's xrun leaves, which a long jitter buffer plays
-  without running dry) in the last 2 s, and the room's flag is on. The engine mixes a slot's stem instead of the
-  player's intervals only while it is healthy.
+  dropouts (underruns, overruns, and each gap of empty blocks a sender's
+  xrun leaves, which a long jitter buffer plays without running dry) in
+  the last 2 s, at most 3 % of its blocks lost for good in the last 2 s
+  (12 of 400 5 ms frames; Opus conceals each one), and the room's flag is
+  on. The engine mixes a slot's stem instead of the player's intervals
+  only while it is healthy. Lost blocks used to count as dropouts: at 1 %
+  loss with a buffer shorter than the round trip, when no resend comes in
+  time, that was about two a second, and every player went back to
+  intervals (`live_unit_test`'s `glue_small_loss`: healthy 10 % of the
+  time before, 100 % now; at 6 % loss it still falls back).
 - `oneWayMs`, how late we hear a player, without either audio interface:
   half the round trip AOO's pings measure, the encoder's and decoder's
   latency (frame, lookahead, resampling: AOO's `sourceLatency` and

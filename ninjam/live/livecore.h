@@ -208,11 +208,16 @@ private:
     int underruns = 0, overruns = 0, dropped = 0, resent = 0, xruns = 0;
     double lastXRun = -1e9;      // the last xrun event's poll
     int streamDropped = 0, streamResent = 0; // since the stream started
-    // recent dropouts (underruns, overruns, blocks lost for good)
+    // recent dropouts (underruns, overruns, a sender's xrun gaps)
     double dropouts[16] = {};
     int dropoutCount = 0;
     void dropout(double now, int n);
     int dropoutsSince(double t) const;
+    // blocks lost for good (Opus conceals each one) per 100 ms, the last 2 s
+    int lost[20] = {};
+    long long lostTenth = -1000; // the tenth of a second of the newest count
+    void lose(double now, int n);
+    int lostInLast2s(double now) const;
   };
 
   struct Slot

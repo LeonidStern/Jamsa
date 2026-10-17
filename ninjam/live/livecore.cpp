@@ -204,6 +204,28 @@ int Core::SlotStats::dropoutsSince(double t) const
   return n;
 }
 
+static int tenthIndex(long long tenth) { return (int)(((tenth % 20) + 20) % 20); }
+
+void Core::SlotStats::lose(double now, int n)
+{
+  const long long tenth = (long long)std::floor(now * 10);
+  if (tenth > lostTenth)
+  {
+    // clear the tenths since the last count (all of them after 2 s)
+    for (long long k = std::max(lostTenth + 1, tenth - 19); k <= tenth; k++) lost[tenthIndex(k)] = 0;
+    lostTenth = tenth;
+  }
+  lost[tenthIndex(lostTenth)] += std::max(0, std::min(n, 1000));
+}
+
+int Core::SlotStats::lostInLast2s(double now) const
+{
+  const long long tenth = (long long)std::floor(now * 10);
+  int sum = 0;
+  for (long long k = std::max(lostTenth - 19, tenth - 19); k <= lostTenth; k++) sum += lost[tenthIndex(k)];
+  return sum;
+}
+
 Core::Core()
 {
   aoo_initialize(nullptr); // once per process (call_once in our copy)
@@ -893,7 +915,7 @@ void Core::sinkEvent(Slot &slot, const AooEvent *e)
     case kAooEventBlockDrop:
       st.dropped += e->blockDrop.count;
       st.streamDropped += e->blockDrop.count;
-      st.dropout(now, std::min(e->blockDrop.count, 16));
+      st.lose(now, e->blockDrop.count);
       break;
     case kAooEventBlockResend:
       st.resent += e->blockResend.count;
@@ -925,8 +947,16 @@ void Core::updateHealth(double now)
   for (Slot &s : m_slots)
   {
     const SlotStats &st = s.st;
+    // Blocks lost for good count only above 3 % of the stream's in the last
+    // 2 s (12 of 400 5 ms frames): Opus conceals each one, and at 1 % loss,
+    // with a buffer shorter than the round trip (too short for a resend),
+    // counting each as a dropout sent every player back to intervals (Leo,
+    // 2026-10-17: a concealed packet now and then is better than playing
+    // the intervals, a whole interval late).
+    const int maxLost = (int)(0.03 * 2.0 * st.formatRate / std::max(1, st.formatBlock));
     const bool healthy = m_roomOn && s.peer.load() != 0 && st.active && st.activeSince >= 0
-      && now - st.activeSince >= 1.0 && st.dropoutsSince(now - 2.0) <= 2;
+      && now - st.activeSince >= 1.0 && st.dropoutsSince(now - 2.0) <= 2
+      && st.lostInLast2s(now) <= maxLost;
     s.healthy.store(healthy, std::memory_order_relaxed);
   }
 }

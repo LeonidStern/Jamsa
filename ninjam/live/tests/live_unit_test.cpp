@@ -948,9 +948,9 @@ static void test_glue_loss_resend()
   CHECK(ps->lossPct > 3 && ps->lossPct < 12);
   CHECK(snr > 20);
   CHECK(all_finite(b.rec[0]));
-  // Health allows two dropouts in 2 s, and this loss loses about a block a
-  // second for good, so it comes and goes; once the loss stops, it is back
-  // within 2 s.
+  // Health allows 3 % of the blocks lost for good in 2 s, and this loss
+  // loses about a block a second for good; once the loss stops, it is
+  // healthy within 2 s.
   a.up.loss = b.down.loss = b.up.loss = 0;
   n.run(2.5);
   CHECK(b.core->slotHealthy(b.core->slotOf(1)));
@@ -990,6 +990,47 @@ static void test_glue_loss_concealed()
   CHECK(silent < 0.02);
   CHECK(good > 0.85);
   CHECK(all_finite(b.rec[slot]));
+}
+
+// Blocks lost for good, which Opus conceals, count in the health rule only
+// above 3 % of the stream's in the last 2 s. At 1 % loss with a buffer
+// shorter than the round trip (no resend comes in time) each of them was a
+// dropout, about two a second, so the slot was unhealthy most of the time
+// and the engine played that player's intervals (benchmark B: every slot of
+// a room of 8, at the default 20 ms). At 6 % it still falls back.
+static void test_glue_small_loss()
+{
+  if (!selected("glue_small_loss")) return;
+  for (double loss : { 0.01, 0.06 })
+  {
+    net n(21);
+    player &a = n.add(1);
+    player &b = n.add(2);
+    a.up.delay = b.down.delay = 0.015; // a 60 ms round trip, past the buffer
+    b.down.loss = loss;
+    b.send = false;
+    n.start_all();
+    b.core->setJitterMs(20);
+    n.run(1.5);
+    const int slot = b.core->slotOf(1);
+    int healthy = 0, polls = 0;
+    for (; polls < 80; polls++)
+    {
+      n.run(0.1);
+      if (b.core->slotHealthy(slot)) healthy++;
+    }
+    const std::vector<PeerStats> ps_all = b.core->stats(n.now);
+    const PeerStats *ps = stats_of(ps_all, 1);
+    CHECK(ps != nullptr);
+    if (!ps) return;
+    printf("  %.0f%% lost: dropped %d, resent %d, underruns %d, overruns %d; healthy %d%% of the time\n",
+           100 * loss, ps->dropped, ps->resent, ps->underruns, ps->overruns, 100 * healthy / polls);
+    CHECK(ps->dropped > 0);
+    if (loss < 0.03)
+      CHECK(healthy >= polls * 95 / 100);
+    else
+      CHECK(healthy <= polls / 10);
+  }
 }
 
 // 44.1, 48 and 96 kHz in one room
@@ -2037,6 +2078,7 @@ int main(int argc, char **argv)
   test_glue_delay();
   test_glue_loss_resend();
   test_glue_loss_concealed();
+  test_glue_small_loss();
   test_glue_sample_rates();
   test_glue_long_blocks();
   test_glue_big_blocks();
